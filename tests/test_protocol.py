@@ -2,7 +2,14 @@ import unittest
 
 import json
 
-from llm_epn.protocol import messages_to_prompt, models_list, parse_tool_call, response_object, responses_input_to_prompt
+from llm_epn.protocol import (
+    messages_to_prompt,
+    models_list,
+    parse_tool_call,
+    parse_tool_calls,
+    response_object,
+    responses_input_to_prompt,
+)
 
 
 class ProtocolTests(unittest.TestCase):
@@ -40,6 +47,29 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(call["name"], "exec")
         self.assertEqual(call["arguments"]["command"], "ls -la /home/chris/alice/misc/LLM_EPN")
 
+    def test_parse_nested_qwen_tool_calls(self):
+        calls = parse_tool_calls(
+            "I'll inspect it.\n"
+            "<tool_call>\n"
+            "<function=read_file>\n"
+            "<parameter=path>\n"
+            "/home/chris/alice/misc/LLM_EPN/README.md\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>\n"
+            "<tool_call>\n"
+            "<function=read_file>\n"
+            "<parameter=path>\n"
+            "/home/chris/alice/misc/LLM_EPN/src/llm_epn/server.py\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+
+        self.assertEqual([call["name"] for call in calls], ["read_file", "read_file"])
+        self.assertEqual(calls[0]["arguments"]["path"], "/home/chris/alice/misc/LLM_EPN/README.md")
+        self.assertEqual(calls[1]["arguments"]["path"], "/home/chris/alice/misc/LLM_EPN/src/llm_epn/server.py")
+
     def test_response_object_emits_function_call_for_qwen_markup(self):
         response = response_object(
             "qwen3-coder-next-f16-1m",
@@ -51,6 +81,18 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(output["type"], "function_call")
         self.assertEqual(output["name"], "exec")
         self.assertEqual(json.loads(output["arguments"]), {"command": "pwd"})
+
+    def test_response_object_emits_multiple_function_calls(self):
+        response = response_object(
+            "qwen3-coder-next-f16-1m",
+            "<tool_call><function=read_file><parameter=path>README.md</parameter></function></tool_call>"
+            "<tool_call><function=read_file><parameter=path>src/llm_epn/server.py</parameter></function></tool_call>",
+        )
+
+        self.assertEqual(response["output_text"], "")
+        self.assertEqual([item["type"] for item in response["output"]], ["function_call", "function_call"])
+        self.assertEqual([item["name"] for item in response["output"]], ["read_file", "read_file"])
+        self.assertEqual(json.loads(response["output"][1]["arguments"]), {"path": "src/llm_epn/server.py"})
 
     def test_responses_prompt_includes_function_outputs(self):
         prompt = responses_input_to_prompt(

@@ -74,33 +74,16 @@ def responses_input_to_prompt(value) -> str:
     return str(value)
 
 
-def parse_tool_call(text: str) -> dict | None:
-    match = re.search(
-        r"<tool_call>\s*function=(?P<name>[A-Za-z_][\w.-]*)\s*(?P<body>.*?)(?:</function>|</tool_call>)",
-        text,
-        flags=re.DOTALL,
-    )
-    if not match:
-        json_match = re.search(r"<tool_call>\s*(?P<body>\{.*?\})\s*</tool_call>", text, flags=re.DOTALL)
-        if not json_match:
-            return None
+def normalize_tool_arguments(arguments) -> dict:
+    if isinstance(arguments, str):
         try:
-            data = json.loads(json_match.group("body"))
+            arguments = json.loads(arguments)
         except json.JSONDecodeError:
-            return None
-        name = data.get("name") or data.get("function")
-        arguments = data.get("arguments") or data.get("parameters") or {}
-        if not name:
-            return None
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except json.JSONDecodeError:
-                arguments = {"input": arguments}
-        return {"name": str(name), "arguments": arguments if isinstance(arguments, dict) else {"input": arguments}}
+            return {"input": arguments}
+    return arguments if isinstance(arguments, dict) else {"input": arguments}
 
-    name = match.group("name")
-    body = match.group("body")
+
+def parse_tool_parameters(body: str) -> dict:
     params = {}
     for param_match in re.finditer(
         r"<parameter=(?P<name>[A-Za-z_][\w.-]*)>(?P<value>.*?)</parameter>",
@@ -110,7 +93,68 @@ def parse_tool_call(text: str) -> dict | None:
         params[param_match.group("name")] = html.unescape(param_match.group("value").strip())
     if not params:
         params["input"] = html.unescape(body.strip())
-    return {"name": name, "arguments": params}
+    return params
+
+
+def parse_json_tool_call(body: str) -> dict | None:
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    name = data.get("name") or data.get("function")
+    arguments = data.get("arguments") or data.get("parameters") or {}
+    if not name:
+        return None
+    return {"name": str(name), "arguments": normalize_tool_arguments(arguments)}
+
+
+def parse_xml_tool_call(body: str) -> dict | None:
+    nested = re.search(
+        r"<function=(?P<name>[A-Za-z_][\w.-]*)>\s*(?P<body>.*?)</function>",
+        body,
+        flags=re.DOTALL,
+    )
+    if nested:
+        return {"name": nested.group("name"), "arguments": parse_tool_parameters(nested.group("body"))}
+
+    inline = re.search(
+        r"function=(?P<name>[A-Za-z_][\w.-]*)\s*(?P<body>.*?)(?:</function>)?\s*$",
+        body,
+        flags=re.DOTALL,
+    )
+    if inline:
+        return {"name": inline.group("name"), "arguments": parse_tool_parameters(inline.group("body"))}
+
+    return None
+
+
+def parse_tool_calls(text: str) -> list[dict]:
+    calls: list[dict] = []
+    for match in re.finditer(r"<tool_call>\s*(?P<body>.*?)\s*</tool_call>", text, flags=re.DOTALL):
+        body = match.group("body").strip()
+        if body.startswith("{"):
+            call = parse_json_tool_call(body)
+        else:
+            call = parse_xml_tool_call(body)
+        if call:
+            calls.append(call)
+
+    if calls:
+        return calls
+
+    bare = re.search(
+        r"<tool_call>\s*function=(?P<name>[A-Za-z_][\w.-]*)\s*(?P<body>.*?)(?:</function>|$)",
+        text,
+        flags=re.DOTALL,
+    )
+    if bare:
+        calls.append({"name": bare.group("name"), "arguments": parse_tool_parameters(bare.group("body"))})
+    return calls
+
+
+def parse_tool_call(text: str) -> dict | None:
+    calls = parse_tool_calls(text)
+    return calls[0] if calls else None
 
 
 def chat_completion(model: str, text: str) -> dict:
@@ -155,9 +199,8 @@ def response_object(
     content_id: str | None = None,
 ) -> dict:
     response_id = response_id or f"resp_{uuid.uuid4().hex}"
-    tool_call = parse_tool_call(text)
-    if tool_call:
-        item_id = item_id or f"fc_{uuid.uuid4().hex}"
+    tool_calls = parse_tool_calls(text)
+    if tool_calls:
         return {
             "id": response_id,
             "object": "response",
@@ -167,13 +210,14 @@ def response_object(
             "output_text": "",
             "output": [
                 {
-                    "id": item_id,
+                    "id": f"fc_{uuid.uuid4().hex}",
                     "type": "function_call",
                     "status": "completed",
                     "call_id": f"call_{uuid.uuid4().hex}",
                     "name": tool_call["name"],
                     "arguments": json.dumps(tool_call["arguments"]),
                 }
+                for tool_call in tool_calls
             ],
             "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
         }
