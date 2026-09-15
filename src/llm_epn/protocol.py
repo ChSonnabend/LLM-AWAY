@@ -83,6 +83,8 @@ def tool_name(tool: dict) -> str:
     function = tool.get("function")
     if isinstance(function, dict) and function.get("name"):
         return str(function["name"])
+    if tool.get("type") in {"shell", "apply_patch"}:
+        return str(tool["type"])
     return ""
 
 
@@ -97,12 +99,12 @@ def tools_to_prompt(tools) -> str:
         "Tool calling:",
         "Use only the tool names listed here. Emit tool calls as:",
         "<tool_call><function=tool_name><parameter=param_name>value</parameter></function></tool_call>",
-        "Do not invent tools such as read_file unless they are listed. For file reads, directory listing, and search, prefer exec with shell commands like cat, sed, ls, and rg.",
+        "Do not invent tools such as read_file unless they are listed. For file reads, directory listing, and search, prefer the shell tool with commands like cat, sed, ls, and rg.",
     ]
 
     names = available_tool_names(tools)
     if not names:
-        lines.append("- exec: run a shell command. Parameters: command")
+        lines.append("- exec_command: run a shell command. Parameters: cmd")
         return "\n".join(lines)
 
     for tool in tools:
@@ -269,27 +271,48 @@ def parse_tool_call(text: str) -> dict | None:
     return calls[0] if calls else None
 
 
-def command_tool_call(command: str) -> dict:
-    return {"name": "exec", "arguments": {"command": command}}
+def shell_tool_name(allowed_names: set[str] | None = None) -> str:
+    allowed_names = allowed_names or set()
+    if "exec_command" in allowed_names:
+        return "exec_command"
+    if "exec" in allowed_names:
+        return "exec"
+    return "exec_command"
+
+
+def command_tool_call(command: str, allowed_names: set[str] | None = None) -> dict:
+    name = shell_tool_name(allowed_names)
+    if name == "exec":
+        return {"name": "exec", "arguments": {"command": command}}
+    return {"name": "exec_command", "arguments": {"cmd": command}}
 
 
 def rewrite_tool_call(call: dict, allowed_names: set[str] | None = None) -> dict:
     allowed_names = allowed_names or set()
+    if call["name"] == "exec" and "exec" not in allowed_names:
+        args = call.get("arguments", {})
+        command = args.get("command") or args.get("cmd")
+        if command:
+            return command_tool_call(str(command), allowed_names)
     if not allowed_names or call["name"] in allowed_names:
         return call
 
-    if "exec" not in allowed_names:
+    shell_name = shell_tool_name(allowed_names)
+    if shell_name not in allowed_names and allowed_names:
         return call
 
     args = call.get("arguments", {})
     if call["name"] == "read_file" and args.get("path"):
-        return command_tool_call(f"sed -n '1,240p' -- {shlex.quote(str(args['path']))}")
+        return command_tool_call(f"sed -n '1,240p' -- {shlex.quote(str(args['path']))}", allowed_names)
     if call["name"] in {"list_directory", "list_files"}:
         path = args.get("path") or args.get("directory") or "."
-        return command_tool_call(f"ls -la -- {shlex.quote(str(path))}")
+        return command_tool_call(f"ls -la -- {shlex.quote(str(path))}", allowed_names)
     if call["name"] in {"search_files", "grep"} and args.get("pattern"):
         path = args.get("path") or args.get("directory") or "."
-        return command_tool_call(f"rg -n -- {shlex.quote(str(args['pattern']))} {shlex.quote(str(path))}")
+        return command_tool_call(
+            f"rg -n -- {shlex.quote(str(args['pattern']))} {shlex.quote(str(path))}",
+            allowed_names,
+        )
 
     return call
 
@@ -339,7 +362,7 @@ def response_object(
     response_id = response_id or f"resp_{uuid.uuid4().hex}"
     blocks = tool_call_blocks(text)
     if blocks:
-        allowed_names = available_tool_names(tools) or {"exec"}
+        allowed_names = available_tool_names(tools) or {"exec_command"}
         rewritten_calls = [rewrite_tool_call(tool_call, allowed_names) for _, _, tool_call in blocks]
         output_text = visible_tool_text(text, blocks, rewritten_calls)
         output = [message_output(output_text, item_id=item_id, content_id=content_id)] if output_text else []
