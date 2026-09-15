@@ -9,6 +9,7 @@ from llm_epn.protocol import (
     parse_tool_calls,
     response_object,
     responses_input_to_prompt,
+    responses_request_to_prompt,
 )
 
 
@@ -29,6 +30,31 @@ class ProtocolTests(unittest.TestCase):
             {"role": "user", "content": [{"type": "input_text", "text": "Hi"}]},
         ])
         self.assertIn("user: Hi", prompt)
+
+    def test_responses_request_prompt_includes_tools(self):
+        prompt = responses_request_to_prompt(
+            {
+                "instructions": "Be careful.",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "exec",
+                        "description": "Run a shell command.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    }
+                ],
+                "input": [{"role": "user", "content": "Inspect files"}],
+            }
+        )
+
+        self.assertIn("instructions: Be careful.", prompt)
+        self.assertIn("- exec: Run a shell command.", prompt)
+        self.assertIn("Do not invent tools such as read_file", prompt)
+        self.assertIn("user: Inspect files", prompt)
 
     def test_models_list(self):
         data = models_list("qwen3-coder-next-f16-1m")
@@ -102,10 +128,24 @@ class ProtocolTests(unittest.TestCase):
             "<tool_call><function=read_file><parameter=path>src/llm_epn/server.py</parameter></function></tool_call>",
         )
 
-        self.assertEqual(response["output_text"], "Calling read_file (2 calls).")
+        self.assertEqual(response["output_text"], "Calling exec (2 calls).")
         self.assertEqual([item["type"] for item in response["output"]], ["message", "function_call", "function_call"])
-        self.assertEqual([item["name"] for item in response["output"][1:]], ["read_file", "read_file"])
-        self.assertEqual(json.loads(response["output"][2]["arguments"]), {"path": "src/llm_epn/server.py"})
+        self.assertEqual([item["name"] for item in response["output"][1:]], ["exec", "exec"])
+        self.assertEqual(
+            json.loads(response["output"][2]["arguments"]),
+            {"command": "sed -n '1,240p' -- src/llm_epn/server.py"},
+        )
+
+    def test_response_object_rewrites_unsupported_read_file_to_exec(self):
+        response = response_object(
+            "qwen3-coder-next-f16-1m",
+            "<tool_call><function=read_file><parameter=path>README.md</parameter></function></tool_call>",
+            tools=[{"type": "function", "name": "exec"}],
+        )
+        output = response["output"][1]
+
+        self.assertEqual(output["name"], "exec")
+        self.assertEqual(json.loads(output["arguments"]), {"command": "sed -n '1,240p' -- README.md"})
 
     def test_responses_prompt_includes_function_outputs(self):
         prompt = responses_input_to_prompt(

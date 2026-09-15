@@ -16,7 +16,7 @@ from .protocol import (
     messages_to_prompt,
     models_list,
     response_object,
-    responses_input_to_prompt,
+    responses_request_to_prompt,
 )
 
 
@@ -59,13 +59,13 @@ class ProviderHandler(BaseHTTPRequestHandler):
 
     def handle_responses(self, payload: dict) -> None:
         model = payload.get("model") or self.config.model.name
-        raw_prompt = responses_input_to_prompt(payload.get("input", ""))
+        raw_prompt = responses_request_to_prompt(payload)
         prompt = self.compact_prompt(raw_prompt)
         if payload.get("stream"):
-            self.handle_responses_stream(model, prompt, len(raw_prompt))
+            self.handle_responses_stream(model, prompt, len(raw_prompt), payload.get("tools", []))
             return
         text = self.backend.infer(InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=len(raw_prompt)))
-        response = response_object(model, text)
+        response = response_object(model, text, tools=payload.get("tools", []))
         self.write_json(response)
 
     def read_json(self) -> dict:
@@ -122,7 +122,9 @@ class ProviderHandler(BaseHTTPRequestHandler):
         self.write_sse("message", chat_completion_chunk(model, "", finish=True))
         self.write_sse("message", "[DONE]")
 
-    def handle_responses_stream(self, model: str, prompt: str, raw_prompt_chars: int | None = None) -> None:
+    def handle_responses_stream(
+        self, model: str, prompt: str, raw_prompt_chars: int | None = None, tools=None
+    ) -> None:
         response_id = f"resp_{uuid.uuid4().hex}"
         created = {
             "id": response_id,
@@ -153,7 +155,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
                 {"type": "response.failed", "sequence_number": 1, "response": failed},
             )
             return
-        response = response_object(model, text, response_id=response_id)
+        response = response_object(model, text, response_id=response_id, tools=tools)
         self.write_response_stream(response, sequence_number=1, include_created=False)
 
     def write_response_stream(self, response: dict, sequence_number: int = 0, include_created: bool = True) -> None:

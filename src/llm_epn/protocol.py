@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import shlex
 import time
 import uuid
 
@@ -72,6 +73,66 @@ def responses_input_to_prompt(value) -> str:
             return "\n".join(lines)
         return str(value)
     return str(value)
+
+
+def tool_name(tool: dict) -> str:
+    if not isinstance(tool, dict):
+        return ""
+    if tool.get("name"):
+        return str(tool["name"])
+    function = tool.get("function")
+    if isinstance(function, dict) and function.get("name"):
+        return str(function["name"])
+    return ""
+
+
+def available_tool_names(tools) -> set[str]:
+    if not isinstance(tools, list):
+        return set()
+    return {name for tool in tools if (name := tool_name(tool))}
+
+
+def tools_to_prompt(tools) -> str:
+    lines = [
+        "Tool calling:",
+        "Use only the tool names listed here. Emit tool calls as:",
+        "<tool_call><function=tool_name><parameter=param_name>value</parameter></function></tool_call>",
+        "Do not invent tools such as read_file unless they are listed. For file reads, directory listing, and search, prefer exec with shell commands like cat, sed, ls, and rg.",
+    ]
+
+    names = available_tool_names(tools)
+    if not names:
+        lines.append("- exec: run a shell command. Parameters: command")
+        return "\n".join(lines)
+
+    for tool in tools:
+        name = tool_name(tool)
+        if not name:
+            continue
+        description = tool.get("description")
+        function = tool.get("function")
+        if isinstance(function, dict):
+            description = description or function.get("description")
+        params = tool.get("parameters")
+        if isinstance(function, dict):
+            params = params or function.get("parameters")
+        rendered = f"- {name}"
+        if description:
+            rendered += f": {description}"
+        if params:
+            rendered += f" Parameters: {json.dumps(params, sort_keys=True)}"
+        lines.append(rendered)
+    return "\n".join(lines)
+
+
+def responses_request_to_prompt(payload: dict) -> str:
+    parts = []
+    instructions = payload.get("instructions")
+    if instructions:
+        parts.append(f"instructions: {content_to_text(instructions)}")
+    parts.append(tools_to_prompt(payload.get("tools", [])))
+    parts.append(responses_input_to_prompt(payload.get("input", "")))
+    return "\n\n".join(part for part in parts if part)
 
 
 def normalize_tool_arguments(arguments) -> dict:
@@ -162,7 +223,7 @@ def parse_tool_calls(text: str) -> list[dict]:
     return [call for _, _, call in tool_call_blocks(text)]
 
 
-def visible_tool_text(text: str, blocks: list[tuple[int, int, dict]]) -> str:
+def visible_tool_text(text: str, blocks: list[tuple[int, int, dict]], display_calls: list[dict] | None = None) -> str:
     if not blocks:
         return text
 
@@ -176,7 +237,8 @@ def visible_tool_text(text: str, blocks: list[tuple[int, int, dict]]) -> str:
     if visible:
         return visible
 
-    names = [call["name"] for _, _, call in blocks]
+    calls = display_calls if display_calls is not None else [call for _, _, call in blocks]
+    names = [call["name"] for call in calls]
     unique_names = list(dict.fromkeys(names))
     if len(blocks) == 1:
         return f"Calling {names[0]}."
@@ -205,6 +267,31 @@ def message_output(text: str, item_id: str | None = None, content_id: str | None
 def parse_tool_call(text: str) -> dict | None:
     calls = parse_tool_calls(text)
     return calls[0] if calls else None
+
+
+def command_tool_call(command: str) -> dict:
+    return {"name": "exec", "arguments": {"command": command}}
+
+
+def rewrite_tool_call(call: dict, allowed_names: set[str] | None = None) -> dict:
+    allowed_names = allowed_names or set()
+    if not allowed_names or call["name"] in allowed_names:
+        return call
+
+    if "exec" not in allowed_names:
+        return call
+
+    args = call.get("arguments", {})
+    if call["name"] == "read_file" and args.get("path"):
+        return command_tool_call(f"sed -n '1,240p' -- {shlex.quote(str(args['path']))}")
+    if call["name"] in {"list_directory", "list_files"}:
+        path = args.get("path") or args.get("directory") or "."
+        return command_tool_call(f"ls -la -- {shlex.quote(str(path))}")
+    if call["name"] in {"search_files", "grep"} and args.get("pattern"):
+        path = args.get("path") or args.get("directory") or "."
+        return command_tool_call(f"rg -n -- {shlex.quote(str(args['pattern']))} {shlex.quote(str(path))}")
+
+    return call
 
 
 def chat_completion(model: str, text: str) -> dict:
@@ -247,11 +334,14 @@ def response_object(
     response_id: str | None = None,
     item_id: str | None = None,
     content_id: str | None = None,
+    tools=None,
 ) -> dict:
     response_id = response_id or f"resp_{uuid.uuid4().hex}"
     blocks = tool_call_blocks(text)
     if blocks:
-        output_text = visible_tool_text(text, blocks)
+        allowed_names = available_tool_names(tools) or {"exec"}
+        rewritten_calls = [rewrite_tool_call(tool_call, allowed_names) for _, _, tool_call in blocks]
+        output_text = visible_tool_text(text, blocks, rewritten_calls)
         output = [message_output(output_text, item_id=item_id, content_id=content_id)] if output_text else []
         output.extend(
             [
@@ -260,10 +350,10 @@ def response_object(
                     "type": "function_call",
                     "status": "completed",
                     "call_id": f"call_{uuid.uuid4().hex}",
-                    "name": tool_call["name"],
-                    "arguments": json.dumps(tool_call["arguments"]),
+                    "name": rewritten["name"],
+                    "arguments": json.dumps(rewritten["arguments"]),
                 }
-                for _, _, tool_call in blocks
+                for rewritten in rewritten_calls
             ]
         )
         return {
