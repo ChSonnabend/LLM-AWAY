@@ -3,10 +3,33 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from llm_epn.cli import epn_model_catalog, install_codex_config, remove_toml_table
+from llm_epn.cli import codex_provider_display_name, epn_model_catalog, install_codex_config, remove_toml_table
 
 
 class CliTests(unittest.TestCase):
+    def test_codex_provider_display_name_defaults_to_user(self):
+        previous_name = os.environ.get("LLM_EPN_CODEX_PROVIDER_NAME")
+        previous_user = os.environ.get("USER")
+        previous_username = os.environ.get("USERNAME")
+        os.environ.pop("LLM_EPN_CODEX_PROVIDER_NAME", None)
+        os.environ["USER"] = "alice"
+        os.environ.pop("USERNAME", None)
+        try:
+            self.assertEqual(codex_provider_display_name(), "alice")
+        finally:
+            if previous_name is None:
+                os.environ.pop("LLM_EPN_CODEX_PROVIDER_NAME", None)
+            else:
+                os.environ["LLM_EPN_CODEX_PROVIDER_NAME"] = previous_name
+            if previous_user is None:
+                os.environ.pop("USER", None)
+            else:
+                os.environ["USER"] = previous_user
+            if previous_username is None:
+                os.environ.pop("USERNAME", None)
+            else:
+                os.environ["USERNAME"] = previous_username
+
     def test_epn_model_catalog_advertises_coding_agent_mode(self):
         catalog = epn_model_catalog("qwen3-coder-next-f16-1m")
         model = catalog["models"][0]
@@ -72,6 +95,8 @@ name = "qwen3-coder-next-f16-1m"
             self.assertIn('model = "qwen3-coder-next-f16-1m"', active_config)
             self.assertIn('model_provider = "epn"', active_config)
             self.assertIn("[model_providers.epn]", active_config)
+            self.assertIn('name = "', active_config)
+            self.assertNotIn('name = "EPN Slurm llama.cpp"', active_config)
             self.assertIn('base_url = "http://127.0.0.1:8765/v1"', active_config)
             self.assertIn('model_reasoning_effort = "high"', profile)
             self.assertTrue((codex_home / "model-catalogs" / "epn.json").exists())

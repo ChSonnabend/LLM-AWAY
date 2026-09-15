@@ -23,7 +23,7 @@ def print_codex_config(config_path: str) -> None:
     print(
         f'''# Add this provider block to ~/.codex/config.toml.
 [model_providers.epn]
-name = "EPN Slurm llama.cpp"
+name = "{codex_provider_display_name()}"
 base_url = "{base_url}"
 wire_api = "responses"
 
@@ -38,6 +38,15 @@ model_catalog_json = "~/.codex/model-catalogs/epn.json"
 
 def codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+
+
+def codex_provider_display_name() -> str:
+    return (
+        os.environ.get("LLM_EPN_CODEX_PROVIDER_NAME")
+        or os.environ.get("USER")
+        or os.environ.get("USERNAME")
+        or "EPN"
+    )
 
 
 def quoted(value: str) -> str:
@@ -135,6 +144,13 @@ def remove_toml_table(text: str, table: str) -> str:
     for line in lines:
         stripped = line.strip()
         if stripped == header or stripped.startswith(nested_prefix):
+            while result:
+                while result and not result[-1].strip():
+                    result.pop()
+                if result and result[-1].strip() == "# LLM EPN provider":
+                    result.pop()
+                    continue
+                break
             skipping = True
             continue
         if skipping and stripped.startswith("[") and stripped.endswith("]"):
@@ -194,7 +210,7 @@ def install_codex_config(config_path: str, activate: bool = True) -> None:
     provider_block = f'''
 # LLM EPN provider
 [model_providers.epn]
-name = "EPN Slurm llama.cpp"
+name = "{codex_provider_display_name()}"
 base_url = "{base_url}"
 wire_api = "responses"
 '''

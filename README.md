@@ -17,7 +17,7 @@ From this repository:
 ./scripts/init-local.sh
 ```
 
-Run the same command on any Remote-SSH development host where you want the VS Code Codex extension to use EPN. It creates the local Python environment, installs short launcher commands into `~/.local/bin`, writes the EPN Codex provider/profile under `~/.codex`, and creates the EPN model catalog. The setup is offline; it runs from the repository source and does not need PyPI.
+Run the same command on any Remote-SSH development host where you want the VS Code Codex extension to use EPN. It installs short launcher commands into `~/.local/bin`, writes the EPN Codex provider/profile under `~/.codex`, and creates the EPN model catalog. The setup is offline; it runs from the repository source and does not need PyPI.
 
 Then install the remote runner on the SSH host:
 
@@ -109,6 +109,8 @@ With `gateway.cancel_on_exit = true`, a local gateway process cancels the Slurm 
 Traffic to the local model is bounded by `gateway.max_prompt_chars`, `gateway.prompt_keep_head_chars`, and `gateway.prompt_keep_tail_chars`. This keeps Codex's large agent context from overwhelming a local llama.cpp server while preserving the beginning and most recent end of the prompt. `llamacpp.max_tokens` bounds response length.
 
 To use this profile from Codex CLI, VS Code, or the Codex desktop app, select the `epn` profile/model after starting the local gateway. User-level provider config lives in `~/.codex/config.toml`, while profile overrides live in `~/.codex/epn.config.toml`; this matches the current OpenAI Docs profile format. A combined model catalog at `~/.codex/model-catalogs/combined-with-epn.json` makes the EPN model visible to clients that read the global model catalog, but provider routing still requires the `epn` profile or another config that sets `model_provider = "epn"`.
+
+The generated provider display name defaults to your local `$USER` value so app chrome keeps showing a user-like label instead of `EPN Slurm llama.cpp`. Set `LLM_EPN_CODEX_PROVIDER_NAME` before running `./scripts/init-local.sh` if you want a different label.
 
 For an EPN-focused VS Code session, make the EPN provider/model active in `~/.codex/config.toml`, then launch:
 
