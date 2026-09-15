@@ -16,6 +16,7 @@ payload="$(cat)"
 
 python3 - "$cmd" "$payload" <<'PY'
 import json
+import fcntl
 import os
 import re
 import shlex
@@ -43,6 +44,7 @@ model_name = sanitize(payload.get("model") or "default")
 state_path = os.path.join(state_dir, model_name + ".json")
 host_path = os.path.join(state_dir, model_name + ".host")
 log_path = os.path.join(state_dir, model_name + ".log")
+lock_path = os.path.join(state_dir, model_name + ".lock")
 
 def read_state():
     try:
@@ -253,16 +255,20 @@ exec {server_cmd}
     print(json.dumps(current_status()))
 
 if command == "ensure":
-    submit()
+    with open(lock_path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        submit()
 elif command == "status":
     print(json.dumps(current_status()))
 elif command == "cancel":
-    state = read_state()
-    if state.get("job_id"):
-        subprocess.call(["scancel", str(state["job_id"])])
-    state["active"] = False
-    write_state(state)
-    print(json.dumps(current_status()))
+    with open(lock_path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = read_state()
+        if state.get("job_id"):
+            subprocess.call(["scancel", str(state["job_id"])])
+        state["active"] = False
+        write_state(state)
+        print(json.dumps(current_status()))
 elif command == "log":
     offset = int(payload.get("log_offset") or 0)
     print(json.dumps(read_log_since(offset)))

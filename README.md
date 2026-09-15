@@ -25,6 +25,8 @@ Then install the remote runner on the SSH host:
 ./scripts/init-remote.sh
 ```
 
+Rerun `./scripts/init-remote.sh` after pulling updates that touch `scripts/remote/*`; those files are copied to `epnh:~/.local/bin/`.
+
 Start the local provider and warm the remote Slurm server:
 
 ```bash

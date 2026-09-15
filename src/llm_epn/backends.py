@@ -121,7 +121,7 @@ class SlurmServerBackend(Backend):
 
     def infer(self, request: InferenceRequest) -> str:
         started = time.time()
-        self.ensure_ready(request.model)
+        self.ensure_ready(self.config.model.name)
         ready_at = time.time()
         text = self.completion(request.prompt)
         completed_at = time.time()
