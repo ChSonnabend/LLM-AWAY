@@ -8,6 +8,7 @@ port="${LLM_EPN_PORT:-8765}"
 log_dir="${XDG_RUNTIME_DIR:-/tmp}"
 log_path="${LLM_EPN_PROVIDER_LOG:-$log_dir/llm-epn-provider-${USER:-user}.log}"
 provider_pid=""
+tty_state="$(stty -g 2>/dev/null || true)"
 
 healthcheck() {
     python - "$host" "$port" <<'PY' >/dev/null 2>&1
@@ -20,13 +21,22 @@ with urlopen(f"http://{host}:{port}/health", timeout=1) as response:
 PY
 }
 
+restore_terminal() {
+    if [[ -n "$tty_state" && -r /dev/tty && -w /dev/tty ]]; then
+        stty "$tty_state" </dev/tty 2>/dev/null || stty sane </dev/tty 2>/dev/null || true
+    fi
+}
+
 cleanup() {
     if [[ -n "$provider_pid" ]] && kill -0 "$provider_pid" 2>/dev/null; then
         kill "$provider_pid" 2>/dev/null || true
         wait "$provider_pid" 2>/dev/null || true
     fi
+    restore_terminal
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 if ! healthcheck; then
     echo "llm-epn: starting local provider on http://$host:$port (log: $log_path)" >&2

@@ -3,5 +3,19 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 config="${LLM_EPN_CONFIG:-$repo_dir/config/epn.toml}"
+tty_state="$(stty -g 2>/dev/null || true)"
 
-exec "$repo_dir/bin/llm-epn" serve --config "$config" --warm
+restore_terminal() {
+    if [[ -n "$tty_state" && -r /dev/tty && -w /dev/tty ]]; then
+        stty "$tty_state" </dev/tty 2>/dev/null || stty sane </dev/tty 2>/dev/null || true
+    fi
+}
+
+cleanup() {
+    restore_terminal
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+"$repo_dir/bin/llm-epn" serve --config "$config" --warm
