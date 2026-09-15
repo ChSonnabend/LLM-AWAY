@@ -247,9 +247,15 @@ def serve(config: AppConfig, backend: Backend, warm: bool = False) -> None:
     Handler.config = config
     httpd = ThreadingHTTPServer((config.server.host, config.server.port), Handler)
     previous_handlers = {}
+    shutdown_started = False
 
     def stop(signum, frame):
-        httpd.shutdown()
+        nonlocal shutdown_started
+        if shutdown_started:
+            return
+        shutdown_started = True
+        print("llm-epn: shutting down", file=sys.stderr, flush=True)
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         previous_handlers[sig] = signal.getsignal(sig)
