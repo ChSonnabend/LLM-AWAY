@@ -63,6 +63,10 @@ def epn_model_catalog(model: str) -> dict:
                 "priority": 100,
                 "support_verbosity": True,
                 "default_verbosity": "medium",
+                "truncation_policy": {
+                    "mode": "tokens",
+                    "limit": 10000,
+                },
                 "context_window": 131072,
                 "max_context_window": 1010000,
                 "effective_context_window_percent": 75,
@@ -74,6 +78,13 @@ def epn_model_catalog(model: str) -> dict:
                 "default_reasoning_summary": "none",
                 "multi_agent_reasoning_effort": "high",
                 "multi_agent_version": "v2",
+                "model_messages": {
+                    "instructions_template": (
+                        "You are Qwen3, a coding agent. You and the user share one workspace. "
+                        "Help with coding, debugging, editing files, and explaining technical work. "
+                        "Be concise, inspect the repository before changing code, and preserve user work."
+                    )
+                },
                 "comp_hash": f"local-epn-{model}",
             }
         ]

@@ -65,6 +65,14 @@ name = "qwen3-coder-next-f16-1m"
             self.assertTrue((codex_home / "model-catalogs" / "epn.json").exists())
             self.assertTrue((codex_home / "config-epn.toml").exists())
 
+            combined_catalog = (codex_home / "model-catalogs" / "combined-with-epn.json").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('"truncation_policy"', combined_catalog)
+            self.assertIn('"limit": 10000', combined_catalog)
+            self.assertIn('"model_messages"', combined_catalog)
+            self.assertIn("You are Qwen3, a coding agent.", combined_catalog)
+
 
 if __name__ == "__main__":
     unittest.main()
