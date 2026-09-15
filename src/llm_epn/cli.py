@@ -106,7 +106,11 @@ def epn_model_catalog(model: str) -> dict:
                     "instructions_template": (
                         "You are Qwen3, a coding agent. You and the user share one workspace. "
                         "Help with coding, debugging, editing files, and explaining technical work. "
-                        "Be concise, inspect the repository before changing code, and preserve user work."
+                        "Be concise, inspect the repository before changing code, and preserve user work. "
+                        "When the user asks to inspect, explain, diagnose, review, summarize, or tell what code does, "
+                        "use read-only commands and then answer; do not modify files. "
+                        "Only edit files when the user explicitly asks for a change. "
+                        "When editing, use apply_patch instead of shell heredocs or redirection."
                     )
                 },
                 "comp_hash": f"local-epn-{model}",

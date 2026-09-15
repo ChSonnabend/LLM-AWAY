@@ -58,6 +58,8 @@ class CliTests(unittest.TestCase):
         self.assertFalse(model["include_skills_usage_instructions"])
         self.assertEqual(model["truncation_policy"], {"mode": "tokens", "limit": 10000})
         self.assertIn("You are Qwen3, a coding agent.", model["model_messages"]["instructions_template"])
+        self.assertIn("use read-only commands and then answer", model["model_messages"]["instructions_template"])
+        self.assertIn("use apply_patch instead of shell heredocs", model["model_messages"]["instructions_template"])
 
     def test_remove_toml_table_removes_nested_provider_tables(self):
         text = """
@@ -130,6 +132,8 @@ account_email = "sonnabendch@gmail.com"
             self.assertIn('"limit": 10000', combined_catalog)
             self.assertIn('"model_messages"', combined_catalog)
             self.assertIn("You are Qwen3, a coding agent.", combined_catalog)
+            self.assertIn("use read-only commands and then answer", combined_catalog)
+            self.assertIn("use apply_patch instead of shell heredocs", combined_catalog)
 
 
 if __name__ == "__main__":

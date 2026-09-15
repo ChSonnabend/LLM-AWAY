@@ -54,6 +54,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("instructions: Be careful.", prompt)
         self.assertIn("- exec: Run a shell command.", prompt)
         self.assertIn("Do not invent tools such as read_file", prompt)
+        self.assertIn("use read-only commands and then answer", prompt)
+        self.assertIn("use apply_patch instead of shell heredocs", prompt)
         self.assertIn("user: Inspect files", prompt)
 
     def test_responses_request_prompt_defaults_to_codex_exec_command(self):
@@ -61,6 +63,7 @@ class ProtocolTests(unittest.TestCase):
 
         self.assertIn("- exec_command: run a shell command. Parameters: cmd", prompt)
         self.assertIn("prefer the shell tool", prompt)
+        self.assertIn("use read-only commands and then answer", prompt)
 
     def test_models_list(self):
         data = models_list("qwen3-coder-next-f16-1m")

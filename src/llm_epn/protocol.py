@@ -100,6 +100,8 @@ def tools_to_prompt(tools) -> str:
         "Use only the tool names listed here. Emit tool calls as:",
         "<tool_call><function=tool_name><parameter=param_name>value</parameter></function></tool_call>",
         "Do not invent tools such as read_file unless they are listed. For file reads, directory listing, and search, prefer the shell tool with commands like cat, sed, ls, and rg.",
+        "If the user asks to inspect, explain, diagnose, review, summarize, or tell what code does, use read-only commands and then answer; do not modify files.",
+        "Only edit files when the user explicitly asks for a change. When editing, use apply_patch instead of shell heredocs or redirection.",
     ]
 
     names = available_tool_names(tools)
