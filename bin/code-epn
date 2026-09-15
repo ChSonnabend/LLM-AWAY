@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+config="${LLM_EPN_CONFIG:-$repo_dir/config/epn.toml}"
+host="${LLM_EPN_HOST:-127.0.0.1}"
+port="${LLM_EPN_PORT:-8765}"
+log_dir="${XDG_RUNTIME_DIR:-/tmp}"
+log_path="${LLM_EPN_PROVIDER_LOG:-$log_dir/llm-epn-provider-${USER:-user}.log}"
+provider_pid=""
+
+healthcheck() {
+    python - "$host" "$port" <<'PY' >/dev/null 2>&1
+import sys
+from urllib.request import urlopen
+
+host, port = sys.argv[1], sys.argv[2]
+with urlopen(f"http://{host}:{port}/health", timeout=1) as response:
+    sys.exit(0 if response.status < 500 else 1)
+PY
+}
+
+cleanup() {
+    if [[ -n "$provider_pid" ]] && kill -0 "$provider_pid" 2>/dev/null; then
+        kill "$provider_pid" 2>/dev/null || true
+        wait "$provider_pid" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+if ! healthcheck; then
+    echo "llm-epn: starting local provider on http://$host:$port (log: $log_path)" >&2
+    "$repo_dir/bin/llm-epn" serve --config "$config" >"$log_path" 2>&1 &
+    provider_pid=$!
+    for _ in $(seq 1 50); do
+        if healthcheck; then
+            break
+        fi
+        if ! kill -0 "$provider_pid" 2>/dev/null; then
+            echo "llm-epn: provider exited during startup; log follows:" >&2
+            sed -n '1,200p' "$log_path" >&2 || true
+            exit 1
+        fi
+        sleep 0.1
+    done
+    if ! healthcheck; then
+        echo "llm-epn: provider did not become healthy; log follows:" >&2
+        sed -n '1,200p' "$log_path" >&2 || true
+        exit 1
+    fi
+else
+    echo "llm-epn: reusing existing local provider on http://$host:$port" >&2
+fi
+
+if [[ "$#" -gt 0 ]]; then
+    code --wait "$@"
+else
+    code --wait .
+fi

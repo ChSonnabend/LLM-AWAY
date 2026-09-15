@@ -1,0 +1,13 @@
+[project]
+name = "llm-epn"
+version = "0.1.0"
+description = "Codex local provider proxy for EPN Slurm-hosted llama.cpp inference"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+llm-epn = "llm_epn.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

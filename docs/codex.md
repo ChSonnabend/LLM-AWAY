@@ -1,0 +1,47 @@
+# Codex Integration
+
+Install the local Python environment, launchers, Codex config, and model catalog with:
+
+```bash
+./scripts/init-local.sh
+```
+
+Run the same command on any Remote-SSH development host where the VS Code Codex extension should use EPN. Codex reads config on the host where its extension/backend process runs, so each remote host needs its own `~/.codex` setup.
+
+The generated profile uses:
+
+```toml
+[model_providers.epn]
+base_url = "http://127.0.0.1:8765/v1"
+wire_api = "responses"
+
+model_provider = "epn"
+model = "qwen3-coder-next-f16-1m"
+model_reasoning_effort = "high"
+model_catalog_json = "/home/chris/.codex/model-catalogs/epn.json"
+```
+
+For global model pickers, `~/.codex/config.toml` can point `model_catalog_json` at
+`~/.codex/model-catalogs/combined-with-epn.json`, which contains the normal Codex model catalog plus
+`qwen3-coder-next-f16-1m`.
+
+Run:
+
+```bash
+epn-agent
+./bin/codex-epn
+./bin/code-epn /path/to/project
+codex --no-alt-screen --profile epn
+codex exec --profile epn "Explain this repository"
+```
+
+Notes:
+
+- `epn-agent` is the one-command startup path for already-open local or Remote-SSH VS Code windows.
+- `./bin/codex-epn` starts the local provider for the Codex session and stops it when Codex exits. With `gateway.cancel_on_exit = true`, that also cancels the Slurm job used by that provider.
+- `./bin/code-epn` starts the local provider when needed and opens VS Code with `--wait`, so the provider it started is stopped when that VS Code window closes.
+- The launcher starts a fresh local provider by default so `/exit` and Ctrl+C can cleanly stop the provider and cancel the remote Slurm job. Set `LLM_EPN_RESTART_PROVIDER=0` to reuse an existing local provider.
+- Direct `codex --profile epn` still works, but only if `llm-epn serve` is already running.
+- Keep the `epn` profile selected when using the EPN model. The catalog controls visibility; the profile controls provider routing to `http://127.0.0.1:8765/v1`.
+- The proxy implements plain text Responses streaming events. If Codex requires tool-call structures for a specific workflow, extend `src/llm_epn/protocol.py`.
+- Official OpenAI documentation describes `codex exec` for automation and `config.toml` model providers/profiles; this repo uses those surfaces rather than wrapping Codex internals.

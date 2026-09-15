@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+config="${LLM_EPN_CONFIG:-$repo_dir/config/epn.toml}"
+host="${LLM_EPN_HOST:-127.0.0.1}"
+port="${LLM_EPN_PORT:-8765}"
+log_dir="${XDG_RUNTIME_DIR:-/tmp}"
+log_path="${LLM_EPN_PROVIDER_LOG:-$log_dir/llm-epn-provider-${USER:-user}.log}"
+provider_pid=""
+# Default to owning the provider so /exit and Ctrl+C cleanly tear down the Slurm job.
+restart_provider="${LLM_EPN_RESTART_PROVIDER:-1}"
+
+healthcheck() {
+    python - "$host" "$port" <<'PY' >/dev/null 2>&1
+import sys
+from urllib.request import urlopen
+
+host, port = sys.argv[1], sys.argv[2]
+with urlopen(f"http://{host}:{port}/health", timeout=1) as response:
+    sys.exit(0 if response.status < 500 else 1)
+PY
+}
+
+cleanup() {
+    if [[ -n "$provider_pid" ]] && kill -0 "$provider_pid" 2>/dev/null; then
+        kill "$provider_pid" 2>/dev/null || true
+        wait "$provider_pid" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+stop_existing_provider() {
+    python - <<'PY'
+import os
+import signal
+import time
+
+needles = ("llm-epn serve", "llm_epn.cli serve")
+pids = []
+for pid in os.listdir("/proc"):
+    if not pid.isdigit() or int(pid) == os.getpid():
+        continue
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            cmdline = handle.read().replace(b"\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        continue
+    if any(needle in cmdline for needle in needles):
+        pids.append(int(pid))
+
+for pid in pids:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+deadline = time.time() + 5
+while time.time() < deadline and pids:
+    alive = []
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+            alive.append(pid)
+        except OSError:
+            pass
+    pids = alive
+    if pids:
+        time.sleep(0.1)
+
+for pid in pids:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+PY
+}
+
+if [[ "$restart_provider" == "1" ]] && healthcheck; then
+    echo "llm-epn: stopping existing local provider on http://$host:$port" >&2
+    stop_existing_provider
+    sleep 0.2
+fi
+
+if ! healthcheck; then
+    echo "llm-epn: starting local provider on http://$host:$port (log: $log_path)" >&2
+    "$repo_dir/bin/llm-epn" serve --config "$config" >"$log_path" 2>&1 &
+    provider_pid=$!
+    for _ in $(seq 1 50); do
+        if healthcheck; then
+            break
+        fi
+        if ! kill -0 "$provider_pid" 2>/dev/null; then
+            echo "llm-epn: provider exited during startup; log follows:" >&2
+            sed -n '1,200p' "$log_path" >&2 || true
+            exit 1
+        fi
+        sleep 0.1
+    done
+    if ! healthcheck; then
+        echo "llm-epn: provider did not become healthy; log follows:" >&2
+        sed -n '1,200p' "$log_path" >&2 || true
+        exit 1
+    fi
+else
+    echo "llm-epn: reusing existing local provider on http://$host:$port" >&2
+fi
+
+if [[ -t 1 ]]; then
+    codex --no-alt-screen --profile epn "$@"
+elif [[ -r /dev/tty && -w /dev/tty ]]; then
+    exec </dev/tty >/dev/tty 2>&1
+    codex --no-alt-screen --profile epn "$@"
+else
+    echo "llm-epn: stdout is not a terminal and /dev/tty is unavailable" >&2
+    exit 1
+fi

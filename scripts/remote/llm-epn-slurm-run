@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    echo "Usage: llm-epn-slurm-run --json < payload.json" >&2
+}
+
+if [[ "${1:-}" != "--json" ]]; then
+    usage
+    exit 2
+fi
+
+payload="$(cat)"
+
+python3 - "$payload" <<'PY'
+import json
+import shlex
+import subprocess
+import sys
+
+payload = json.loads(sys.argv[1])
+llama = payload["llamacpp"]
+
+def q(value):
+    return shlex.quote(str(value))
+
+def rocm_arch_command():
+    arch = llama.get("rocm_arch", "auto")
+    if arch != "auto":
+        return "export LLAMACPP_ROCM_ARCH=" + q(arch)
+    return (
+        "case $(hostname -s) in "
+        "epn[0-1][0-9][0-9]|epn2[0-6][0-9]|epn27[0-9]) export LLAMACPP_ROCM_ARCH=gfx906 ;; "
+        "epn28[0-9]|epn29[0-9]|epn3[0-4][0-9]) export LLAMACPP_ROCM_ARCH=gfx908 ;; "
+        "*) export LLAMACPP_ROCM_ARCH=$(rocminfo 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9][0-9]*' || echo gfx908) ;; "
+        "esac"
+    )
+
+def progress_static(message):
+    return "echo " + q("llm-epn: " + message) + " >&2"
+
+def node_options():
+    partition = payload.get("partition", "prod")
+    opts = ["srun"]
+    if payload.get("exclusive", True):
+        opts.append("--exclusive")
+    opts.extend(["-p", partition])
+
+    custom = payload.get("custom_options") or []
+    node_class = payload.get("node_class", "")
+    if custom:
+        opts.extend(custom)
+    elif node_class == "mi50":
+        # Match the user's shell function: epn000..epn278.
+        opts.extend(["-w", "$(printf 'epn%03d' $(( RANDOM % 279 )))"])
+    elif node_class == "mi100":
+        # Match the user's shell function: epn280..epn349 and export marker.
+        opts.extend(["-w", "$(printf 'epn%03d' $(( 280 + RANDOM % 70 )))", "--export=ALL,EPN_NODE_MI100=1"])
+    elif node_class:
+        opts.extend(["-w", node_class])
+    return opts
+
+setup = [
+    'echo "llm-epn: allocated $(hostname -s)" >&2',
+    f"cd {q(payload['remote_workdir'])}",
+    f"export LLAMACPP_BACKEND={q(llama.get('backend', 'rocm'))}",
+    rocm_arch_command(),
+    'echo "llm-epn: using ROCm arch $LLAMACPP_ROCM_ARCH" >&2',
+    f"export LLAMACPP_VISIBLE_DEVICES={q(llama.get('visible_devices', '0,1,2,3,4,5,6,7'))}",
+]
+if llama.get("build_before_run"):
+    setup.append(progress_static("building llama.cpp"))
+    setup.append("bin/build-llama >&2")
+if llama.get("show_config_before_run"):
+    setup.append(progress_static("showing config"))
+    setup.append("bin/show-config >&2")
+if llama.get("list_devices_before_run"):
+    setup.append(progress_static("listing devices"))
+    setup.append("bin/list-devices >&2")
+
+run = [llama.get("run_cli", "bin/run-cli"), "-p", payload["prompt"]]
+run.extend(llama.get("extra_args") or [])
+setup.append(progress_static("running inference"))
+timeout_seconds = int(llama.get("inference_timeout_seconds", 300))
+run_shell = " ".join(q(arg) for arg in run) + " < /dev/null"
+if timeout_seconds > 0:
+    timed = "timeout --foreground " + q(timeout_seconds) + " /bin/bash -lc " + q(run_shell)
+    setup.append(
+        timed
+        + " || { status=$?; "
+        + "if [ \"$status\" -eq 124 ]; then echo "
+        + q("llm-epn: inference timed out; run_cli may be interactive/REPL-only")
+        + " >&2; fi; exit \"$status\"; }"
+    )
+else:
+    setup.append(run_shell)
+inner = " && ".join(setup)
+
+srun = node_options()
+cmd = " ".join(srun) + " /bin/bash -lc " + q(inner)
+sys.stderr.write("llm-epn: submitting Slurm job\n")
+sys.stderr.flush()
+if payload.get("debug"):
+    sys.stderr.write("llm-epn remote command: " + cmd + "\n")
+    sys.stderr.flush()
+
+completed = subprocess.Popen(
+    cmd,
+    shell=True,
+    stdout=subprocess.PIPE,
+    stderr=None,
+    universal_newlines=True,
+)
+stdout, _ = completed.communicate()
+if completed.returncode:
+    sys.exit(completed.returncode)
+sys.stdout.write(stdout)
+PY
