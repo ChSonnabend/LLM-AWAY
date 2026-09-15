@@ -151,14 +151,6 @@ class ProviderHandler(BaseHTTPRequestHandler):
 
     def write_response_stream(self, response: dict, sequence_number: int = 0, include_created: bool = True) -> None:
         output = response["output"][0]
-        content = output["content"][0]
-        text = content.get("text", "")
-        common = {
-            "response_id": response["id"],
-            "output_index": 0,
-            "item_id": output["id"],
-            "content_index": 0,
-        }
 
         def event_payload(event: str, payload: dict) -> dict:
             nonlocal sequence_number
@@ -174,6 +166,21 @@ class ProviderHandler(BaseHTTPRequestHandler):
         if include_created:
             self.begin_sse()
             self.write_sse("response.created", event_payload("response.created", {"response": created}))
+        if output.get("type") == "function_call":
+            self.write_function_call_stream(response, output, sequence_number, event_payload)
+            return
+        self.write_message_stream(response, output, event_payload)
+        self.write_sse("response.completed", event_payload("response.completed", {"response": response}))
+
+    def write_message_stream(self, response: dict, output: dict, event_payload) -> None:
+        content = output["content"][0]
+        text = content.get("text", "")
+        common = {
+            "response_id": response["id"],
+            "output_index": 0,
+            "item_id": output["id"],
+            "content_index": 0,
+        }
         self.write_sse(
             "response.output_item.added",
             event_payload(
@@ -210,6 +217,42 @@ class ProviderHandler(BaseHTTPRequestHandler):
         self.write_sse(
             "response.content_part.done",
             event_payload("response.content_part.done", {**common, "part": content}),
+        )
+        self.write_sse(
+            "response.output_item.done",
+            event_payload(
+                "response.output_item.done",
+                {"response_id": response["id"], "output_index": 0, "item": output},
+            ),
+        )
+
+    def write_function_call_stream(self, response: dict, output: dict, sequence_number: int, event_payload) -> None:
+        added_item = dict(output)
+        added_item["status"] = "in_progress"
+        added_item["arguments"] = ""
+        arguments = output.get("arguments", "")
+        common = {
+            "response_id": response["id"],
+            "item_id": output["id"],
+            "output_index": 0,
+            "call_id": output["call_id"],
+            "name": output["name"],
+        }
+        self.write_sse(
+            "response.output_item.added",
+            event_payload(
+                "response.output_item.added",
+                {"response_id": response["id"], "output_index": 0, "item": added_item},
+            ),
+        )
+        if arguments:
+            self.write_sse(
+                "response.function_call_arguments.delta",
+                event_payload("response.function_call_arguments.delta", {**common, "delta": arguments}),
+            )
+        self.write_sse(
+            "response.function_call_arguments.done",
+            event_payload("response.function_call_arguments.done", {**common, "arguments": arguments}),
         )
         self.write_sse(
             "response.output_item.done",

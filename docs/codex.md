@@ -43,5 +43,5 @@ Notes:
 - The launcher starts a fresh local provider by default so `/exit` and Ctrl+C can cleanly stop the provider and cancel the remote Slurm job. Set `LLM_EPN_RESTART_PROVIDER=0` to reuse an existing local provider.
 - Direct `codex --profile epn` still works, but only if `llm-epn serve` is already running.
 - Keep the `epn` profile selected when using the EPN model. The catalog controls visibility; the profile controls provider routing to `http://127.0.0.1:8765/v1`.
-- The proxy implements plain text Responses streaming events. If Codex requires tool-call structures for a specific workflow, extend `src/llm_epn/protocol.py`.
+- The proxy implements plain text Responses streaming events and translates Qwen's `<tool_call> function=... <parameter=...>` markup into Responses `function_call` items so Codex can execute tools instead of displaying the markup as text.
 - Official OpenAI documentation describes `codex exec` for automation and `config.toml` model providers/profiles; this repo uses those surfaces rather than wrapping Codex internals.
