@@ -49,8 +49,9 @@ class ProviderHandler(BaseHTTPRequestHandler):
 
     def handle_chat(self, payload: dict) -> None:
         model = payload.get("model") or self.config.model.name
-        prompt = self.compact_prompt(messages_to_prompt(payload.get("messages", [])))
-        text = self.backend.infer(InferenceRequest(prompt=prompt, model=model))
+        raw_prompt = messages_to_prompt(payload.get("messages", []))
+        prompt = self.compact_prompt(raw_prompt)
+        text = self.backend.infer(InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=len(raw_prompt)))
         if payload.get("stream"):
             self.write_chat_stream(model, text)
             return
@@ -58,11 +59,12 @@ class ProviderHandler(BaseHTTPRequestHandler):
 
     def handle_responses(self, payload: dict) -> None:
         model = payload.get("model") or self.config.model.name
-        prompt = self.compact_prompt(responses_input_to_prompt(payload.get("input", "")))
+        raw_prompt = responses_input_to_prompt(payload.get("input", ""))
+        prompt = self.compact_prompt(raw_prompt)
         if payload.get("stream"):
-            self.handle_responses_stream(model, prompt)
+            self.handle_responses_stream(model, prompt, len(raw_prompt))
             return
-        text = self.backend.infer(InferenceRequest(prompt=prompt, model=model))
+        text = self.backend.infer(InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=len(raw_prompt)))
         response = response_object(model, text)
         self.write_json(response)
 
@@ -81,11 +83,14 @@ class ProviderHandler(BaseHTTPRequestHandler):
         if head_chars + tail_chars >= limit:
             tail_chars = max(0, limit - head_chars)
         omitted = len(prompt) - head_chars - tail_chars
-        return (
-            prompt[:head_chars]
-            + f"\n\n[llm-epn: compacted {omitted} characters from the middle of the Codex context]\n\n"
-            + prompt[-tail_chars:]
-        )
+        marker = f"\n\n[llm-epn: compacted {omitted} characters from the middle of the Codex context]\n\n"
+        if len(marker) >= limit:
+            return prompt[-limit:]
+
+        available = limit - len(marker)
+        kept_head = min(head_chars, available)
+        kept_tail = max(0, available - kept_head)
+        return prompt[:kept_head] + marker + prompt[-kept_tail:]
 
     def write_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -117,7 +122,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
         self.write_sse("message", chat_completion_chunk(model, "", finish=True))
         self.write_sse("message", "[DONE]")
 
-    def handle_responses_stream(self, model: str, prompt: str) -> None:
+    def handle_responses_stream(self, model: str, prompt: str, raw_prompt_chars: int | None = None) -> None:
         response_id = f"resp_{uuid.uuid4().hex}"
         created = {
             "id": response_id,
@@ -136,7 +141,9 @@ class ProviderHandler(BaseHTTPRequestHandler):
             {"type": "response.created", "sequence_number": 0, "response": created},
         )
         try:
-            text = self.backend.infer(InferenceRequest(prompt=prompt, model=model))
+            text = self.backend.infer(
+                InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=raw_prompt_chars)
+            )
         except Exception as exc:
             failed = dict(created)
             failed["status"] = "failed"

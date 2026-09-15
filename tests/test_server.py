@@ -5,6 +5,24 @@ import sys
 import textwrap
 import unittest
 
+from llm_epn.config import AppConfig, GatewayConfig
+from llm_epn.server import ProviderHandler
+
+
+class CompactPromptTests(unittest.TestCase):
+    def test_compacted_prompt_stays_within_limit(self):
+        class Handler(ProviderHandler):
+            pass
+
+        Handler.config = AppConfig(
+            gateway=GatewayConfig(max_prompt_chars=120, prompt_keep_head_chars=20, prompt_keep_tail_chars=80)
+        )
+
+        prompt = Handler.compact_prompt(Handler, "a" * 200)
+
+        self.assertLessEqual(len(prompt), 120)
+        self.assertIn("compacted", prompt)
+
 
 class ServerTests(unittest.TestCase):
     def test_server_exits_on_sigint(self):

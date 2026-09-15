@@ -23,6 +23,7 @@ class BackendError(RuntimeError):
 class InferenceRequest:
     prompt: str
     model: str
+    raw_prompt_chars: int | None = None
 
 
 class Backend:
@@ -129,7 +130,12 @@ class SlurmServerBackend(Backend):
             f"ready={ready_at - started:.2f}s "
             f"completion={completed_at - ready_at:.2f}s "
             f"total={completed_at - started:.2f}s "
-            f"prompt_chars={len(request.prompt)}",
+            f"prompt_chars={len(request.prompt)}"
+            + (
+                f" raw_prompt_chars={request.raw_prompt_chars}"
+                if request.raw_prompt_chars is not None and request.raw_prompt_chars != len(request.prompt)
+                else ""
+            ),
             file=sys.stderr,
         )
         return text
