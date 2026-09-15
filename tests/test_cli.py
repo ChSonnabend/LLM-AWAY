@@ -3,10 +3,22 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from llm_epn.cli import install_codex_config, remove_toml_table
+from llm_epn.cli import epn_model_catalog, install_codex_config, remove_toml_table
 
 
 class CliTests(unittest.TestCase):
+    def test_epn_model_catalog_advertises_coding_agent_mode(self):
+        catalog = epn_model_catalog("qwen3-coder-next-f16-1m")
+        model = catalog["models"][0]
+
+        self.assertEqual(model["tool_mode"], "code_mode_only")
+        self.assertTrue(model["use_responses_lite"])
+        self.assertTrue(model["include_apps_usage_instructions"])
+        self.assertTrue(model["include_plugin_usage_instructions"])
+        self.assertFalse(model["include_skills_usage_instructions"])
+        self.assertEqual(model["truncation_policy"], {"mode": "tokens", "limit": 10000})
+        self.assertIn("You are Qwen3, a coding agent.", model["model_messages"]["instructions_template"])
+
     def test_remove_toml_table_removes_nested_provider_tables(self):
         text = """
 model = "gpt-5.5"
