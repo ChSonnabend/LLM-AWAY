@@ -23,7 +23,7 @@ def print_codex_config(config_path: str) -> None:
     print(
         f'''# Add this provider block to ~/.codex/config.toml.
 [model_providers.epn]
-name = "{codex_provider_display_name()}"
+name = "{codex_provider_display_name(cfg.codex.provider_display_name)}"
 base_url = "{base_url}"
 wire_api = "responses"
 
@@ -40,9 +40,10 @@ def codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
 
 
-def codex_provider_display_name() -> str:
+def codex_provider_display_name(configured_name: str = "") -> str:
     return (
         os.environ.get("LLM_EPN_CODEX_PROVIDER_NAME")
+        or configured_name
         or os.environ.get("USER")
         or os.environ.get("USERNAME")
         or "EPN"
@@ -210,7 +211,7 @@ def install_codex_config(config_path: str, activate: bool = True) -> None:
     provider_block = f'''
 # LLM EPN provider
 [model_providers.epn]
-name = "{codex_provider_display_name()}"
+name = "{codex_provider_display_name(cfg.codex.provider_display_name)}"
 base_url = "{base_url}"
 wire_api = "responses"
 '''

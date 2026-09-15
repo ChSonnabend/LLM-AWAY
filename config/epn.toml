@@ -5,6 +5,11 @@ port = 8765
 [model]
 name = "qwen3-coder-next-f16-1m"
 
+[codex]
+provider_display_name = "Christian Sonnabend"
+# ChatGPT/Codex account sign-in is managed by the app; this documents the intended account.
+account_email = "sonnabendch@gmail.com"
+
 [backend]
 # "slurm_server" starts/reuses a persistent llama.cpp server allocation.
 # "slurm" keeps the older one-shot run-cli diagnostic path.

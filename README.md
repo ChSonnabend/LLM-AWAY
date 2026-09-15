@@ -110,7 +110,7 @@ Traffic to the local model is bounded by `gateway.max_prompt_chars`, `gateway.pr
 
 To use this profile from Codex CLI, VS Code, or the Codex desktop app, select the `epn` profile/model after starting the local gateway. User-level provider config lives in `~/.codex/config.toml`, while profile overrides live in `~/.codex/epn.config.toml`; this matches the current OpenAI Docs profile format. A combined model catalog at `~/.codex/model-catalogs/combined-with-epn.json` makes the EPN model visible to clients that read the global model catalog, but provider routing still requires the `epn` profile or another config that sets `model_provider = "epn"`.
 
-The generated provider display name defaults to your local `$USER` value so app chrome keeps showing a user-like label instead of `EPN Slurm llama.cpp`. Set `LLM_EPN_CODEX_PROVIDER_NAME` before running `./scripts/init-local.sh` if you want a different label.
+The generated provider display name comes from `[codex].provider_display_name` in `config/epn.toml`, currently `Christian Sonnabend`, so app chrome keeps showing your name instead of `EPN Slurm llama.cpp`. The `[codex].account_email` value documents the intended ChatGPT/Codex account, but app account sign-in is still managed by the ChatGPT app. Set `LLM_EPN_CODEX_PROVIDER_NAME` before running `./scripts/init-local.sh` if you want a temporary label override.
 
 For an EPN-focused VS Code session, make the EPN provider/model active in `~/.codex/config.toml`, then launch:
 
@@ -142,7 +142,7 @@ llm-epn serve --config /path/to/LLM_EPN/config/epn.toml
 - `bin/codex-epn`: Codex launcher that owns the local provider lifecycle.
 - `bin/code-epn`: VS Code launcher that starts the local provider before opening the editor.
 - `src/llm_epn/`: stdlib Python proxy and backend code.
-- `scripts/init-local.sh`: creates a virtual environment and prints Codex setup.
+- `scripts/init-local.sh`: installs launcher links and writes Codex setup.
 - `scripts/init-remote.sh`: copies the remote Slurm runner to `epnh`.
 - `scripts/remote/llm-epn-serverctl`: remote persistent server controller invoked over SSH.
 - `scripts/remote/llm-epn-slurm-run`: older one-shot diagnostic runner invoked over SSH.

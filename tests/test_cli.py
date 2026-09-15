@@ -30,6 +30,23 @@ class CliTests(unittest.TestCase):
             else:
                 os.environ["USERNAME"] = previous_username
 
+    def test_codex_provider_display_name_uses_config_before_user(self):
+        previous_name = os.environ.get("LLM_EPN_CODEX_PROVIDER_NAME")
+        previous_user = os.environ.get("USER")
+        os.environ.pop("LLM_EPN_CODEX_PROVIDER_NAME", None)
+        os.environ["USER"] = "alice"
+        try:
+            self.assertEqual(codex_provider_display_name("Christian Sonnabend"), "Christian Sonnabend")
+        finally:
+            if previous_name is None:
+                os.environ.pop("LLM_EPN_CODEX_PROVIDER_NAME", None)
+            else:
+                os.environ["LLM_EPN_CODEX_PROVIDER_NAME"] = previous_name
+            if previous_user is None:
+                os.environ.pop("USER", None)
+            else:
+                os.environ["USER"] = previous_user
+
     def test_epn_model_catalog_advertises_coding_agent_mode(self):
         catalog = epn_model_catalog("qwen3-coder-next-f16-1m")
         model = catalog["models"][0]
@@ -75,6 +92,10 @@ port = 8765
 
 [model]
 name = "qwen3-coder-next-f16-1m"
+
+[codex]
+provider_display_name = "Christian Sonnabend"
+account_email = "sonnabendch@gmail.com"
 """.lstrip(),
                 encoding="utf-8",
             )
@@ -95,7 +116,7 @@ name = "qwen3-coder-next-f16-1m"
             self.assertIn('model = "qwen3-coder-next-f16-1m"', active_config)
             self.assertIn('model_provider = "epn"', active_config)
             self.assertIn("[model_providers.epn]", active_config)
-            self.assertIn('name = "', active_config)
+            self.assertIn('name = "Christian Sonnabend"', active_config)
             self.assertNotIn('name = "EPN Slurm llama.cpp"', active_config)
             self.assertIn('base_url = "http://127.0.0.1:8765/v1"', active_config)
             self.assertIn('model_reasoning_effort = "high"', profile)

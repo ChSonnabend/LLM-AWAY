@@ -87,6 +87,12 @@ class LlamaCppConfig:
 
 
 @dataclass(frozen=True)
+class CodexConfig:
+    provider_display_name: str = ""
+    account_email: str = ""
+
+
+@dataclass(frozen=True)
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -95,6 +101,7 @@ class AppConfig:
     slurm: SlurmConfig = field(default_factory=SlurmConfig)
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
     llamacpp: LlamaCppConfig = field(default_factory=LlamaCppConfig)
+    codex: CodexConfig = field(default_factory=CodexConfig)
     backend_type: str = "slurm_server"
 
 
@@ -151,5 +158,6 @@ def load_config(path: str | Path) -> AppConfig:
         slurm=SlurmConfig(**_merge(SlurmConfig().__dict__, raw.get("slurm", {}))),
         gateway=GatewayConfig(**_merge(GatewayConfig().__dict__, raw.get("gateway", {}))),
         llamacpp=LlamaCppConfig(**_merge(LlamaCppConfig().__dict__, raw.get("llamacpp", {}))),
+        codex=CodexConfig(**_merge(CodexConfig().__dict__, raw.get("codex", {}))),
         backend_type=backend.get("type", "slurm_server"),
     )
