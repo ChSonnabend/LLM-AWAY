@@ -287,14 +287,20 @@ class SlurmServerBackend(Backend):
                 return True
         return False
 
-    def completion(self, prompt: str) -> str:
+    def completion_payload(self, prompt: str, max_tokens: int | None = None) -> bytes:
+        if max_tokens is None:
+            max_tokens = self.config.llamacpp.max_tokens
         payload = json.dumps(
             {
                 "model": self.config.model.name,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": self.config.llamacpp.max_tokens,
+                "max_tokens": max_tokens,
             }
         ).encode("utf-8")
+        return payload
+
+    def completion(self, prompt: str, max_tokens: int | None = None) -> str:
+        payload = self.completion_payload(prompt, max_tokens=max_tokens)
         request = Request(
             self.local_url("/v1/chat/completions"),
             data=payload,

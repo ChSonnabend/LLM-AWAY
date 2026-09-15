@@ -31,6 +31,8 @@ Start the local provider and warm the remote Slurm server:
 epn-agent
 ```
 
+Warmup waits for the tunneled llama.cpp server to become reachable, then sends a one-token chat completion so the model is loaded into VRAM before the first Codex turn.
+
 The default config uses the remote wrapper's managed Qwen model:
 
 ```toml
@@ -114,7 +116,7 @@ For an EPN-focused VS Code session, make the EPN provider/model active in `~/.co
 ./bin/code-epn /path/to/project
 ```
 
-The launcher starts the local provider if needed, warms the remote Slurm server, and opens VS Code with `--wait`, so closing that VS Code window also tears down the provider it started.
+The launcher starts the local provider if needed, warms the remote Slurm server with a one-token chat completion, and opens VS Code with `--wait`, so closing that VS Code window also tears down the provider it started.
 
 For an already-open local or Remote-SSH VS Code window, run one command in a terminal on the same host:
 

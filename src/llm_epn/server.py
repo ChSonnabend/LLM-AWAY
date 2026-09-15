@@ -231,6 +231,9 @@ def warm_backend(config: AppConfig, backend: Backend) -> None:
     try:
         print(f"llm-epn: warming backend for model {config.model.name}", file=sys.stderr, flush=True)
         ensure_ready(config.model.name)
+        completion = getattr(backend, "completion", None)
+        if completion is not None:
+            completion("Reply with OK.", max_tokens=1)
         print(f"llm-epn: backend ready for model {config.model.name}", file=sys.stderr, flush=True)
     except Exception as exc:
         print(f"llm-epn: backend warmup failed: {exc}", file=sys.stderr, flush=True)

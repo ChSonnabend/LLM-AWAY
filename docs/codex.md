@@ -37,7 +37,7 @@ codex exec --profile epn "Explain this repository"
 
 Notes:
 
-- `epn-agent` is the one-command startup path for already-open local or Remote-SSH VS Code windows. It starts the local provider and warms the remote Slurm server immediately.
+- `epn-agent` is the one-command startup path for already-open local or Remote-SSH VS Code windows. It starts the local provider and warms the remote Slurm server immediately with a one-token chat completion, which forces llama.cpp to load the model into VRAM before the first Codex turn.
 - `./bin/codex-epn` starts the local provider for the Codex session and stops it when Codex exits. With `gateway.cancel_on_exit = true`, that also cancels the Slurm job used by that provider.
 - `./bin/code-epn` starts the local provider when needed, warms the remote Slurm server, and opens VS Code with `--wait`, so the provider it started is stopped when that VS Code window closes.
 - The launcher starts a fresh local provider by default so `/exit` and Ctrl+C can cleanly stop the provider and cancel the remote Slurm job. Set `LLM_EPN_RESTART_PROVIDER=0` to reuse an existing local provider.
