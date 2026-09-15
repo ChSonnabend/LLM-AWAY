@@ -75,12 +75,25 @@ class ProtocolTests(unittest.TestCase):
             "qwen3-coder-next-f16-1m",
             "<tool_call> function=exec <parameter=command> pwd </parameter> </function>",
         )
-        output = response["output"][0]
+        output = response["output"][1]
 
-        self.assertEqual(response["output_text"], "")
+        self.assertEqual(response["output_text"], "Calling exec.")
+        self.assertEqual(response["output"][0]["type"], "message")
         self.assertEqual(output["type"], "function_call")
         self.assertEqual(output["name"], "exec")
         self.assertEqual(json.loads(output["arguments"]), {"command": "pwd"})
+
+    def test_response_object_preserves_visible_text_before_tool_calls(self):
+        response = response_object(
+            "qwen3-coder-next-f16-1m",
+            "I'll inspect it.\n"
+            "<tool_call><function=read_file><parameter=path>README.md</parameter></function></tool_call>",
+        )
+
+        self.assertEqual(response["output_text"], "I'll inspect it.")
+        self.assertEqual(response["output"][0]["type"], "message")
+        self.assertEqual(response["output"][0]["content"][0]["text"], "I'll inspect it.")
+        self.assertEqual(response["output"][1]["type"], "function_call")
 
     def test_response_object_emits_multiple_function_calls(self):
         response = response_object(
@@ -89,10 +102,10 @@ class ProtocolTests(unittest.TestCase):
             "<tool_call><function=read_file><parameter=path>src/llm_epn/server.py</parameter></function></tool_call>",
         )
 
-        self.assertEqual(response["output_text"], "")
-        self.assertEqual([item["type"] for item in response["output"]], ["function_call", "function_call"])
-        self.assertEqual([item["name"] for item in response["output"]], ["read_file", "read_file"])
-        self.assertEqual(json.loads(response["output"][1]["arguments"]), {"path": "src/llm_epn/server.py"})
+        self.assertEqual(response["output_text"], "Calling read_file (2 calls).")
+        self.assertEqual([item["type"] for item in response["output"]], ["message", "function_call", "function_call"])
+        self.assertEqual([item["name"] for item in response["output"][1:]], ["read_file", "read_file"])
+        self.assertEqual(json.loads(response["output"][2]["arguments"]), {"path": "src/llm_epn/server.py"})
 
     def test_responses_prompt_includes_function_outputs(self):
         prompt = responses_input_to_prompt(

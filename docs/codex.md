@@ -44,4 +44,5 @@ Notes:
 - Direct `codex --profile epn` still works, but only if `llm-epn serve` is already running.
 - Keep the `epn` profile selected when using the EPN model. The catalog controls visibility; the profile controls provider routing to `http://127.0.0.1:8765/v1`.
 - The proxy implements plain text Responses streaming events and translates Qwen's `<tool_call>` markup into Responses `function_call` items so Codex can execute tools instead of displaying the markup as text. It handles both inline calls like `<tool_call> function=exec ...` and nested calls like `<tool_call><function=read_file>...`.
+- When a model answer contains tool calls, the proxy preserves any visible text around those calls. If the answer contains only tool calls, it emits a short progress message such as `Calling read_file (2 calls).` before the hidden `function_call` items.
 - Official OpenAI documentation describes `codex exec` for automation and `config.toml` model providers/profiles; this repo uses those surfaces rather than wrapping Codex internals.

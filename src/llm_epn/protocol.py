@@ -128,8 +128,8 @@ def parse_xml_tool_call(body: str) -> dict | None:
     return None
 
 
-def parse_tool_calls(text: str) -> list[dict]:
-    calls: list[dict] = []
+def tool_call_blocks(text: str) -> list[tuple[int, int, dict]]:
+    blocks: list[tuple[int, int, dict]] = []
     for match in re.finditer(r"<tool_call>\s*(?P<body>.*?)\s*</tool_call>", text, flags=re.DOTALL):
         body = match.group("body").strip()
         if body.startswith("{"):
@@ -137,10 +137,10 @@ def parse_tool_calls(text: str) -> list[dict]:
         else:
             call = parse_xml_tool_call(body)
         if call:
-            calls.append(call)
+            blocks.append((match.start(), match.end(), call))
 
-    if calls:
-        return calls
+    if blocks:
+        return blocks
 
     bare = re.search(
         r"<tool_call>\s*function=(?P<name>[A-Za-z_][\w.-]*)\s*(?P<body>.*?)(?:</function>|$)",
@@ -148,8 +148,58 @@ def parse_tool_calls(text: str) -> list[dict]:
         flags=re.DOTALL,
     )
     if bare:
-        calls.append({"name": bare.group("name"), "arguments": parse_tool_parameters(bare.group("body"))})
-    return calls
+        blocks.append(
+            (
+                bare.start(),
+                bare.end(),
+                {"name": bare.group("name"), "arguments": parse_tool_parameters(bare.group("body"))},
+            )
+        )
+    return blocks
+
+
+def parse_tool_calls(text: str) -> list[dict]:
+    return [call for _, _, call in tool_call_blocks(text)]
+
+
+def visible_tool_text(text: str, blocks: list[tuple[int, int, dict]]) -> str:
+    if not blocks:
+        return text
+
+    chunks = []
+    offset = 0
+    for start, end, _ in blocks:
+        chunks.append(text[offset:start])
+        offset = end
+    chunks.append(text[offset:])
+    visible = re.sub(r"\n{3,}", "\n\n", "".join(chunks)).strip()
+    if visible:
+        return visible
+
+    names = [call["name"] for _, _, call in blocks]
+    unique_names = list(dict.fromkeys(names))
+    if len(blocks) == 1:
+        return f"Calling {names[0]}."
+    if len(unique_names) == 1:
+        return f"Calling {unique_names[0]} ({len(blocks)} calls)."
+    return f"Calling tools ({len(blocks)} calls): {', '.join(unique_names)}."
+
+
+def message_output(text: str, item_id: str | None = None, content_id: str | None = None) -> dict:
+    return {
+        "id": item_id or f"msg_{uuid.uuid4().hex}",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+            {
+                "id": content_id or f"out_{uuid.uuid4().hex}",
+                "type": "output_text",
+                "text": text,
+                "annotations": [],
+            }
+        ],
+    }
 
 
 def parse_tool_call(text: str) -> dict | None:
@@ -199,16 +249,12 @@ def response_object(
     content_id: str | None = None,
 ) -> dict:
     response_id = response_id or f"resp_{uuid.uuid4().hex}"
-    tool_calls = parse_tool_calls(text)
-    if tool_calls:
-        return {
-            "id": response_id,
-            "object": "response",
-            "created_at": int(time.time()),
-            "status": "completed",
-            "model": model,
-            "output_text": "",
-            "output": [
+    blocks = tool_call_blocks(text)
+    if blocks:
+        output_text = visible_tool_text(text, blocks)
+        output = [message_output(output_text, item_id=item_id, content_id=content_id)] if output_text else []
+        output.extend(
+            [
                 {
                     "id": f"fc_{uuid.uuid4().hex}",
                     "type": "function_call",
@@ -217,13 +263,20 @@ def response_object(
                     "name": tool_call["name"],
                     "arguments": json.dumps(tool_call["arguments"]),
                 }
-                for tool_call in tool_calls
-            ],
+                for _, _, tool_call in blocks
+            ]
+        )
+        return {
+            "id": response_id,
+            "object": "response",
+            "created_at": int(time.time()),
+            "status": "completed",
+            "model": model,
+            "output_text": output_text,
+            "output": output,
             "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
         }
 
-    item_id = item_id or f"msg_{uuid.uuid4().hex}"
-    content_id = content_id or f"out_{uuid.uuid4().hex}"
     return {
         "id": response_id,
         "object": "response",
@@ -231,21 +284,6 @@ def response_object(
         "status": "completed",
         "model": model,
         "output_text": text,
-        "output": [
-            {
-                "id": item_id,
-                "type": "message",
-                "status": "completed",
-                "role": "assistant",
-                "content": [
-                    {
-                        "id": content_id,
-                        "type": "output_text",
-                        "text": text,
-                        "annotations": [],
-                    }
-                ],
-            }
-        ],
+        "output": [message_output(text, item_id=item_id, content_id=content_id)],
         "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
     }
