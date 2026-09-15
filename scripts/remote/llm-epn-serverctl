@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    echo "Usage: llm-epn-serverctl ensure|status|cancel --json < payload.json" >&2
+}
+
+cmd="${1:-}"
+shift || true
+if [[ -z "$cmd" || "${1:-}" != "--json" ]]; then
+    usage
+    exit 2
+fi
+
+payload="$(cat)"
+
+python3 - "$cmd" "$payload" <<'PY'
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+
+command = sys.argv[1]
+payload = json.loads(sys.argv[2])
+llama = payload["llamacpp"]
+
+def q(value):
+    return shlex.quote(str(value))
+
+def sanitize(value):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+
+def expand_remote(path):
+    return os.path.expandvars(os.path.expanduser(path))
+
+state_dir = expand_remote(payload["state_dir"])
+os.makedirs(state_dir, exist_ok=True)
+model_name = sanitize(payload.get("model") or "default")
+state_path = os.path.join(state_dir, model_name + ".json")
+host_path = os.path.join(state_dir, model_name + ".host")
+log_path = os.path.join(state_dir, model_name + ".log")
+
+def read_state():
+    try:
+        with open(state_path, "r") as handle:
+            return json.load(handle)
+    except Exception:
+        return {}
+
+def write_state(state):
+    tmp = state_path + ".tmp"
+    with open(tmp, "w") as handle:
+        json.dump(state, handle, sort_keys=True)
+    os.rename(tmp, state_path)
+
+def run_capture(args):
+    return subprocess.run(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+
+def job_active(job_id):
+    if not job_id:
+        return False
+    completed = run_capture(["squeue", "-h", "-j", str(job_id), "-o", "%T"])
+    return completed.returncode == 0 and bool(completed.stdout.strip())
+
+def current_status():
+    state = read_state()
+    active = job_active(state.get("job_id"))
+    if active and os.path.exists(host_path):
+        with open(host_path, "r") as handle:
+            state["host"] = handle.read().strip()
+    elif "host" in state:
+        state.pop("host", None)
+    state["active"] = active
+    state["state_path"] = state_path
+    state["log_path"] = log_path
+    return state
+
+def read_log_since(offset):
+    try:
+        size = os.path.getsize(log_path)
+    except OSError:
+        return {"offset": offset, "data": ""}
+    if offset > size:
+        offset = 0
+    with open(log_path, "r", errors="replace") as handle:
+        handle.seek(offset)
+        data = handle.read()
+        offset = handle.tell()
+    return {"offset": offset, "data": data}
+
+def rocm_arch_command():
+    arch = llama.get("rocm_arch", "auto")
+    if arch != "auto":
+        return "export LLAMACPP_ROCM_ARCH=" + q(arch)
+    return (
+        "case $(hostname -s) in\n"
+        "  epn[0-1][0-9][0-9]|epn2[0-6][0-9]|epn27[0-9]) export LLAMACPP_ROCM_ARCH=gfx906 ;;\n"
+        "  epn28[0-9]|epn29[0-9]|epn3[0-4][0-9]) export LLAMACPP_ROCM_ARCH=gfx908 ;;\n"
+        "  *) export LLAMACPP_ROCM_ARCH=$(rocminfo 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9][0-9]*' || echo gfx908) ;;\n"
+        "esac"
+    )
+
+def server_command():
+    custom = llama.get("server_command") or []
+    if custom:
+        return " ".join(q(arg) for arg in custom)
+
+    model_path = llama.get("model_path") or ""
+    server_cli = llama.get("server_cli", "bin/run-server")
+    if not model_path:
+        args = [server_cli]
+        args.extend(llama.get("server_extra_args") or [])
+        return " ".join(q(arg) for arg in args)
+
+    args = [
+        server_cli,
+        "-m",
+        model_path,
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(payload["server_port"]),
+        "-c",
+        str(llama.get("context_size", 8192)),
+    ]
+    args.extend(llama.get("server_extra_args") or [])
+    return " ".join(q(arg) for arg in args)
+
+def sbatch_options():
+    opts = ["#SBATCH -p " + payload.get("partition", "prod")]
+    if payload.get("exclusive", True):
+        opts.append("#SBATCH --exclusive")
+    node_class = payload.get("node_class", "")
+    custom = payload.get("custom_options") or []
+    if custom:
+        i = 0
+        while i < len(custom):
+            item = str(custom[i])
+            if item.startswith("-") and i + 1 < len(custom) and not str(custom[i + 1]).startswith("-"):
+                opts.append("#SBATCH " + item + " " + str(custom[i + 1]))
+                i += 2
+            else:
+                opts.append("#SBATCH " + item)
+                i += 1
+    elif node_class == "mi50":
+        opts.append("#SBATCH -w " + choose_node("mi50"))
+    elif node_class == "mi100":
+        opts.append("#SBATCH -w " + choose_node("mi100"))
+        opts.append("#SBATCH --export=ALL,EPN_NODE_MI100=1")
+    elif node_class:
+        opts.append("#SBATCH -w " + node_class)
+    return "\n".join(opts)
+
+def choose_node(node_class):
+    ranges = {
+        "mi50": lambda n: 0 <= n <= 279,
+        "mi100": lambda n: 280 <= n <= 349,
+    }
+    completed = run_capture(["sinfo", "-N", "-h", "-p", payload.get("partition", "prod"), "-o", "%N %t"])
+    candidates = []
+    if completed.returncode == 0:
+        for line in completed.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            host, state = parts[0], parts[1]
+            match = re.match(r"epn(\d+)$", host)
+            if not match:
+                continue
+            if state != "idle":
+                continue
+            number = int(match.group(1))
+            if ranges[node_class](number):
+                candidates.append(host)
+    if candidates:
+        return candidates[int(time.time()) % len(candidates)]
+    if node_class == "mi50":
+        return "epn%03d" % (int(time.time()) % 279)
+    return "epn%03d" % (280 + int(time.time()) % 70)
+
+def submit():
+    state = current_status()
+    if state.get("active"):
+        print(json.dumps(state))
+        return
+    try:
+        os.unlink(host_path)
+    except OSError:
+        pass
+
+    workdir = payload["remote_workdir"]
+    script = """#!/usr/bin/env bash
+{sbatch_opts}
+#SBATCH -J llm-epn-{model_name}
+#SBATCH -o {log_q}
+#SBATCH -e {log_q}
+
+set -euo pipefail
+echo "$(hostname -s)" > {host_q}
+cd {workdir_q}
+export LLAMACPP_BACKEND={backend_q}
+{rocm_arch}
+export LLAMACPP_VISIBLE_DEVICES={devices_q}
+export MODEL_NAME={model_name_q}
+export LLAMACPP_HOST=0.0.0.0
+export LLAMACPP_PORT={server_port_q}
+echo "llm-epn: server job on $(hostname -s), ROCm arch $LLAMACPP_ROCM_ARCH" >&2
+{build}
+exec {server_cmd}
+""".format(
+        sbatch_opts=sbatch_options(),
+        model_name=model_name,
+        log_q=q(log_path),
+        host_q=q(host_path),
+        workdir_q=q(workdir),
+        backend_q=q(llama.get("backend", "rocm")),
+        rocm_arch=rocm_arch_command(),
+        devices_q=q(llama.get("visible_devices", "0,1,2,3,4,5,6,7")),
+        model_name_q=q(llama.get("model_name") or payload.get("model") or "deepseek-v2.5-q4km"),
+        server_port_q=q(payload["server_port"]),
+        build="bin/build-llama >&2" if llama.get("build_before_run") else ":",
+        server_cmd=server_command(),
+    )
+
+    fd, path = tempfile.mkstemp(prefix="llm-epn-", suffix=".sbatch", dir=state_dir)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(script)
+    completed = run_capture(["sbatch", "--parsable", path])
+    if completed.returncode != 0:
+        sys.stderr.write(completed.stderr or completed.stdout)
+        sys.exit(completed.returncode)
+
+    job_id = completed.stdout.strip().split(";")[0]
+    state = {
+        "active": True,
+        "job_id": job_id,
+        "model": payload.get("model"),
+        "server_port": payload["server_port"],
+        "submitted_at": int(time.time()),
+        "state_path": state_path,
+        "log_path": log_path,
+    }
+    write_state(state)
+    print(json.dumps(current_status()))
+
+if command == "ensure":
+    submit()
+elif command == "status":
+    print(json.dumps(current_status()))
+elif command == "cancel":
+    state = read_state()
+    if state.get("job_id"):
+        subprocess.call(["scancel", str(state["job_id"])])
+    state["active"] = False
+    write_state(state)
+    print(json.dumps(current_status()))
+elif command == "log":
+    offset = int(payload.get("log_offset") or 0)
+    print(json.dumps(read_log_since(offset)))
+else:
+    usage = "unknown command: " + command + "\n"
+    sys.stderr.write(usage)
+    sys.exit(2)
+PY

@@ -1,0 +1,71 @@
+[server]
+host = "127.0.0.1"
+port = 8765
+
+[model]
+name = "qwen3-coder-next-f16-1m"
+
+[backend]
+# "slurm_server" starts/reuses a persistent llama.cpp server allocation.
+# "slurm" keeps the older one-shot run-cli diagnostic path.
+type = "slurm_server"
+
+[ssh]
+host = "epnh"
+user = ""
+connect_timeout_seconds = 15
+retries = 2
+retry_delay_seconds = 2
+
+[remote]
+runner = "$HOME/.local/bin/llm-epn-slurm-run"
+serverctl = "$HOME/.local/bin/llm-epn-serverctl"
+workdir = "/scratch/csonnabe/cern-fellowship/misc/lamacpp-llm"
+state_dir = "$HOME/.cache/llm-epn"
+
+[slurm]
+partition = "prod"
+exclusive = true
+# Qwen3-Coder-Next needs MI100/gfx908 on this cluster; MI50/gfx906 fails with split-buffer support.
+node_class = "mi100"
+custom_options = []
+debug = false
+
+[gateway]
+# 0 means choose a free local SSH tunnel port for each gateway process.
+local_port = 0
+server_port = 8080
+startup_timeout_seconds = 900
+poll_interval_seconds = 5
+idle_timeout_minutes = 20
+cancel_on_exit = true
+# Also cancel an already-running EPN job when this local provider session exits.
+cancel_reused_on_exit = true
+stream_startup_log = true
+# Keep local-model traffic bounded. The head preserves system/task framing; the tail preserves the latest turn.
+max_prompt_chars = 20000
+prompt_keep_head_chars = 4000
+prompt_keep_tail_chars = 16000
+
+[llamacpp]
+backend = "rocm"
+# "auto" maps epn000-epn279 to gfx906 and epn280-epn349 to gfx908 inside the Slurm job.
+rocm_arch = "auto"
+visible_devices = "0,1,2,3,4,5,6,7"
+build_before_run = false
+show_config_before_run = false
+list_devices_before_run = false
+run_cli = "bin/run-cli"
+inference_timeout_seconds = 120
+max_tokens = 256
+extra_args = ["-n", "64"]
+model_name = "qwen3-coder-next-f16-1m"
+server_cli = "bin/run-server"
+model_path = ""
+context_size = 8192
+# Qwen's model.env sets split-mode=row, but ROCm llama.cpp rejects split buffers on these nodes.
+# Passing this after wrapper defaults lets llama-server use layer split instead.
+server_extra_args = ["--split-mode", "layer"]
+# Optional full server command, relative to remote.workdir if not absolute.
+# When set, this replaces server_cli/server_extra_args.
+server_command = []
