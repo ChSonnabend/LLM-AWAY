@@ -4,4 +4,4 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 config="${LLM_EPN_CONFIG:-$repo_dir/config/epn.toml}"
 
-exec "$repo_dir/bin/llm-epn" serve --config "$config"
+exec "$repo_dir/bin/llm-epn" serve --config "$config" --warm

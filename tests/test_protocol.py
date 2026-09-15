@@ -1,6 +1,6 @@
 import unittest
 
-from llm_epn.protocol import messages_to_prompt, responses_input_to_prompt
+from llm_epn.protocol import messages_to_prompt, models_list, responses_input_to_prompt
 
 
 class ProtocolTests(unittest.TestCase):
@@ -20,6 +20,12 @@ class ProtocolTests(unittest.TestCase):
             {"role": "user", "content": [{"type": "input_text", "text": "Hi"}]},
         ])
         self.assertIn("user: Hi", prompt)
+
+    def test_models_list(self):
+        data = models_list("qwen3-coder-next-f16-1m")
+        self.assertEqual(data["object"], "list")
+        self.assertEqual(data["data"][0]["id"], "qwen3-coder-next-f16-1m")
+        self.assertEqual(data["data"][0]["owned_by"], "llm-epn")
 
 
 if __name__ == "__main__":

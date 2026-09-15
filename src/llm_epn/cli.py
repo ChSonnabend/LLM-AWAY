@@ -225,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=str(default_config_path()), help="Path to epn.toml")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("serve", parents=[config_parent], help="Run the local OpenAI-compatible provider")
+    serve_parser = sub.add_parser("serve", parents=[config_parent], help="Run the local OpenAI-compatible provider")
+    serve_parser.add_argument("--warm", action="store_true", help="Start the remote backend immediately")
     sub.add_parser("codex-config", parents=[config_parent], help="Print a Codex config.toml snippet")
     install_parser = sub.add_parser("install-codex-config", parents=[config_parent], help="Install the Codex EPN provider/profile")
     install_parser.add_argument("--no-activate", action="store_true", help="Install provider/profile without making EPN the default")
@@ -249,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     backend = make_backend(cfg)
 
     if args.command == "serve":
-        serve(cfg, backend)
+        serve(cfg, backend, warm=args.warm)
         return 0
 
     if args.command == "server-status":

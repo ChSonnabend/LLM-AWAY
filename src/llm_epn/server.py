@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import signal
 import sys
+import threading
 import time
 import uuid
 
@@ -13,6 +14,7 @@ from .protocol import (
     chat_completion,
     chat_completion_chunk,
     messages_to_prompt,
+    models_list,
     response_object,
     responses_input_to_prompt,
 )
@@ -25,6 +27,9 @@ class ProviderHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/health":
             self.write_json({"status": "ok", "model": self.config.model.name})
+            return
+        if self.path == "/v1/models":
+            self.write_json(models_list(self.config.model.name))
             return
         self.write_json({"error": "not found"}, status=404)
 
@@ -219,7 +224,19 @@ class ProviderHandler(BaseHTTPRequestHandler):
         sys.stderr.write(f"[llm-epn] {self.address_string()} {fmt % args}\n")
 
 
-def serve(config: AppConfig, backend: Backend) -> None:
+def warm_backend(config: AppConfig, backend: Backend) -> None:
+    ensure_ready = getattr(backend, "ensure_ready", None)
+    if ensure_ready is None:
+        return
+    try:
+        print(f"llm-epn: warming backend for model {config.model.name}", file=sys.stderr, flush=True)
+        ensure_ready(config.model.name)
+        print(f"llm-epn: backend ready for model {config.model.name}", file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"llm-epn: backend warmup failed: {exc}", file=sys.stderr, flush=True)
+
+
+def serve(config: AppConfig, backend: Backend, warm: bool = False) -> None:
     class Handler(ProviderHandler):
         pass
 
@@ -236,6 +253,8 @@ def serve(config: AppConfig, backend: Backend) -> None:
         signal.signal(sig, stop)
 
     print(f"llm-epn provider listening on http://{config.server.host}:{config.server.port}", flush=True)
+    if warm:
+        threading.Thread(target=warm_backend, args=(config, backend), daemon=True).start()
     try:
         httpd.serve_forever()
     finally:

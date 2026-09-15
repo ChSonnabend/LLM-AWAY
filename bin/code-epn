@@ -30,7 +30,7 @@ trap cleanup EXIT INT TERM
 
 if ! healthcheck; then
     echo "llm-epn: starting local provider on http://$host:$port (log: $log_path)" >&2
-    "$repo_dir/bin/llm-epn" serve --config "$config" >"$log_path" 2>&1 &
+    "$repo_dir/bin/llm-epn" serve --config "$config" --warm >"$log_path" 2>&1 &
     provider_pid=$!
     for _ in $(seq 1 50); do
         if healthcheck; then

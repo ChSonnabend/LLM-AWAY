@@ -4,6 +4,20 @@ import time
 import uuid
 
 
+def models_list(model: str) -> dict:
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": model,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "llm-epn",
+            }
+        ],
+    }
+
+
 def messages_to_prompt(messages: list[dict]) -> str:
     lines: list[str] = []
     for message in messages:

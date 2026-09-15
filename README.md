@@ -25,7 +25,7 @@ Then install the remote runner on the SSH host:
 ./scripts/init-remote.sh
 ```
 
-Start the local provider:
+Start the local provider and warm the remote Slurm server:
 
 ```bash
 epn-agent
@@ -114,7 +114,7 @@ For an EPN-focused VS Code session, make the EPN provider/model active in `~/.co
 ./bin/code-epn /path/to/project
 ```
 
-The launcher starts the local provider if needed and opens VS Code with `--wait`, so closing that VS Code window also tears down the provider it started.
+The launcher starts the local provider if needed, warms the remote Slurm server, and opens VS Code with `--wait`, so closing that VS Code window also tears down the provider it started.
 
 For an already-open local or Remote-SSH VS Code window, run one command in a terminal on the same host:
 
@@ -123,6 +123,12 @@ epn-agent
 ```
 
 Then reload the Codex sidebar if it was already open.
+
+If you only want the HTTP gateway without immediately starting the remote Slurm job, run:
+
+```bash
+llm-epn serve --config /path/to/LLM_EPN/config/epn.toml
+```
 
 ## Files
 
