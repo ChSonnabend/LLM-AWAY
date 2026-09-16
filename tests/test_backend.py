@@ -54,7 +54,7 @@ class BackendTests(unittest.TestCase):
         backend.infer(InferenceRequest(prompt="fallback", model="epn", messages=messages))
         payload = json.loads(backend.completion_payload("fallback", messages=backend.messages))
         self.assertEqual(payload["messages"], messages)
-        self.assertEqual(payload["max_tokens"], 262000)
+        self.assertEqual(payload["max_tokens"], 16384)
 
     def test_remote_serverctl_locks_ensure_submission(self):
         script = Path("scripts/remote/llm-epn-serverctl").read_text(encoding="utf-8")

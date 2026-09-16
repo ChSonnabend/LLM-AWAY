@@ -114,6 +114,7 @@ def tools_to_prompt(tools) -> str:
         "Tool calling:",
         "Use only the tool names listed here. Emit tool calls as:",
         "<tool_call><function=tool_name><parameter=param_name>value</parameter></function></tool_call>",
+        "Use raw text inside XML parameters (no JSON wrapper or backslash escaping); use JSON literals for numbers, booleans, arrays and objects. Stop after the tool call and wait for its result.",
         "Do not invent tools such as read_file unless they are listed. For file reads, directory listing, and search, prefer the shell tool with commands like cat, sed, ls, and rg.",
         "If the user asks to inspect, explain, diagnose, review, summarize, or tell what code does, use read-only commands and then answer; do not modify files.",
         "Only edit files when the user explicitly asks for a change. When editing, use apply_patch instead of shell heredocs or redirection.",
@@ -140,6 +141,8 @@ def tools_to_prompt(tools) -> str:
             rendered += f": {description}"
         if params:
             rendered += f" Parameters: {json.dumps(params, sort_keys=True)}"
+        if tool.get("type") == "custom":
+            rendered += " Parameters: input (raw text; for apply_patch, a *** Begin Patch ... *** End Patch patch)."
         lines.append(rendered)
     return "\n".join(lines)
 
@@ -176,16 +179,26 @@ def responses_request_to_messages(payload: dict) -> list[dict]:
             # Qwen chat templates use system rather than developer messages.
             role = "system" if role == "developer" else role
             content = content_to_text(item.get("content", item.get("text", "")))
-        elif kind == "function_call":
+        elif kind in {"function_call", "custom_tool_call"}:
             role = "assistant"
-            content = f"<tool_call>{json.dumps({'name': item.get('name', ''), 'arguments': item.get('arguments', '')})}</tool_call>"
-        elif kind == "function_call_output":
+            arguments = ({"input": item.get("input", "")} if kind == "custom_tool_call"
+                         else normalize_tool_arguments(item.get("arguments", {})))
+            content = render_tool_call(item.get("name", ""), arguments)
+        elif kind in {"function_call_output", "custom_tool_call_output"}:
             role = "user"
             content = f"<tool_response call_id={json.dumps(item.get('call_id', ''))}>\n{content_to_text(item.get('output', ''))}\n</tool_response>"
         else:
             continue
         messages.append({"role": role, "content": content})
     return normalize_chat_messages(messages)
+
+
+def render_tool_call(name: str, arguments: dict) -> str:
+    params = "".join(
+        f"<parameter={key}>{html.escape(value if isinstance(value, str) else json.dumps(value))}</parameter>"
+        for key, value in arguments.items()
+    )
+    return f"<tool_call><function={name}>{params}</function></tool_call>"
 
 
 def normalize_tool_arguments(arguments) -> dict:
@@ -214,6 +227,8 @@ def parse_json_tool_call(body: str) -> dict | None:
     try:
         data = json.loads(body)
     except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
         return None
     name = data.get("name") or data.get("function")
     arguments = data.get("arguments") or data.get("parameters") or {}
@@ -408,6 +423,19 @@ def response_object(
     if blocks:
         allowed_names = available_tool_names(tools) or {"exec_command"}
         rewritten_calls = [rewrite_tool_call(tool_call, allowed_names) for _, _, tool_call in blocks]
+        definitions = {tool_name(t): t for t in tools or []}
+        for call in rewritten_calls:
+            if call["name"] not in allowed_names:
+                raise ValueError(f"Model requested unavailable tool: {call['name']}")
+            definition = definitions.get(call["name"], {})
+            schema = definition.get("parameters") or definition.get("function", {}).get("parameters", {})
+            for key, spec in schema.get("properties", {}).items():
+                value = call["arguments"].get(key)
+                if isinstance(value, str) and spec.get("type") in {"integer", "number", "boolean", "array", "object"}:
+                    try:
+                        call["arguments"][key] = json.loads(value)
+                    except ValueError:
+                        raise ValueError(f"Invalid {key} argument for {call['name']}")
         output_text = visible_tool_text(text, blocks, rewritten_calls)
         output = [message_output(output_text, item_id=item_id, content_id=content_id)] if output_text else []
         output.extend(
@@ -423,6 +451,13 @@ def response_object(
                 for rewritten in rewritten_calls
             ]
         )
+        for item in output:
+            if item.get("type") == "function_call" and definitions.get(item["name"], {}).get("type") == "custom":
+                args = json.loads(item.pop("arguments"))
+                if set(args) != {"input"} or not isinstance(args["input"], str):
+                    raise ValueError(f"Custom tool {item['name']} requires raw input text")
+                item["type"] = "custom_tool_call"
+                item["input"] = args["input"]
         return {
             "id": response_id,
             "object": "response",
@@ -433,6 +468,9 @@ def response_object(
             "output": output,
             "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
         }
+
+    if "<tool_call>" in text:
+        raise ValueError("Malformed model tool call; no command was executed. Start a fresh task if old malformed history persists.")
 
     return {
         "id": response_id,

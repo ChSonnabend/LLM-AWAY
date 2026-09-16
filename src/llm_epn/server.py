@@ -179,6 +179,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
             text = self.backend.infer(
                 InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=raw_prompt_chars, messages=messages)
             )
+            response = response_object(model, text, response_id=response_id, tools=tools)
         except Exception as exc:
             failed = dict(created)
             failed["status"] = "failed"
@@ -188,7 +189,6 @@ class ProviderHandler(BaseHTTPRequestHandler):
                 {"type": "response.failed", "sequence_number": 1, "response": failed},
             )
             return
-        response = response_object(model, text, response_id=response_id, tools=tools)
         self.write_response_stream(response, sequence_number=1, include_created=False)
 
     def write_response_stream(self, response: dict, sequence_number: int = 0, include_created: bool = True) -> None:
@@ -207,7 +207,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
             self.begin_sse()
             self.write_sse("response.created", event_payload("response.created", {"response": created}))
         for output_index, output in enumerate(response["output"]):
-            if output.get("type") == "function_call":
+            if output.get("type") in {"function_call", "custom_tool_call"}:
                 self.write_function_call_stream(response, output, output_index, event_payload)
             else:
                 self.write_message_stream(response, output, output_index, event_payload)
@@ -270,8 +270,10 @@ class ProviderHandler(BaseHTTPRequestHandler):
     def write_function_call_stream(self, response: dict, output: dict, output_index: int, event_payload) -> None:
         added_item = dict(output)
         added_item["status"] = "in_progress"
-        added_item["arguments"] = ""
-        arguments = output.get("arguments", "")
+        field = "input" if output["type"] == "custom_tool_call" else "arguments"
+        event_kind = "custom_tool_call_input" if field == "input" else "function_call_arguments"
+        added_item[field] = ""
+        arguments = output.get(field, "")
         common = {
             "response_id": response["id"],
             "item_id": output["id"],
@@ -288,12 +290,12 @@ class ProviderHandler(BaseHTTPRequestHandler):
         )
         if arguments:
             self.write_sse(
-                "response.function_call_arguments.delta",
-                event_payload("response.function_call_arguments.delta", {**common, "delta": arguments}),
+                f"response.{event_kind}.delta",
+                event_payload(f"response.{event_kind}.delta", {**common, "delta": arguments}),
             )
         self.write_sse(
-            "response.function_call_arguments.done",
-            event_payload("response.function_call_arguments.done", {**common, "arguments": arguments}),
+            f"response.{event_kind}.done",
+            event_payload(f"response.{event_kind}.done", {**common, field: arguments}),
         )
         self.write_sse(
             "response.output_item.done",

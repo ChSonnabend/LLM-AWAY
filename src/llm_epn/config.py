@@ -77,7 +77,7 @@ class LlamaCppConfig:
     list_devices_before_run: bool = False
     run_cli: str = "bin/run-cli"
     inference_timeout_seconds: int = 900
-    max_tokens: int = 262000
+    max_tokens: int = 16384
     extra_args: list[str] = field(default_factory=lambda: ["-n", "64"])
     model_name: str = "qwen3.8-flash-next-125b-ultralite-37g"
     server_cli: str = "bin/run-server"
@@ -101,6 +101,12 @@ class LlamaCppConfig:
 class CodexConfig:
     provider_display_name: str = ""
     account_email: str = ""
+    instructions: str = ""
+    sandbox_mode: str = "workspace-write"
+    approval_policy: str = "on-request"
+    context_window: int = 65536
+    auto_compact_token_limit: int = 45000
+    tool_output_token_limit: int = 2000
 
 
 @dataclass(frozen=True)

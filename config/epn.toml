@@ -10,6 +10,16 @@ provider_display_name = "Christian Sonnabend"
 # ChatGPT/Codex account sign-in is managed by the app; this documents the intended account.
 account_email = "sonnabendch@gmail.com"
 
+# Full local filesystem and network access for this explicitly selected profile.
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+# Working context budget; retain the remote server's larger capacity.
+context_window = 65536
+auto_compact_token_limit = 45000
+tool_output_token_limit = 2000
+# Initial prompt copied into the EPN model catalog by install-codex-config.
+instructions = "You are a coding agent sharing the user's workspace. Complete requested work using the available tools. Read only relevant files; batch related reads. Preserve existing changes. For inspection requests, use read-only commands and then answer. For edits, use apply_patch instead of shell heredocs or hand-counted git patches. After two failed attempts change approach. Keep commands and tool output short; retain errors and use targeted ranges instead of dumping files. Run one focused check after editing. Continue authorized work without asking again. If access is denied, use an available permission tool; otherwise report the exact blocker and needed action. Never claim execution without a tool result. Never print tool-call markup as an answer. Keep the final answer brief: result, checks, and any blocker."
+
 [backend]
 # "slurm_server" starts/reuses a persistent llama.cpp server allocation.
 # "slurm" keeps the older one-shot run-cli diagnostic path.
@@ -18,7 +28,7 @@ type = "slurm_server"
 [ssh]
 host = "epnh"
 user = ""
-connect_timeout_seconds = 15
+connect_timeout_seconds = 60
 retries = 2
 retry_delay_seconds = 2
 
@@ -63,11 +73,11 @@ show_config_before_run = false
 list_devices_before_run = false
 run_cli = "bin/run-cli"
 inference_timeout_seconds = 900
-max_tokens = 262000
+max_tokens = 16384
 extra_args = ["-n", "64"]
 model_name = "qwen3.8-27b-q4km"
 # auto follows the remote preset; on/off explicitly control MTP in the remote wrapper.
-mtp = "on"
+mtp = "off"
 server_cli = "bin/run-server"
 model_path = ""
 context_size = 262000

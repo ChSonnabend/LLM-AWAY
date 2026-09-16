@@ -305,3 +305,32 @@ For noninteractive setup, use:
 All users run against `/scratch/csonnabe/cern-fellowship/misc/lamacpp-llm`, including its existing `models/`, GPU builds, and `scripts/epn/` helpers. They do **not** download models, copy the remote project, rebuild llama.cpp, or install remote helpers separately. Setup disables per-run builds. The shared installation's owner maintains models, builds, and helper scripts. An alternative shared installation can be selected with `--remote-workdir /absolute/path`.
 
 Each distinct remote Unix account gets its own Slurm allocations and `$HOME/.cache/llm-epn` state/logs. Users sharing the same remote account also share that state. Other users need read/traverse access to the shared model directories and read/execute access to the runtime; setup reports access failures before saving. Model selection lists the presets already installed there. No permissions are broadened by local setup.
+
+### EPN agent efficiency and permissions
+
+The `[codex]` section in `config/epn.toml` controls the generated EPN profile and
+initial model prompt. After changing it, run `./bin/llm-epn install-codex-config
+--no-activate` and start a fresh `codex --profile epn` session. Restart the local
+`epn-agent` gateway after gateway/source or `[llamacpp]` changes.
+
+The checked-in EPN profile selects `danger-full-access` with approval policy
+`never`: commands can access local files and the network, including SSH, without
+Codex approval prompts. This applies to the EPN profile; global Codex permissions
+are preserved. To restore sandboxed operation, set `sandbox_mode =
+"workspace-write"` and `approval_policy = "on-request"`, then reinstall the profile.
+OS permissions and remote account permissions still apply.
+
+The working context budget is 65,536 tokens with compaction at 45,000 tokens,
+leaving room for the configured 16,384-token generation ceiling. The remote
+server's 262,000-token context capacity is unchanged. `llamacpp.max_tokens` is the
+completion request limit sent to the remote llama.cpp server; it does not require
+editing remote scripts. A server-side cap can still impose a smaller limit.
+`model_reasoning_effort` is a Codex profile setting, not a Qwen thinking switch.
+
+Individual tool results kept in model history are limited to 2,000 tokens.
+Reasoning display is hidden and the prompt requests concise command output.
+Codex's interactive “Ran/Explored” activity remains visible; these settings do not
+provide a switch to hide every tool activity row. Errors are retained for diagnosis.
+The bridge emits real custom-tool events for `apply_patch`, preserves tool history
+without nested JSON escaping, and reports malformed tool calls as failures instead
+of printing executable-looking markup as a final answer.

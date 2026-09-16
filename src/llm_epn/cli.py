@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 from .backends import InferenceRequest, SlurmServerBackend, make_backend
-from .config import load_config
+from .config import CodexConfig, load_config
 from .server import serve
 from .models import choose_model, choose_mtp, discover_models, mtp_label, save_model
 
@@ -32,7 +32,7 @@ wire_api = "responses"
 # Add this profile block to ~/.codex/epn.config.toml.
 model_provider = "epn"
 model = "epn"
-model_reasoning_effort = "high"
+model_reasoning_effort = "low"
 model_catalog_json = "~/.codex/model-catalogs/epn.json"
 '''
     )
@@ -56,14 +56,15 @@ def quoted(value: str) -> str:
     return json.dumps(value)
 
 
-def epn_model_catalog(model: str, context_window: int = 262000) -> dict:
+def epn_model_catalog(model: str, context_window: int = 262000, settings: CodexConfig | None = None) -> dict:
+    settings = settings or CodexConfig()
     return {
         "models": [
             {
                 "slug": "epn",
                 "display_name": "EPN",
                 "description": f"Use the selected remote EPN model (currently {model}).",
-                "default_reasoning_level": "medium",
+                "default_reasoning_level": "low",
                 "supported_reasoning_levels": [
                     {"effort": "low", "description": "Fast responses"},
                     {"effort": "medium", "description": "Default"},
@@ -82,7 +83,7 @@ def epn_model_catalog(model: str, context_window: int = 262000) -> dict:
                 "default_verbosity": "low",
                 "truncation_policy": {
                     "mode": "tokens",
-                    "limit": 10000,
+                    "limit": settings.tool_output_token_limit,
                 },
                 "context_window": context_window,
                 "max_context_window": context_window,
@@ -97,15 +98,15 @@ def epn_model_catalog(model: str, context_window: int = 262000) -> dict:
                 "apply_patch_tool_type": "freeform",
                 "node_repl_disabled": False,
                 "node_repl_auto_review_required": False,
-                "include_apps_usage_instructions": True,
-                "include_plugin_usage_instructions": True,
+                "include_apps_usage_instructions": False,
+                "include_plugin_usage_instructions": False,
                 "include_skills_usage_instructions": False,
                 "use_responses_lite": True,
                 "default_reasoning_summary": "none",
                 "multi_agent_reasoning_effort": "high",
                 "multi_agent_version": "v2",
                 "model_messages": {
-                    "instructions_template": (
+                    "instructions_template": settings.instructions or (
                         "You are a coding agent. You and the user share one workspace. "
                         f"The configured model is {model}, served by llama.cpp through the EPN gateway. "
                         "Answer the latest user question directly. For greetings and model identity questions, answer without tools. "
@@ -114,7 +115,11 @@ def epn_model_catalog(model: str, context_window: int = 262000) -> dict:
                         "When the user asks to inspect, explain, diagnose, review, summarize, or tell what code does, "
                         "use read-only commands and then answer; do not modify files. "
                         "Only edit files when the user explicitly asks for a change. "
-                        "When editing, use apply_patch instead of shell heredocs or redirection."
+                        "When editing, use apply_patch instead of shell heredocs or redirection. "
+                        "Read only relevant files, batch related reads, and run one focused check after editing. "
+                        "After two failed attempts change approach. Keep tool output short, retain errors, and avoid dumping files. "
+                        "Complete authorized work without asking again. If permission is denied, use the available approval tool; "
+                        "if none is available, report the exact blocker. Never print tool calls as a final answer."
                     )
                 },
                 "comp_hash": "local-epn-preset",
@@ -123,12 +128,12 @@ def epn_model_catalog(model: str, context_window: int = 262000) -> dict:
     }
 
 
-def write_model_catalogs(home: Path, model: str, context_window: int = 262000) -> tuple[Path, Path]:
+def write_model_catalogs(home: Path, model: str, context_window: int = 262000, settings: CodexConfig | None = None) -> tuple[Path, Path]:
     catalog_dir = home / "model-catalogs"
     catalog_dir.mkdir(parents=True, exist_ok=True)
     epn_path = catalog_dir / "epn.json"
     combined_path = catalog_dir / "combined-with-epn.json"
-    epn_catalog = epn_model_catalog(model, context_window=context_window)
+    epn_catalog = epn_model_catalog(model, context_window=context_window, settings=settings)
     epn_path.write_text(json.dumps(epn_catalog, indent=2) + "\n", encoding="utf-8")
 
     combined = epn_catalog
@@ -206,7 +211,7 @@ def install_codex_config(config_path: str, activate: bool = False) -> None:
     profile_file = home / "epn.config.toml"
 
     epn_catalog, combined_catalog = write_model_catalogs(
-        home, cfg.model.name, context_window=cfg.llamacpp.context_size
+        home, cfg.model.name, context_window=min(cfg.codex.context_window, cfg.llamacpp.context_size), settings=cfg.codex
     )
     base_url = f"http://{cfg.server.host}:{cfg.server.port}/v1"
 
@@ -218,7 +223,7 @@ def install_codex_config(config_path: str, activate: bool = False) -> None:
             {
                 "model": "epn",
                 "model_provider": "epn",
-                "model_reasoning_effort": "high",
+                "model_reasoning_effort": "low",
                 "model_catalog_json": str(epn_catalog),
             },
         )
@@ -244,8 +249,15 @@ wire_api = "responses"
             [
                 'model_provider = "epn"',
                 'model = "epn"',
-                'model_reasoning_effort = "high"',
+                'model_reasoning_effort = "low"',
                 f"model_catalog_json = {quoted(str(epn_catalog))}",
+                f"sandbox_mode = {quoted(cfg.codex.sandbox_mode)}",
+                f"approval_policy = {quoted(cfg.codex.approval_policy)}",
+                f"model_context_window = {min(cfg.codex.context_window, cfg.llamacpp.context_size)}",
+                f"model_auto_compact_token_limit = {min(cfg.codex.auto_compact_token_limit, int(min(cfg.codex.context_window, cfg.llamacpp.context_size) * 0.7))}",
+                f"tool_output_token_limit = {cfg.codex.tool_output_token_limit}",
+                'hide_agent_reasoning = true',
+                'model_verbosity = "low"',
                 "",
             ]
         )

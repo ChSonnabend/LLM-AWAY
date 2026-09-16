@@ -22,7 +22,7 @@ class RemoteSetupTests(unittest.TestCase):
         self.mockbin = self.root / "commands"
         self.mockbin.mkdir()
         # Setup may check for these commands, but must never execute a Slurm job.
-        for name in ("sbatch", "squeue", "scancel", "sinfo", "srun"):
+        for name in ("sbatch", "squeue", "scancel", "sinfo", "srun", "timeout"):
             self.command(name, "exit 99\n")
         self.dest = self.root / "installed 'helpers'"
         self.env = dict(os.environ, PATH=str(self.mockbin) + ":" + os.environ["PATH"])

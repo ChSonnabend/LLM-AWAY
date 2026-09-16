@@ -133,10 +133,10 @@ class ProtocolTests(unittest.TestCase):
             "qwen3-coder-next-f16-1m",
             "<tool_call> function=exec <parameter=command> pwd </parameter> </function>",
         )
-        output = response["output"][1]
+        output = response["output"][0]
 
-        self.assertEqual(response["output_text"], "Calling exec_command.")
-        self.assertEqual(response["output"][0]["type"], "message")
+        self.assertEqual(response["output_text"], "")
+        self.assertEqual(response["output"][0]["type"], "function_call")
         self.assertEqual(output["type"], "function_call")
         self.assertEqual(output["name"], "exec_command")
         self.assertEqual(json.loads(output["arguments"]), {"cmd": "pwd"})
@@ -147,9 +147,9 @@ class ProtocolTests(unittest.TestCase):
             "<tool_call> function=exec <parameter=command> pwd </parameter> </function>",
             tools=[{"type": "function", "name": "exec"}],
         )
-        output = response["output"][1]
+        output = response["output"][0]
 
-        self.assertEqual(response["output_text"], "Calling exec.")
+        self.assertEqual(response["output_text"], "")
         self.assertEqual(output["name"], "exec")
         self.assertEqual(json.loads(output["arguments"]), {"command": "pwd"})
 
@@ -172,11 +172,11 @@ class ProtocolTests(unittest.TestCase):
             "<tool_call><function=read_file><parameter=path>src/llm_epn/server.py</parameter></function></tool_call>",
         )
 
-        self.assertEqual(response["output_text"], "Calling exec_command (2 calls).")
-        self.assertEqual([item["type"] for item in response["output"]], ["message", "function_call", "function_call"])
-        self.assertEqual([item["name"] for item in response["output"][1:]], ["exec_command", "exec_command"])
+        self.assertEqual(response["output_text"], "")
+        self.assertEqual([item["type"] for item in response["output"]], ["function_call", "function_call"])
+        self.assertEqual([item["name"] for item in response["output"]], ["exec_command", "exec_command"])
         self.assertEqual(
-            json.loads(response["output"][2]["arguments"]),
+            json.loads(response["output"][1]["arguments"]),
             {"cmd": "sed -n '1,240p' -- src/llm_epn/server.py"},
         )
 
@@ -186,7 +186,7 @@ class ProtocolTests(unittest.TestCase):
             "<tool_call><function=read_file><parameter=path>README.md</parameter></function></tool_call>",
             tools=[{"type": "function", "name": "exec"}],
         )
-        output = response["output"][1]
+        output = response["output"][0]
 
         self.assertEqual(output["name"], "exec")
         self.assertEqual(json.loads(output["arguments"]), {"command": "sed -n '1,240p' -- README.md"})
@@ -196,7 +196,7 @@ class ProtocolTests(unittest.TestCase):
             "qwen3-coder-next-f16-1m",
             "<tool_call><function=read_file><parameter=path>README.md</parameter></function></tool_call>",
         )
-        output = response["output"][1]
+        output = response["output"][0]
 
         self.assertEqual(output["name"], "exec_command")
         self.assertEqual(json.loads(output["arguments"]), {"cmd": "sed -n '1,240p' -- README.md"})
