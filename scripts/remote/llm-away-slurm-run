@@ -14,6 +14,7 @@ payload="$(cat)"
 
 python3 - "$payload" <<'PY'
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -113,6 +114,14 @@ if timeout_seconds > 0:
 else:
     setup.append(run_shell)
 inner = " && ".join(setup)
+
+image = llama.get("container", "")
+if image:
+    subprocess.check_call([
+        sys.executable,
+        os.path.join(payload["remote_workdir"], "scripts/remote/ensure-container.py"),
+        image, llama.get("container_source", ""),
+    ], stdout=sys.stderr)
 
 srun = node_options()
 cmd = " ".join(srun) + " /bin/bash -lc " + q(inner)

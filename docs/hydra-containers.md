@@ -50,9 +50,8 @@ apptainer pull llama-server-cuda.sif docker://ghcr.io/ggml-org/llama.cpp:server-
 apptainer pull llama-server-rocm.sif docker://ghcr.io/ggml-org/llama.cpp:server-rocm
 ```
 
-The local hydra-h200 profile now points to llama-server-cuda.sif. For MI100,
-change its `container` value in config/away.toml to llama-server-rocm.sif to use
-the prebuilt server instead of compiling in rocm_torch_env.sif. Leave
+Both Hydra profiles now automatically download and reuse these prebuilt images
+on agent activation. Manual pulls above are optional. Leave
 build_before_run=false. Bundled wrappers automatically find /app/llama-server.
 These server images do not include the diagnostic llama-cli command. Pin image
 tags/digests once a version works with your model and MTP options.
