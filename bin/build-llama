@@ -10,14 +10,14 @@ BACKEND=$(llamacpp_detect_backend)
 SOURCE_DIR=${LLAMACPP_SOURCE_DIR:-$ROOT_DIR/llama.cpp}
 
 if [[ ! -d $SOURCE_DIR ]]; then
-  git clone https://github.com/ggml-org/llama.cpp.git "$SOURCE_DIR"
+  git clone --branch "${LLAMACPP_REF:-v0.4.1}" --depth 1 https://github.com/ggml-org/llama.cpp.git "$SOURCE_DIR"
 fi
 
 CMAKE_ARGS=(
   -S "$SOURCE_DIR"
   -B ""
   -DCMAKE_BUILD_TYPE=Release
-  -DCMAKE_CXX_STANDARD="${LLAMACPP_CXX_STANDARD:-17}"
+  -DCMAKE_CXX_STANDARD="${LLAMACPP_CXX_STANDARD:-20}"
   -DLLAMA_CURL=ON
 )
 
@@ -59,9 +59,9 @@ fi
 
 read -r -a BUILD_TARGETS <<< "${LLAMACPP_BUILD_TARGETS:-llama-cli llama-server llama-bench}"
 
-echo "lLLM-AWAY-remote: backend=$BACKEND build_dir=$BUILD_DIR"
-[[ ${ROCM_ARCH:-} ]] && echo "lLLM-AWAY-remote: rocm_arch=$ROCM_ARCH"
-echo "lLLM-AWAY-remote: targets=${BUILD_TARGETS[*]}"
+echo "llamacpp-llm: backend=$BACKEND build_dir=$BUILD_DIR"
+[[ ${ROCM_ARCH:-} ]] && echo "llamacpp-llm: rocm_arch=$ROCM_ARCH"
+echo "llamacpp-llm: targets=${BUILD_TARGETS[*]}"
 
 cmake "${CMAKE_ARGS[@]}"
 cmake --build "$BUILD_DIR" --config Release -j"${JOBS:-$(nproc)}" --target "${BUILD_TARGETS[@]}"

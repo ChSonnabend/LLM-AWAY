@@ -110,6 +110,8 @@ def read_log_since(offset):
     return {"offset": offset, "data": data}
 
 def rocm_arch_command():
+    if llama.get("backend") == "cuda":
+        return "export LLAMACPP_ROCM_ARCH=unused"
     arch = llama.get("rocm_arch", "auto")
     if arch != "auto":
         return "export LLAMACPP_ROCM_ARCH=" + q(arch)
@@ -129,8 +131,9 @@ def server_command():
     model_path = llama.get("model_path") or ""
     server_cli = llama.get("server_cli", "bin/run-server")
     if not model_path:
-        # Managed model presets read LLAMACPP_CTX_SIZE from the Slurm job environment.
-        args = [server_cli]
+        # Managed model presets may assign LLAMACPP_CTX_SIZE while sourcing model.env,
+        # so pass the local override after the wrapper's generated arguments as well.
+        args = [server_cli, "--ctx-size", str(llama.get("context_size", 8192))]
         args.extend(llama.get("server_extra_args") or [])
         return " ".join(q(arg) for arg in args)
 
@@ -149,8 +152,26 @@ def server_command():
     return " ".join(q(arg) for arg in args)
 
 def sbatch_options():
+    nodes = max(1, int(payload.get("nodes") or 1))
+    gpus = max(0, int(payload.get("gpus") or 0))
     opts = ["#SBATCH -p " + payload.get("partition", "prod")]
-    if payload.get("exclusive", True):
+    if gpus > 0:
+        opts.extend(["#SBATCH --gres=gpu:" + str(gpus), "#SBATCH --nodes=" + str(nodes), "#SBATCH --ntasks=1"])
+    if nodes > 1:
+        # Multi-node: request N full nodes. The remote wrapper must span the model
+        # across nodes (e.g. llama.cpp RPC/multi-node) for this to increase VRAM;
+        # otherwise Slurm schedules N nodes but the server still uses one.
+        opts.append("#SBATCH --nodes=" + str(nodes))
+        if payload.get("exclusive", True):
+            opts.append("#SBATCH --exclusive")
+        node_class = payload.get("node_class", "")
+        if node_class in ("mi50", "mi100"):
+            chosen = choose_node(node_class, count=nodes)
+            opts.append("#SBATCH -w " + ",".join(chosen))
+            if node_class == "mi100" and any(int(n[3:]) >= 280 for n in chosen):
+                opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=1")
+        return "\n".join(opts)
+    if not gpus and payload.get("exclusive", True):
         opts.append("#SBATCH --exclusive")
     node_class = payload.get("node_class", "")
     custom = payload.get("custom_options") or []
@@ -177,7 +198,8 @@ def sbatch_options():
         opts.append("#SBATCH -w " + node_class)
     return "\n".join(opts)
 
-def choose_node(node_class):
+def choose_node(node_class, count=1):
+    count = int(count)
     ranges = {
         "mi50": lambda n: 0 <= n <= 279,
         "mi100": lambda n: 280 <= n <= 349,
@@ -210,11 +232,20 @@ def choose_node(node_class):
     candidates = sorted(idle or fallback or busy)
     if not candidates:
         sys.exit("No usable " + node_class + " nodes reported by Slurm in partition " + partition)
-    return candidates[int(time.time()) % len(candidates)]
+    count = max(1, int(count))
+    if count == 1:
+        return candidates[int(time.time()) % len(candidates)]
+    # Multi-node: prefer distinct idle nodes (a multi-node allocation must use
+    # separate nodes); fall back to busy nodes if too few are idle.
+    if len(candidates) < count:
+        sys.exit("Requested " + str(count) + " nodes but only " + str(len(candidates))
+                 + " usable " + node_class + " nodes are reported by Slurm in partition " + partition)
+    start = int(time.time()) % len(candidates)
+    return [candidates[(start + i) % len(candidates)] for i in range(count)]
 
 def submit():
     state = current_status()
-    if state.get("active"):
+    if state.get("active") and not payload.get("force_new_job"):
         if state.get("mtp", "auto") != mtp:
             sys.exit("Running server has a different MTP setting; cancel it with llm-away server-cancel before restarting")
         print(json.dumps(state))
@@ -238,6 +269,7 @@ cd {workdir_q}
 export LLAMACPP_BACKEND={backend_q}
 {rocm_arch}
 export LLAMACPP_VISIBLE_DEVICES={devices_q}
+{allocated_devices}
 export MODEL_NAME={model_name_q}
 export LLAMACPP_HOST=0.0.0.0
 export LLAMACPP_PORT={server_port_q}
@@ -256,6 +288,7 @@ exec {server_cmd}
         backend_q=q(llama.get("backend", "rocm")),
         rocm_arch=rocm_arch_command(),
         devices_q=q(llama.get("visible_devices", "0,1,2,3,4,5,6,7")),
+        allocated_devices=('export LLAMACPP_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"' if llama.get("backend") == "cuda" else 'export LLAMACPP_VISIBLE_DEVICES="${ROCR_VISIBLE_DEVICES:-${HIP_VISIBLE_DEVICES:-}}"') if payload.get("gpus") else ":",
         model_name_q=q(llama.get("model_name") or payload.get("model") or "deepseek-v2.5-q4km"),
         server_port_q=q(payload["server_port"]),
         context_size_q=q(llama.get("context_size", 8192)),
@@ -299,8 +332,11 @@ elif command == "cancel":
     with open(lock_path, "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         state = read_state()
-        if state.get("job_id"):
-            subprocess.call(["scancel", str(state["job_id"])])
+        # Prefer an explicitly supplied job ID (e.g. a second --slurm-job allocation);
+        # otherwise cancel whatever job the default state file references.
+        job_id = str(payload.get("job_id") or state.get("job_id") or "")
+        if job_id:
+            subprocess.call(["scancel", job_id])
         state["active"] = False
         write_state(state)
         print(json.dumps(current_status()))

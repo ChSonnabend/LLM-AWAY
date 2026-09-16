@@ -52,6 +52,6 @@ if [[ -n ${MODEL_GGUF:-} && -n ${MODEL_GGUF_SOURCE:-} ]]; then
   if [[ $MODEL_GGUF_PATH != "$MODEL_GGUF_SOURCE_PATH" ]]; then
     mkdir -p "$(dirname "$MODEL_GGUF_PATH")"
     ln -sfn "$MODEL_GGUF_SOURCE_PATH" "$MODEL_GGUF_PATH"
-    echo "lLLM-AWAY-remote: model alias updated: $MODEL_GGUF_PATH -> $MODEL_GGUF_SOURCE_PATH"
+    echo "llamacpp-llm: model alias updated: $MODEL_GGUF_PATH -> $MODEL_GGUF_SOURCE_PATH"
   fi
 fi

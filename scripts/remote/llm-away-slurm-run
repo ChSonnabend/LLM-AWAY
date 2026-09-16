@@ -28,6 +28,8 @@ def q(value):
     return shlex.quote(str(value))
 
 def rocm_arch_command():
+    if llama.get("backend") == "cuda":
+        return "export LLAMACPP_ROCM_ARCH=unused"
     arch = llama.get("rocm_arch", "auto")
     if arch != "auto":
         return "export LLAMACPP_ROCM_ARCH=" + q(arch)
@@ -45,7 +47,11 @@ def progress_static(message):
 def node_options():
     partition = payload.get("partition", "prod")
     opts = ["srun"]
-    if payload.get("exclusive", True):
+    gpus = int(payload.get("gpus") or 0)
+    opts.extend(["--nodes=" + str(payload.get("nodes") or 1), "--ntasks=1"])
+    if gpus:
+        opts.append("--gres=gpu:" + str(gpus))
+    if not gpus and payload.get("exclusive", True):
         opts.append("--exclusive")
     opts.extend(["-p", partition])
 
@@ -73,6 +79,8 @@ setup = [
     'echo "llm-away: using ROCm arch $LLAMACPP_ROCM_ARCH" >&2',
     f"export LLAMACPP_VISIBLE_DEVICES={q(llama.get('visible_devices', '0,1,2,3,4,5,6,7'))}",
 ]
+if payload.get("gpus"):
+    setup.append('export LLAMACPP_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"' if llama.get("backend") == "cuda" else 'export LLAMACPP_VISIBLE_DEVICES="${ROCR_VISIBLE_DEVICES:-${HIP_VISIBLE_DEVICES:-}}"')
 if mtp != "auto":
     setup.append("source scripts/lib/llamacpp-env.sh")
     setup.append("{ declare -F llamacpp_apply_mtp_mode >/dev/null || "

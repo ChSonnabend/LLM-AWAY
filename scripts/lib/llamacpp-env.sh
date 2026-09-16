@@ -7,7 +7,7 @@ llamacpp_root() {
 }
 
 llamacpp_die() {
-  echo "lLLM-AWAY-remote: $*" >&2
+  echo "llamacpp-llm: $*" >&2
   exit 1
 }
 
@@ -193,6 +193,13 @@ llamacpp_gpu_count() {
 llamacpp_export_visible_devices() {
   local backend=${1:-$(llamacpp_detect_backend)}
 
+  if [[ -n ${SLURM_JOB_ID:-} ]]; then
+    if [[ $backend == cuda && -n ${CUDA_VISIBLE_DEVICES:-} ]]; then
+      LLAMACPP_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
+    elif [[ $backend == rocm && -n ${ROCR_VISIBLE_DEVICES:-${HIP_VISIBLE_DEVICES:-}} ]]; then
+      LLAMACPP_VISIBLE_DEVICES=${ROCR_VISIBLE_DEVICES:-$HIP_VISIBLE_DEVICES}
+    fi
+  fi
   if [[ -n ${LLAMACPP_VISIBLE_DEVICES:-} ]]; then
     if [[ $backend == rocm ]]; then
       export HIP_VISIBLE_DEVICES="$LLAMACPP_VISIBLE_DEVICES"

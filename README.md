@@ -330,3 +330,46 @@ then restart. The controller refuses to reuse an active job with a different
 saved MTP mode; selection never cancels jobs automatically. Changes to the
 remote preset in auto mode also require a new allocation.
 
+
+## Hydra deployment
+
+Projects: `LLM-AWAY-local` and `LLM-AWAY-remote`. Commands: `llm-away`,
+`away-agent`, `code-away`, `codex-away`. Environment variables formerly prefixed
+`EPN_` / `LLM_EPN_` now use `REMOTE_` / `LLM_REMOTE_`.
+Physical SSH/node names (`epnh`, `epnNNN`) are unchanged. On epnh the old
+`lamacpp-llm` path is a compatibility symlink for existing venvs and model aliases.
+
+Hydra profiles use `/scratch/alice/csonnab/misc/LLM-AWAY-remote`:
+
+- `hydra-agent` (or `hydra`): H200, `nvidia_gpu`, CUDA, four GPUs by default.
+- `hydra-mi100`: MI100, `amd_gpu`, ROCm `gfx908`, eight GPUs by default.
+
+Both preserve Slurm GPU visibility and accept `--gpus N`; profile-specific state
+folders prevent H200 and MI100 servers from being confused. `custom_options`
+contains CPU, host-memory and time requests; adjust these for your model.
+These wrappers run one server on one node; keep `--nodes 1` for inference.
+
+The runner scripts are installed on Hydra, but a CUDA/ROCm build and model files
+are still prerequisites. In an appropriate GPU allocation with the compiler,
+CMake and CUDA/ROCm toolchain available, run from the remote project:
+
+```bash
+LLAMACPP_BACKEND=cuda bin/build-llama                  # H200 allocation
+LLAMACPP_BACKEND=rocm LLAMACPP_ROCM_ARCH=gfx908 bin/build-llama  # MI100 allocation
+bin/download-model qwen3.8-27b-q4km                  # requires Hugging Face CLI
+```
+
+Suggested manual checks from the local project (not run during this migration):
+
+```bash
+./bin/llm-away list-models --host default
+./bin/llm-away list-models --host hydra-agent
+./bin/llm-away serve --host hydra-agent --gpus 4 --warm
+# Stop with Ctrl+C, then try MI100:
+./bin/llm-away serve --host hydra-mi100 --gpus 8 --warm
+# Optional local regression suite:
+./scripts/test.sh
+```
+
+While a server is running, `curl http://127.0.0.1:8765/health` checks the local
+provider. Send a small prompt through `codex-away` to check end-to-end inference.
