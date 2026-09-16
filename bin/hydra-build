@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+case "${1:-}" in
+  rocm) export LLAMACPP_BACKEND=rocm LLAMACPP_ROCM_ARCH=gfx908
+    image=rocm_torch_env.sif ;;
+  cuda) export LLAMACPP_BACKEND=cuda
+    image=cuda_llamacpp_devel.sif ;;
+  *) echo "Usage: bin/hydra-build rocm|cuda" >&2; exit 2 ;;
+esac
+shift
+export LLAMACPP_CONTAINER=${LLAMACPP_CONTAINER:-/lustre/alice/users/csonnab/TPC/TPC_PRODUCTION/Containers/$image}
+export JOBS=${JOBS:-${SLURM_CPUS_PER_TASK:-4}}
+exec "$ROOT_DIR/bin/build-llama" "$@"

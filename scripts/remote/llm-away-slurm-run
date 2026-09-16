@@ -75,6 +75,7 @@ setup = [
     f"export MODEL_NAME={q(llama.get('model_name') or payload['model'])}",
     f"export LLAMACPP_MTP={q(mtp)}",
     f"export LLAMACPP_BACKEND={q(llama.get('backend', 'rocm'))}",
+    f"export LLAMACPP_CONTAINER={q(llama.get('container', ''))}",
     rocm_arch_command(),
     'echo "llm-away: using ROCm arch $LLAMACPP_ROCM_ARCH" >&2',
     f"export LLAMACPP_VISIBLE_DEVICES={q(llama.get('visible_devices', '0,1,2,3,4,5,6,7'))}",

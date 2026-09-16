@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 
+source "$ROOT_DIR/scripts/lib/container-env.sh"
+llamacpp_enter_container "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "$@"
+
 source "$ROOT_DIR/scripts/lib/llamacpp-env.sh"
 
 BACKEND=$(llamacpp_detect_backend)

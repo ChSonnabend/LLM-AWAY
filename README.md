@@ -373,3 +373,11 @@ Suggested manual checks from the local project (not run during this migration):
 
 While a server is running, `curl http://127.0.0.1:8765/health` checks the local
 provider. Send a small prompt through `codex-away` to check end-to-end inference.
+
+## Hydra container toolchain
+
+Hydra uses the Lustre checkout at `/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY-remote`.
+Use `bin/hydra-build rocm` or `bin/hydra-build cuda` in the remote project; do not load host modules inside containers.
+The CUDA Torch image lacks compilers. The H200 profile now uses the upstream prebuilt `llama-server-cuda.sif`; pull it as documented below.
+A source-build alternative is provided in `containers/cuda-devel.def`.
+See the remote repository’s `docs/hydra-containers.md` for the commands.
