@@ -58,18 +58,40 @@ debug = false
 # connects to that host instead of [ssh].host. Models/infrastructure must exist
 # there before the host can be used (see README "Host selection").
 [hosts.hydra-agent]
-# SSH Host alias from ~/.ssh/config (H200 cluster; partial-node allocations).
 ssh_host = "hydra"
-# GPUs per allocation (2-8 possible; 0 = let the remote wrapper decide).
+partition = "nvidia_gpu"
+exclusive = false
+node_class = ""
+mi50_fallback = false
+nodes = 1
 gpus = 4
-# TODO: fill in once the llama.cpp setup lands on hydra:
-# partition = "prod"
-# exclusive = true
-# node_class = ""
-# mi50_fallback = false
-# nodes = 1
-# custom_options = []
-# debug = false
+backend = "cuda"
+rocm_arch = "auto"
+# Keep the GPU mask assigned by Slurm.
+visible_devices = ""
+remote_workdir = "/scratch/alice/csonnab/misc/LLM-AWAY-remote"
+runner = "/scratch/alice/csonnab/misc/LLM-AWAY-remote/scripts/remote/llm-away-slurm-run"
+serverctl = "/scratch/alice/csonnab/misc/LLM-AWAY-remote/scripts/remote/llm-away-serverctl"
+state_dir = "$HOME/.cache/llm-away/hydra-agent"
+custom_options = ["--cpus-per-task=16", "--mem=64G", "--time=02:00:00"]
+
+[hosts.hydra-mi100]
+ssh_host = "hydra"
+partition = "amd_gpu"
+exclusive = false
+node_class = ""
+mi50_fallback = false
+nodes = 1
+gpus = 8
+backend = "rocm"
+rocm_arch = "gfx908"
+# Keep the GPU mask assigned by Slurm.
+visible_devices = ""
+remote_workdir = "/scratch/alice/csonnab/misc/LLM-AWAY-remote"
+runner = "/scratch/alice/csonnab/misc/LLM-AWAY-remote/scripts/remote/llm-away-slurm-run"
+serverctl = "/scratch/alice/csonnab/misc/LLM-AWAY-remote/scripts/remote/llm-away-serverctl"
+state_dir = "$HOME/.cache/llm-away/hydra-mi100"
+custom_options = ["--cpus-per-task=16", "--mem=64G", "--time=02:00:00"]
 
 [gateway]
 # 0 means choose a free local SSH tunnel port for each gateway process.

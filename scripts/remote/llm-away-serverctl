@@ -110,6 +110,8 @@ def read_log_since(offset):
     return {"offset": offset, "data": data}
 
 def rocm_arch_command():
+    if llama.get("backend") == "cuda":
+        return "export LLAMACPP_ROCM_ARCH=unused"
     arch = llama.get("rocm_arch", "auto")
     if arch != "auto":
         return "export LLAMACPP_ROCM_ARCH=" + q(arch)
@@ -154,12 +156,7 @@ def sbatch_options():
     gpus = max(0, int(payload.get("gpus") or 0))
     opts = ["#SBATCH -p " + payload.get("partition", "prod")]
     if gpus > 0:
-        # Partial-node GPU allocation (H100/H200 hosts): request N GPUs on a
-        # single node without --exclusive, so other jobs can share the node.
-        opts.append("#SBATCH --gres=gpu:" + str(gpus))
-        if nodes > 1:
-            opts.append("#SBATCH --nodes=" + str(nodes))
-        return "\n".join(opts)
+        opts.extend(["#SBATCH --gres=gpu:" + str(gpus), "#SBATCH --nodes=" + str(nodes), "#SBATCH --ntasks=1"])
     if nodes > 1:
         # Multi-node: request N full nodes. The remote wrapper must span the model
         # across nodes (e.g. llama.cpp RPC/multi-node) for this to increase VRAM;
@@ -174,7 +171,7 @@ def sbatch_options():
             if node_class == "mi100" and any(int(n[3:]) >= 280 for n in chosen):
                 opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=1")
         return "\n".join(opts)
-    if payload.get("exclusive", True):
+    if not gpus and payload.get("exclusive", True):
         opts.append("#SBATCH --exclusive")
     node_class = payload.get("node_class", "")
     custom = payload.get("custom_options") or []
@@ -272,6 +269,7 @@ cd {workdir_q}
 export LLAMACPP_BACKEND={backend_q}
 {rocm_arch}
 export LLAMACPP_VISIBLE_DEVICES={devices_q}
+{allocated_devices}
 export MODEL_NAME={model_name_q}
 export LLAMACPP_HOST=0.0.0.0
 export LLAMACPP_PORT={server_port_q}
@@ -290,6 +288,7 @@ exec {server_cmd}
         backend_q=q(llama.get("backend", "rocm")),
         rocm_arch=rocm_arch_command(),
         devices_q=q(llama.get("visible_devices", "0,1,2,3,4,5,6,7")),
+        allocated_devices=('export LLAMACPP_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"' if llama.get("backend") == "cuda" else 'export LLAMACPP_VISIBLE_DEVICES="${ROCR_VISIBLE_DEVICES:-${HIP_VISIBLE_DEVICES:-}}"') if payload.get("gpus") else ":",
         model_name_q=q(llama.get("model_name") or payload.get("model") or "deepseek-v2.5-q4km"),
         server_port_q=q(payload["server_port"]),
         context_size_q=q(llama.get("context_size", 8192)),

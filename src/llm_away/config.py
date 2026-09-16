@@ -53,6 +53,13 @@ class HostConfig:
     # GPU count per allocation. 0 lets Slurm/the remote wrapper decide (default);
     # set to e.g. 4 for `--gres=gpu:4` partial-node allocations (H100/H200 hosts).
     gpus: int = 0
+    remote_workdir: str = ""
+    runner: str = ""
+    serverctl: str = ""
+    state_dir: str = ""
+    backend: str = ""
+    rocm_arch: str = ""
+    visible_devices: str | None = None
 
     @property
     def destination(self) -> str:
@@ -73,6 +80,7 @@ class RemoteConfig:
 
 @dataclass(frozen=True)
 class SlurmConfig:
+    gpus: int = 0
     partition: str = "prod"
     exclusive: bool = True
     node_class: str = ""
@@ -85,6 +93,8 @@ class SlurmConfig:
     debug: bool = False
 
     def __post_init__(self):
+        if self.gpus < 0:
+            raise ValueError("slurm.gpus must be >= 0")
         if self.nodes < 1:
             raise ValueError("slurm.nodes must be >= 1")
 
@@ -179,9 +189,20 @@ class AppConfig:
         if not (name or "").strip():
             return self
         host = self.host_config(name)
+        if host.name == "default" and host.ssh_host == self.ssh.host:
+            return self
         return replace(
             self,
             ssh=replace(self.ssh, host=host.ssh_host, user=host.ssh_user),
+            remote=replace(self.remote,
+                workdir=host.remote_workdir or self.remote.workdir,
+                runner=host.runner or self.remote.runner,
+                serverctl=host.serverctl or self.remote.serverctl,
+                state_dir=host.state_dir or self.remote.state_dir),
+            llamacpp=replace(self.llamacpp,
+                backend=host.backend or self.llamacpp.backend,
+                rocm_arch=host.rocm_arch or self.llamacpp.rocm_arch,
+                visible_devices=self.llamacpp.visible_devices if host.visible_devices is None else host.visible_devices),
             slurm=replace(
                 self.slurm,
                 partition=host.partition or self.slurm.partition,
@@ -189,6 +210,7 @@ class AppConfig:
                 node_class=host.node_class,
                 mi50_fallback=host.mi50_fallback,
                 nodes=host.nodes,
+                gpus=host.gpus,
                 custom_options=list(host.custom_options),
                 debug=host.debug,
             ),

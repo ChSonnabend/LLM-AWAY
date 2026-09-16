@@ -65,6 +65,8 @@ def choose_host(options: list[str], current: str) -> str | None:
             return None
         print(f"llm-away: selected host {options[index]}", file=sys.stderr)
         return options[index]
+    if not sys.stdin.isatty():
+        return "default" if "default" in options else options[0]
     # Non-interactive: fall back to the default host unless exactly one is configured.
     if len(options) == 1:
         return options[0]
@@ -465,10 +467,13 @@ def main(argv: list[str] | None = None) -> int:
     if cfg is None:
         return 130
     if args.command == "serve":
-        gpus = args.gpus or os.environ.get("REMOTE_GPUS")
-        if gpus:
+        gpus = args.gpus if args.gpus is not None else os.environ.get("REMOTE_GPUS")
+        if gpus is not None:
             try:
-                cfg = dataclasses.replace(cfg, llamacpp=dataclasses.replace(cfg.llamacpp, visible_devices=visible_devices_for_gpus(int(gpus))))
+                count = int(gpus)
+                visible_devices_for_gpus(count)  # Validate without overriding Slurm's device mask.
+                cfg = dataclasses.replace(cfg, slurm=dataclasses.replace(cfg.slurm, gpus=count),
+                                          llamacpp=dataclasses.replace(cfg.llamacpp, visible_devices=""))
             except ValueError as exc:
                 print(f"llm-away: {exc}", file=sys.stderr)
                 return 2

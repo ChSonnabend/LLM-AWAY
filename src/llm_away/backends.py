@@ -22,8 +22,7 @@ class BackendError(RuntimeError):
 
 def gpus_for_cfg(cfg: AppConfig) -> int:
     """GPU count for the active host (from [hosts.NAME].gpus); 0 = cluster default."""
-    active = next((h for h in cfg.host_configs() if h.ssh_host == cfg.ssh.host), None)
-    return active.gpus if active else 0
+    return cfg.slurm.gpus
 
 
 @dataclass(frozen=True)
@@ -63,11 +62,12 @@ class SlurmSshBackend(Backend):
             "mi50_fallback": cfg.slurm.mi50_fallback,
             "custom_options": cfg.slurm.custom_options,
             "debug": cfg.slurm.debug,
+            "gpus": cfg.slurm.gpus,
+            "nodes": cfg.slurm.nodes,
             "llamacpp": {
                 "backend": cfg.llamacpp.backend,
                 "rocm_arch": cfg.llamacpp.rocm_arch,
                 "visible_devices": cfg.llamacpp.visible_devices,
-                "gpus": gpus_for_cfg(cfg),
                 "build_before_run": cfg.llamacpp.build_before_run,
                 "show_config_before_run": cfg.llamacpp.show_config_before_run,
                 "list_devices_before_run": cfg.llamacpp.list_devices_before_run,
