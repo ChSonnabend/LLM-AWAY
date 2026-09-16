@@ -19,3 +19,7 @@ models/*/*
 *.gguf
 *.safetensors
 *.bin
+
+# macOS filesystem metadata
+._*
+.DS_Store

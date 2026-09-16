@@ -59,9 +59,9 @@ fi
 
 read -r -a BUILD_TARGETS <<< "${LLAMACPP_BUILD_TARGETS:-llama-cli llama-server llama-bench}"
 
-echo "llamacpp-llm: backend=$BACKEND build_dir=$BUILD_DIR"
-[[ ${ROCM_ARCH:-} ]] && echo "llamacpp-llm: rocm_arch=$ROCM_ARCH"
-echo "llamacpp-llm: targets=${BUILD_TARGETS[*]}"
+echo "lLLM-AWAY-remote: backend=$BACKEND build_dir=$BUILD_DIR"
+[[ ${ROCM_ARCH:-} ]] && echo "lLLM-AWAY-remote: rocm_arch=$ROCM_ARCH"
+echo "lLLM-AWAY-remote: targets=${BUILD_TARGETS[*]}"
 
 cmake "${CMAKE_ARGS[@]}"
 cmake --build "$BUILD_DIR" --config Release -j"${JOBS:-$(nproc)}" --target "${BUILD_TARGETS[@]}"

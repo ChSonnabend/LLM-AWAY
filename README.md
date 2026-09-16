@@ -68,10 +68,10 @@ LLAMACPP_BACKEND=rocm LLAMACPP_ROCM_ARCH=gfx906 bin/build-llama  # MI50
 LLAMACPP_BACKEND=rocm LLAMACPP_ROCM_ARCH=gfx908 bin/build-llama  # MI100
 ```
 
-For a fresh rebuild of the current stable checkout on both EPN GPU classes:
+For a fresh rebuild of the current stable checkout on both AWAY GPU classes:
 
 ```bash
-cd /scratch/csonnabe/cern-fellowship/misc/lamacpp-llm
+cd /scratch/csonnabe/cern-fellowship/misc/LLM-AWAY-remote
 LLAMACPP_BACKEND=rocm LLAMACPP_ROCM_ARCH=gfx906 LLAMACPP_CXX_STANDARD=20 bin/build-llama
 LLAMACPP_BACKEND=rocm LLAMACPP_ROCM_ARCH=gfx908 LLAMACPP_CXX_STANDARD=20 bin/build-llama
 ```
@@ -233,12 +233,12 @@ The old DeepSeek-specific scripts still exist as compatibility wrappers:
 ./run-deepseek-v25-server.sh
 ```
 
-<!-- BEGIN EPN SETUP -->
-## EPN Gateway Setup
+<!-- BEGIN AWAY SETUP -->
+## AWAY Gateway Setup
 
-Provision the EPN gateway helpers once on this Slurm login host. This project's
-`scripts/epn/` directory contains `setup.sh`, `llm-epn-serverctl`, and
-`llm-epn-slurm-run`, distributed together from the LLM_EPN repository's
+Provision the AWAY gateway helpers once on this Slurm login host. This project's
+`scripts/remote/` directory contains `setup.sh`, `llm-away-serverctl`, and
+`llm-away-slurm-run`, distributed together from the LLM_EPN repository's
 `scripts/remote/` directory. There is no client-side init-remote step.
 
 Prerequisites:
@@ -246,19 +246,19 @@ Prerequisites:
 - Bash, Python 3.6+, GNU coreutils (including timeout), and sbatch, squeue,
   scancel, sinfo, and srun available in noninteractive login shells.
 - Permission to submit jobs to the configured Slurm partition and GPU nodes.
-- This runner project, model presets and all GGUF shards, and the EPN state
+- This runner project, model presets and all GGUF shards, and the AWAY state
   directory accessible from both login and compute nodes.
 - A compatible llama.cpp build and the site's GPU runtime on compute nodes.
   Follow this README's build/download instructions; run GPU builds inside an
-  appropriate allocation. EPN MI50 uses gfx906 and MI100 uses gfx908. Choose a
+  appropriate allocation. AWAY MI50 uses gfx906 and MI100 uses gfx908. Choose a
   model/context that fits the available GPU memory and supports the hardware.
 - SSH from the client to this login host, with TCP forwarding to compute nodes.
 
 From the root of this runner project, on the login host:
 
 ```bash
-bash scripts/epn/setup.sh
-bash scripts/epn/setup.sh --check
+bash scripts/remote/setup.sh
+bash scripts/remote/setup.sh --check
 ```
 
 Setup verifies required commands and wrapper files, then installs the two
@@ -271,61 +271,61 @@ or Codex configuration.
 
 If storing the setup bundle elsewhere, pass `--workdir /path/to/runner`.
 Use `--bin-dir /path/to/bin` to change the helper destination; relative bin
-paths are home-relative. To update, refresh all three files in scripts/epn/
+paths are home-relative. To update, refresh all three files in scripts/remote/
 from the same LLM_EPN revision used by clients, then rerun setup here.
 
-In the client's LLM_EPN config/epn.toml, set:
+In the client's LLM_EPN config/away.toml, set:
 
 - [ssh].host: this login host (currently epnh).
 - [remote].workdir: the absolute path to this runner project (currently
-  /scratch/csonnabe/cern-fellowship/misc/lamacpp-llm).
-- [remote].serverctl and runner: $HOME/.local/bin/llm-epn-serverctl and
-  $HOME/.local/bin/llm-epn-slurm-run, or your chosen installation paths.
-- [remote].state_dir: a shared writable directory; default $HOME/.cache/llm-epn
+  /scratch/csonnabe/cern-fellowship/misc/LLM-AWAY-remote).
+- [remote].serverctl and runner: $HOME/.local/bin/llm-away-serverctl and
+  $HOME/.local/bin/llm-away-slurm-run, or your chosen installation paths.
+- [remote].state_dir: a shared writable directory; default $HOME/.cache/llm-away
   is created by the controller when used.
 - [slurm] and [llamacpp]: your partition, GPU/node selection, model, build, and
-  context settings. The built-in mi50/mi100 node ranges are EPN-specific.
+  context settings. The built-in mi50/mi100 node ranges are AWAY-specific.
 
 Then on the client, from its LLM_EPN repository:
 
 ```bash
-./bin/llm-epn list-models
+./bin/llm-away list-models
 ./scripts/init-local.sh
-./bin/llm-epn server-status --config config/epn.toml
-epn-agent
+./bin/llm-away server-status --config config/away.toml
+away-agent
 ```
 
 Discovery verifies SSH, wrapper configuration, and readable model files.
 Server status verifies the helper/Slurm status path and may create the state
-directory. Neither submits a job. epn-agent starts/reuses an allocation and
+directory. Neither submits a job. away-agent starts/reuses an allocation and
 checks the tunnel and inference; its configured exit behavior cancels the job.
 A successful setup check alone does not verify scheduling or GPU compatibility.
-<!-- END EPN SETUP -->
+<!-- END AWAY SETUP -->
 
-## EPN client MTP selection
+## AWAY client MTP selection
 
-The updated EPN client shows configured MTP and draft-file availability in model
-selection. Select a model interactively with `llm-epn select-model`, or use
-`llm-epn select-model --model qwen3.8-27b-q4km --mtp auto|on|off` (choose one mode).
+The updated AWAY client shows configured MTP and draft-file availability in model
+selection. Select a model interactively with `llm-away select-model`, or use
+`llm-away select-model --model qwen3.8-27b-q4km --mtp auto|on|off` (choose one mode).
 `init-local.sh` also accepts `--mtp`. The default `auto` preserves this remote
 preset's MTP setting. `on` requires its configured draft; `off` suppresses the MTP
 draft before llama.cpp arguments are assembled. An existing saved off choice is
 preserved by the interactive prompt. The local HTTP/Codex API is unchanged.
 
 The wrapper honors LLAMACPP_MTP=auto|on|off through llamacpp_apply_mtp_mode,
-called after loading model.env. Both updated EPN helpers pass that setting into
-Slurm jobs. Refresh scripts/epn/ from the updated client helper bundle and run
-`bash scripts/epn/setup.sh` when upgrading. Other installations need the updated
+called after loading model.env. Both updated AWAY helpers pass that setting into
+Slurm jobs. Refresh scripts/remote/ from the updated client helper bundle and run
+`bash scripts/remote/setup.sh` when upgrading. Other installations need the updated
 wrapper library as well; discovery reports mtp.toggle_supported.
 
 Do not append --spec-type none to disable MTP: repeated --spec-type flags
 accumulate in the pinned llama.cpp version. Keep manual speculative type/model
-arguments separate from the EPN MTP selector. Draft length remains a preset
+arguments separate from the AWAY MTP selector. Draft length remains a preset
 setting (currently 3). An explicit on choice checks the draft's availability,
 not completed builds, GPU compatibility, or speedup.
 
 Finish the llama.cpp rebuild before launching a server. Stop the local provider,
-cancel any old allocation with `llm-epn server-cancel --config config/epn.toml`,
+cancel any old allocation with `llm-away server-cancel --config config/away.toml`,
 then restart. The controller refuses to reuse an active job with a different
 saved MTP mode; selection never cancels jobs automatically. Changes to the
 remote preset in auto mode also require a new allocation.

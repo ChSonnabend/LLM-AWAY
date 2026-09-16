@@ -7,7 +7,7 @@ llamacpp_root() {
 }
 
 llamacpp_die() {
-  echo "llamacpp-llm: $*" >&2
+  echo "lLLM-AWAY-remote: $*" >&2
   exit 1
 }
 

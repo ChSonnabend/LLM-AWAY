@@ -4,7 +4,7 @@ set -euo pipefail
 
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 workdir="$(cd "$SOURCE_DIR/../.." && pwd)"
-bin_dir="${LLM_EPN_REMOTE_BIN:-$HOME/.local/bin}"
+bin_dir="${LLM_REMOTE_REMOTE_BIN:-$HOME/.local/bin}"
 mode=install
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -19,7 +19,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         -h|--help)
             echo "Usage: setup.sh [--check] [--workdir PATH] [--bin-dir PATH]"
-            echo "Run on the Slurm login host to install the adjacent EPN helpers."
+            echo "Run on the Slurm login host to install the adjacent AWAY helpers."
             echo "Default workdir: two directories above this script (the remote runner project)."
             echo "Default bin directory: \$HOME/.local/bin; relative overrides are home-relative."
             echo "Checks prerequisites first; backs up replacements and skips current files."
@@ -45,7 +45,7 @@ for file in bin/run-server bin/run-cli scripts/lib/llamacpp-env.sh; do
         exit 1
     fi
 done
-for name in llm-epn-slurm-run llm-epn-serverctl; do
+for name in llm-away-slurm-run llm-away-serverctl; do
     if [[ ! -r "$SOURCE_DIR/$name" ]]; then
         echo "Missing bundled helper: $SOURCE_DIR/$name" >&2
         exit 1
@@ -82,7 +82,7 @@ install_helper() (
     echo "Installed: $dest"
 )
 
-for name in llm-epn-slurm-run llm-epn-serverctl; do
+for name in llm-away-slurm-run llm-away-serverctl; do
     install_helper "$name"
 done
-echo "Remote EPN helpers are ready. Model files, GPU builds, and Slurm access must also be configured; see README."
+echo "Remote AWAY helpers are ready. Model files, GPU builds, and Slurm access must also be configured; see README."
