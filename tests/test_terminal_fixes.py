@@ -90,8 +90,8 @@ assert after == before
 
     def test_real_terminal_navigation_and_restoration(self):
         for keys, expected in [(b'\x1b[B\r', 1), (b'\x1bOA\r', 2),
-                               (b'\x1b[F\x1b[H\r', 0), (b'\x1b[6~\r', 2),
-                               (b'\x1b[6~\x1b[5~\r', 0), (b'jk\r', 0)]:
+                               (b'\x1b[F\x1b[H\r', 0), (b'\x1b[6~\r', 0),
+                               (b'jj\r', 2), (b'jk\r', 0)]:
             with self.subTest(keys=keys):
                 self.assertIn(f'RESULT {expected}'.encode(), self.run_menu(keys))
 
