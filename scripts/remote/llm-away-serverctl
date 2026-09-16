@@ -267,6 +267,7 @@ set -euo pipefail
 echo "$(hostname -s)" > {host_q}
 cd {workdir_q}
 export LLAMACPP_BACKEND={backend_q}
+export LLAMACPP_CONTAINER={container_q}
 {rocm_arch}
 export LLAMACPP_VISIBLE_DEVICES={devices_q}
 {allocated_devices}
@@ -285,6 +286,7 @@ exec {server_cmd}
         log_q=q(job_log_template),
         host_q=q(host_path),
         workdir_q=q(workdir),
+        container_q=q(llama.get("container", "")),
         backend_q=q(llama.get("backend", "rocm")),
         rocm_arch=rocm_arch_command(),
         devices_q=q(llama.get("visible_devices", "0,1,2,3,4,5,6,7")),

@@ -66,14 +66,15 @@ mi50_fallback = false
 nodes = 1
 gpus = 4
 backend = "cuda"
+container = "/lustre/alice/users/csonnab/TPC/TPC_PRODUCTION/Containers/llama-server-cuda.sif"
 rocm_arch = "auto"
 # Keep the GPU mask assigned by Slurm.
 visible_devices = ""
-remote_workdir = "/scratch/alice/csonnab/misc/LLM-AWAY-remote"
-runner = "/scratch/alice/csonnab/misc/LLM-AWAY-remote/scripts/remote/llm-away-slurm-run"
-serverctl = "/scratch/alice/csonnab/misc/LLM-AWAY-remote/scripts/remote/llm-away-serverctl"
-# Preserve the existing state location so active jobs remain discoverable.
-state_dir = "$HOME/.cache/llm-away/hydra-agent"
+remote_workdir = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY-remote"
+runner = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY-remote/scripts/remote/llm-away-slurm-run"
+serverctl = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY-remote/scripts/remote/llm-away-serverctl"
+# Login-host /u home paths are unavailable on Hydra GPU nodes.
+state_dir = "/lustre/alice/users/csonnab/.cache/llm-away/hydra-h200"
 custom_options = ["--cpus-per-task=16", "--mem=64G", "--time=02:00:00"]
 
 [hosts.hydra-mi100]
@@ -85,13 +86,14 @@ mi50_fallback = false
 nodes = 1
 gpus = 8
 backend = "rocm"
+container = "/lustre/alice/users/csonnab/TPC/TPC_PRODUCTION/Containers/rocm_torch_env.sif"
 rocm_arch = "gfx908"
 # Keep the GPU mask assigned by Slurm.
 visible_devices = ""
-remote_workdir = "/scratch/alice/csonnab/misc/LLM-AWAY-remote"
-runner = "/scratch/alice/csonnab/misc/LLM-AWAY-remote/scripts/remote/llm-away-slurm-run"
-serverctl = "/scratch/alice/csonnab/misc/LLM-AWAY-remote/scripts/remote/llm-away-serverctl"
-state_dir = "$HOME/.cache/llm-away/hydra-mi100"
+remote_workdir = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY-remote"
+runner = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY-remote/scripts/remote/llm-away-slurm-run"
+serverctl = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY-remote/scripts/remote/llm-away-serverctl"
+state_dir = "/lustre/alice/users/csonnab/.cache/llm-away/hydra-mi100"
 custom_options = ["--cpus-per-task=16", "--mem=64G", "--time=02:00:00"]
 
 [gateway]

@@ -66,6 +66,7 @@ class SlurmSshBackend(Backend):
             "nodes": cfg.slurm.nodes,
             "llamacpp": {
                 "backend": cfg.llamacpp.backend,
+                "container": cfg.llamacpp.container,
                 "rocm_arch": cfg.llamacpp.rocm_arch,
                 "visible_devices": cfg.llamacpp.visible_devices,
                 "build_before_run": cfg.llamacpp.build_before_run,
@@ -227,6 +228,7 @@ class SlurmServerBackend(Backend):
             "server_port": (extra or {}).get("server_port", self.job_port) or cfg.gateway.server_port,
             "llamacpp": {
                 "backend": cfg.llamacpp.backend,
+                "container": cfg.llamacpp.container,
                 "rocm_arch": cfg.llamacpp.rocm_arch,
                 "visible_devices": cfg.llamacpp.visible_devices,
                 "build_before_run": cfg.llamacpp.build_before_run,

@@ -57,6 +57,7 @@ class HostConfig:
     runner: str = ""
     serverctl: str = ""
     state_dir: str = ""
+    container: str = ""
     backend: str = ""
     rocm_arch: str = ""
     visible_devices: str | None = None
@@ -116,6 +117,7 @@ class GatewayConfig:
 
 @dataclass(frozen=True)
 class LlamaCppConfig:
+    container: str = ""
     backend: str = "rocm"
     rocm_arch: str = "auto"
     visible_devices: str = "0,1,2,3,4,5,6,7"
@@ -200,6 +202,7 @@ class AppConfig:
                 serverctl=host.serverctl or self.remote.serverctl,
                 state_dir=host.state_dir or self.remote.state_dir),
             llamacpp=replace(self.llamacpp,
+                container=host.container,
                 backend=host.backend or self.llamacpp.backend,
                 rocm_arch=host.rocm_arch or self.llamacpp.rocm_arch,
                 visible_devices=self.llamacpp.visible_devices if host.visible_devices is None else host.visible_devices),
