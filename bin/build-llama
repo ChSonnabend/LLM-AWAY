@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
+
+source "$ROOT_DIR/scripts/lib/llamacpp-env.sh"
+
+BACKEND=$(llamacpp_detect_backend)
+SOURCE_DIR=${LLAMACPP_SOURCE_DIR:-$ROOT_DIR/llama.cpp}
+
+if [[ ! -d $SOURCE_DIR ]]; then
+  git clone https://github.com/ggml-org/llama.cpp.git "$SOURCE_DIR"
+fi
+
+CMAKE_ARGS=(
+  -S "$SOURCE_DIR"
+  -B ""
+  -DCMAKE_BUILD_TYPE=Release
+  -DCMAKE_CXX_STANDARD="${LLAMACPP_CXX_STANDARD:-17}"
+  -DLLAMA_CURL=ON
+)
+
+case "$BACKEND" in
+  rocm)
+    ROCM_ARCH=$(llamacpp_detect_rocm_arch)
+    BUILD_ID=$(llamacpp_build_id "$BACKEND" "$ROCM_ARCH")
+    BUILD_DIR=${LLAMACPP_BUILD_DIR:-$ROOT_DIR/builds/$BUILD_ID}
+    CMAKE_ARGS[3]="$BUILD_DIR"
+    CMAKE_ARGS+=(
+      -DGGML_HIP=ON
+      -DAMDGPU_TARGETS="$ROCM_ARCH"
+    )
+    if command -v hipconfig > /dev/null 2>&1; then
+      export HIPCXX="${HIPCXX:-$(hipconfig -l)/clang}"
+      export HIP_PATH="${HIP_PATH:-$(hipconfig -R)}"
+    fi
+    ;;
+  cuda)
+    BUILD_ID=$(llamacpp_build_id "$BACKEND")
+    BUILD_DIR=${LLAMACPP_BUILD_DIR:-$ROOT_DIR/builds/$BUILD_ID}
+    CMAKE_ARGS[3]="$BUILD_DIR"
+    CMAKE_ARGS+=(-DGGML_CUDA=ON)
+    ;;
+  cpu)
+    BUILD_ID=$(llamacpp_build_id "$BACKEND")
+    BUILD_DIR=${LLAMACPP_BUILD_DIR:-$ROOT_DIR/builds/$BUILD_ID}
+    CMAKE_ARGS[3]="$BUILD_DIR"
+    ;;
+  *)
+    llamacpp_die "unsupported LLAMACPP_BACKEND=$BACKEND"
+    ;;
+esac
+
+if [[ -n ${LLAMACPP_CMAKE_ARGS:-} ]]; then
+  read -r -a EXTRA_CMAKE_ARGS <<< "$LLAMACPP_CMAKE_ARGS"
+  CMAKE_ARGS+=("${EXTRA_CMAKE_ARGS[@]}")
+fi
+
+read -r -a BUILD_TARGETS <<< "${LLAMACPP_BUILD_TARGETS:-llama-cli llama-server llama-bench}"
+
+echo "llamacpp-llm: backend=$BACKEND build_dir=$BUILD_DIR"
+[[ ${ROCM_ARCH:-} ]] && echo "llamacpp-llm: rocm_arch=$ROCM_ARCH"
+echo "llamacpp-llm: targets=${BUILD_TARGETS[*]}"
+
+cmake "${CMAKE_ARGS[@]}"
+cmake --build "$BUILD_DIR" --config Release -j"${JOBS:-$(nproc)}" --target "${BUILD_TARGETS[@]}"

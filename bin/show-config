@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
+
+source "$ROOT_DIR/scripts/lib/llamacpp-env.sh"
+
+llamacpp_load_model_config "${MODEL_NAME:-$LLAMACPP_DEFAULT_MODEL}"
+
+BACKEND=$(llamacpp_detect_backend)
+llamacpp_export_visible_devices "$BACKEND"
+GPU_COUNT=${LLAMACPP_GPU_COUNT:-$(llamacpp_gpu_count "$BACKEND")}
+BUILD_ARCH=
+if [[ $BACKEND == rocm ]]; then
+  BUILD_ARCH=$(llamacpp_detect_rocm_arch)
+fi
+BUILD_ID=$(llamacpp_build_id "$BACKEND" "$BUILD_ARCH")
+MODEL_PATH=$(llamacpp_resolve_model)
+DRAFT_MODEL_PATH=
+if [[ -n ${MODEL_DRAFT_GGUF:-} ]]; then
+  DRAFT_MODEL_PATH=$(llamacpp_resolve_existing_path "$MODEL_DRAFT_GGUF" "draft model")
+fi
+
+echo "root=$ROOT_DIR"
+echo "model_name=$MODEL_NAME"
+echo "model_alias=$MODEL_ALIAS"
+echo "model_path=$MODEL_PATH"
+[[ -n $DRAFT_MODEL_PATH ]] && echo "draft_model_path=$DRAFT_MODEL_PATH"
+echo "backend=$BACKEND"
+[[ -n $BUILD_ARCH ]] && echo "rocm_arch=$BUILD_ARCH"
+echo "gpu_count=$GPU_COUNT"
+echo "build_id=$BUILD_ID"
+echo "build_dir=$ROOT_DIR/builds/$BUILD_ID"
+echo "hip_visible_devices=${HIP_VISIBLE_DEVICES:-}"
+echo "rocr_visible_devices=${ROCR_VISIBLE_DEVICES:-}"
+echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-}"
+echo "ctx_size=${LLAMACPP_CTX_SIZE:-${CTX_SIZE:-4096}}"
+echo "split_mode=${LLAMACPP_SPLIT_MODE:-layer}"
+echo "tensor_split=${LLAMACPP_TENSOR_SPLIT:-auto}"
+if [[ -n $DRAFT_MODEL_PATH ]]; then
+  echo "spec_type=${LLAMACPP_SPEC_TYPE:-draft-mtp}"
+  echo "spec_draft_n_max=${LLAMACPP_SPEC_DRAFT_N_MAX:-3}"
+fi
+
+if LLAMA_CLI=$(llamacpp_binary cli "$BACKEND" 2> /dev/null); then
+  echo "llama_cli=$LLAMA_CLI"
+else
+  echo "llama_cli=<not built>"
+fi
+
+if LLAMA_SERVER=$(llamacpp_binary server "$BACKEND" 2> /dev/null); then
+  echo "llama_server=$LLAMA_SERVER"
+else
+  echo "llama_server=<not built>"
+fi

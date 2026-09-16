@@ -1,0 +1,21 @@
+# Runtime dependencies and generated files
+llama.cpp/
+.venv*/
+venvs/
+builds/
+__pycache__/
+*.pyc
+*.backup.*/
+gpucore.*
+core
+core.*
+*.log
+status.txt
+# Track model recipes only, never weights or aliases to weights.
+models/*
+!models/*/
+models/*/*
+!models/*/model.env
+*.gguf
+*.safetensors
+*.bin
