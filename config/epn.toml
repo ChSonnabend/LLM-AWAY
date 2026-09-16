@@ -44,6 +44,13 @@ exclusive = true
 # Prefer MI100; use an idle MI50 when no MI100 is idle.
 node_class = "mi100"
 mi50_fallback = true
+# Full nodes per allocation. 1 = single node (current behavior). >1 requests a
+# multi-node allocation, which only increases VRAM for one model when the remote
+# wrapper spans it across nodes (llama.cpp RPC/multi-node) and Slurm is IB-aware.
+# With the current single-node wrapper, N>1 yields N independent nodes but the
+# server still uses one. Override per launch with: llm-epn serve --nodes N
+# or EPN_NODES=N epn-agent
+nodes = 1
 custom_options = []
 debug = false
 
@@ -77,12 +84,12 @@ max_tokens = 16384
 extra_args = ["-n", "64"]
 model_name = "qwen3.8-27b-q4km"
 # auto follows the remote preset; on/off explicitly control MTP in the remote wrapper.
-mtp = "off"
+mtp = "on"
 server_cli = "bin/run-server"
 model_path = ""
-context_size = 262000
+context_size = 45000
 # Qwen 3.8 otherwise returns its internal reasoning separately; direct content works best for the proxy.
-server_extra_args = ["--reasoning", "off"]
+server_extra_args = ["--reasoning", "off", "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--batch-size", "2048", "--ubatch-size", "2048"]
 # Optional full server command, relative to remote.workdir if not absolute.
 # When set, this replaces server_cli/server_extra_args.
 server_command = []

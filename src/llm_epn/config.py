@@ -48,8 +48,16 @@ class SlurmConfig:
     exclusive: bool = True
     node_class: str = ""
     mi50_fallback: bool = False
+    # Number of full nodes per allocation. 1 is the current single-node behavior;
+    # >1 requests a multi-node allocation (needs a multi-node-capable remote wrapper
+    # and Slurm IB config to actually span the model across nodes).
+    nodes: int = 1
     custom_options: list[str] = field(default_factory=list)
     debug: bool = False
+
+    def __post_init__(self):
+        if self.nodes < 1:
+            raise ValueError("slurm.nodes must be >= 1")
 
 
 @dataclass(frozen=True)
@@ -82,7 +90,7 @@ class LlamaCppConfig:
     model_name: str = "qwen3.8-flash-next-125b-ultralite-37g"
     server_cli: str = "bin/run-server"
     model_path: str = ""
-    context_size: int = 262000
+    context_size: int = 45000
     server_extra_args: list[str] = field(default_factory=list)
     server_command: list[str] = field(default_factory=list)
     mtp: str = "auto"

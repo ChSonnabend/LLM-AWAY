@@ -150,7 +150,22 @@ def server_command():
     return " ".join(q(arg) for arg in args)
 
 def sbatch_options():
+    nodes = max(1, int(payload.get("nodes") or 1))
     opts = ["#SBATCH -p " + payload.get("partition", "prod")]
+    if nodes > 1:
+        # Multi-node: request N full nodes. The remote wrapper must span the model
+        # across nodes (e.g. llama.cpp RPC/multi-node) for this to increase VRAM;
+        # otherwise Slurm schedules N nodes but the server still uses one.
+        opts.append("#SBATCH --nodes=" + str(nodes))
+        if payload.get("exclusive", True):
+            opts.append("#SBATCH --exclusive")
+        node_class = payload.get("node_class", "")
+        if node_class in ("mi50", "mi100"):
+            chosen = choose_node(node_class, count=nodes)
+            opts.append("#SBATCH -w " + ",".join(chosen))
+            if node_class == "mi100" and any(int(n[3:]) >= 280 for n in chosen):
+                opts.append("#SBATCH --export=ALL,EPN_NODE_MI100=1")
+        return "\n".join(opts)
     if payload.get("exclusive", True):
         opts.append("#SBATCH --exclusive")
     node_class = payload.get("node_class", "")
@@ -178,7 +193,8 @@ def sbatch_options():
         opts.append("#SBATCH -w " + node_class)
     return "\n".join(opts)
 
-def choose_node(node_class):
+def choose_node(node_class, count=1):
+    count = int(count)
     ranges = {
         "mi50": lambda n: 0 <= n <= 279,
         "mi100": lambda n: 280 <= n <= 349,
@@ -211,11 +227,20 @@ def choose_node(node_class):
     candidates = sorted(idle or fallback or busy)
     if not candidates:
         sys.exit("No usable " + node_class + " nodes reported by Slurm in partition " + partition)
-    return candidates[int(time.time()) % len(candidates)]
+    count = max(1, int(count))
+    if count == 1:
+        return candidates[int(time.time()) % len(candidates)]
+    # Multi-node: prefer distinct idle nodes (a multi-node allocation must use
+    # separate nodes); fall back to busy nodes if too few are idle.
+    if len(candidates) < count:
+        sys.exit("Requested " + str(count) + " nodes but only " + str(len(candidates))
+                 + " usable " + node_class + " nodes are reported by Slurm in partition " + partition)
+    start = int(time.time()) % len(candidates)
+    return [candidates[(start + i) % len(candidates)] for i in range(count)]
 
 def submit():
     state = current_status()
-    if state.get("active"):
+    if state.get("active") and not payload.get("force_new_job"):
         if state.get("mtp", "auto") != mtp:
             sys.exit("Running server has a different MTP setting; cancel it with llm-epn server-cancel before restarting")
         print(json.dumps(state))
@@ -300,8 +325,11 @@ elif command == "cancel":
     with open(lock_path, "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         state = read_state()
-        if state.get("job_id"):
-            subprocess.call(["scancel", str(state["job_id"])])
+        # Prefer an explicitly supplied job ID (e.g. a second --slurm-job allocation);
+        # otherwise cancel whatever job the default state file references.
+        job_id = str(payload.get("job_id") or state.get("job_id") or "")
+        if job_id:
+            subprocess.call(["scancel", job_id])
         state["active"] = False
         write_state(state)
         print(json.dumps(current_status()))

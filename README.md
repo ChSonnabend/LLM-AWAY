@@ -306,6 +306,38 @@ All users run against `/scratch/csonnabe/cern-fellowship/misc/lamacpp-llm`, incl
 
 Each distinct remote Unix account gets its own Slurm allocations and `$HOME/.cache/llm-epn` state/logs. Users sharing the same remote account also share that state. Other users need read/traverse access to the shared model directories and read/execute access to the runtime; setup reports access failures before saving. Model selection lists the presets already installed there. No permissions are broadened by local setup.
 
+## Running multiple agents, extra allocations, and multi-node
+
+### Multiple agents on the same allocation
+
+Several local agents can share one remote `llama-server` allocation. Start a second local provider on a different local port:
+
+```bash
+EPN_PORT=8766 epn-agent          # second local provider on 127.0.0.1:8766
+```
+
+Point that agent's Codex session at `http://127.0.0.1:8766/v1`. Both agents then share the same GPU allocation, so their requests queue on the model rather than running at independent full speed.
+
+### A second Slurm allocation for the same model
+
+To give a second agent its own allocation (true parallelism, at the cost of another node), point it at a second remote server port. When the running job does not already serve that port, a fresh allocation is submitted on it:
+
+```bash
+EPN_PORT=8766 EPN_SLURM_JOB=8081 epn-agent   # or: llm-epn serve --port 8766 --slurm-job 8081
+```
+
+`--slurm-job` is the *remote* port of the `llama-server`; the Slurm job ID is derived and managed internally. Omit it to reuse the default allocation.
+
+### Multi-node allocations (`--nodes`)
+
+`--nodes N` (or `EPN_NODES=N`, or `[slurm].nodes = N`) requests N full nodes in one allocation:
+
+```bash
+EPN_NODES=2 epn-agent            # or: llm-epn serve --nodes 2
+```
+
+This is the hook for scaling a single model across more GPUs/VRAM. It only actually increases VRAM for one model when the **remote wrapper** spans the model across nodes (for example llama.cpp built with the RPC/multi-node backend) **and** the Slurm cluster is IB-aware (`SlurmdParameters` with the IB network plugin). With the current single-node wrapper, N > 1 yields N scheduled nodes but the server still uses one of them. InfiniBand is used by the remote inference runtime, not by the EPN launcher.
+
 ### EPN agent efficiency and permissions
 
 The `[codex]` section in `config/epn.toml` controls the generated EPN profile and

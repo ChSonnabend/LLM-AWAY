@@ -116,6 +116,8 @@ class SlurmServerBackend(Backend):
     def __init__(self, config: AppConfig):
         self.config = config
         self.local_port = config.gateway.local_port or self.find_free_port()
+        self.job_port: int | None = None
+        self.slurm_nodes: int | None = None
         self._tunnel: subprocess.Popen | None = None
         self._tunnel_target: str | None = None
         self._owned_job_id: str | None = None
@@ -157,12 +159,23 @@ class SlurmServerBackend(Backend):
             before = self.serverctl("status", model)
             if self._closing.is_set():
                 raise BackendError("backend is shutting down")
-            state = self.serverctl("ensure", model)
-            self._reused_job = bool(before.get("active") and state.get("active"))
-            if not before.get("active") and state.get("active") and state.get("job_id"):
-                self._owned_job_id = str(state["job_id"])
+            # A requested remote port identifies a specific server allocation: reuse it
+            # when the running job already serves that port, otherwise start a fresh
+            # allocation so multiple agents can run on separate Slurm nodes.
+            if self.job_port is not None and int(before.get("server_port") or 0) != int(self.job_port):
+                state = self.serverctl("ensure", model, {"force_new_job": True, "server_port": self.job_port})
+                self._owned_job_id = str(state.get("job_id") or "")
+                self._reused_job = False
                 self._log_offset = 0
-                print(f"llm-epn: submitted Slurm job {self._owned_job_id}", file=sys.stderr)
+                if self._owned_job_id:
+                    print(f"llm-epn: submitted new Slurm job {self._owned_job_id} (remote port {self.job_port})", file=sys.stderr)
+            else:
+                state = self.serverctl("ensure", model)
+                self._reused_job = bool(before.get("active") and state.get("active"))
+                if not before.get("active") and state.get("active") and state.get("job_id"):
+                    self._owned_job_id = str(state["job_id"])
+                    self._log_offset = 0
+                    print(f"llm-epn: submitted Slurm job {self._owned_job_id}", file=sys.stderr)
             deadline = time.time() + self.config.gateway.startup_timeout_seconds
 
             last_phase = None
@@ -201,8 +214,9 @@ class SlurmServerBackend(Backend):
             "exclusive": cfg.slurm.exclusive,
             "node_class": cfg.slurm.node_class,
             "mi50_fallback": cfg.slurm.mi50_fallback,
+            "nodes": self.slurm_nodes or cfg.slurm.nodes,
             "custom_options": cfg.slurm.custom_options,
-            "server_port": cfg.gateway.server_port,
+            "server_port": (extra or {}).get("server_port", self.job_port) or cfg.gateway.server_port,
             "llamacpp": {
                 "backend": cfg.llamacpp.backend,
                 "rocm_arch": cfg.llamacpp.rocm_arch,
@@ -260,13 +274,14 @@ class SlurmServerBackend(Backend):
             sys.stderr.flush()
 
     def ensure_tunnel(self, host: str) -> None:
-        target = f"{self.local_port}:{host}:{self.config.gateway.server_port}"
+        remote_port = self.job_port if self.job_port is not None else self.config.gateway.server_port
+        target = f"{self.local_port}:{host}:{remote_port}"
         if self._tunnel and self._tunnel.poll() is None and self._tunnel_target == target:
             return
         if self._tunnel and self._tunnel.poll() is None:
             self._tunnel.terminate()
 
-        local = f"{self.local_port}:{host}:{self.config.gateway.server_port}"
+        local = f"{self.local_port}:{host}:{remote_port}"
         self._tunnel = subprocess.Popen(
             [
                 "ssh",
@@ -402,7 +417,8 @@ class SlurmServerBackend(Backend):
                 try:
                     job_label = self._owned_job_id or "reused server"
                     print(f"llm-epn: canceling Slurm job for {job_label}", file=sys.stderr)
-                    self.serverctl("cancel", self.config.model.name)
+                    extra = {"job_id": self._owned_job_id} if self._owned_job_id else None
+                    self.serverctl("cancel", self.config.model.name, extra)
                 except Exception as exc:
                     print(f"llm-epn: failed to cancel Slurm job: {exc}", file=sys.stderr)
                     return  # Keep the job reference so atexit can retry.

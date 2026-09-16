@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 from datetime import datetime
 import json
 import os
@@ -279,13 +280,36 @@ wire_api = "responses"
 def main(argv: list[str] | None = None) -> int:
     config_parent = argparse.ArgumentParser(add_help=False)
     config_parent.add_argument("--config", default=str(default_config_path()), help="Path to epn.toml")
+    config_parent.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="Local provider port for this instance, overriding [server].port (use different ports for parallel agents)",
+    )
 
     parser = argparse.ArgumentParser(prog="llm-epn")
     parser.add_argument("--config", default=str(default_config_path()), help="Path to epn.toml")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    serve_parser = sub.add_parser("serve", parents=[config_parent], help="Run the local OpenAI-compatible provider")
+    serve_parser = sub.add_parser("serve", parents=[config_parent], help="Run the local OpenAI-compatible provider (one per concurrent agent)")
     serve_parser.add_argument("--warm", action="store_true", help="Start the remote backend immediately")
+    serve_parser.add_argument(
+        "--slurm-job",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="Remote port of a second llama-server allocation to use; omit to reuse the default allocation. "
+             "When set to a port the running job does not serve, a new Slurm job is submitted on that port.",
+    )
+    serve_parser.add_argument(
+        "--nodes",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Full Slurm nodes per allocation, overriding [slurm].nodes (multi-node needs a "
+             "multi-node-capable remote wrapper + Slurm IB config; default 1).",
+    )
     sub.add_parser("codex-config", parents=[config_parent], help="Print a Codex config.toml snippet")
     setup_parser = sub.add_parser("configure-local", parents=[config_parent], help="Select your SSH alias and shared EPN installation")
     setup_parser.add_argument("--ssh-alias", help="EPN login-node Host alias from ~/.ssh/config")
@@ -358,9 +382,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     cfg = load_config(args.config)
+    if args.port is not None:
+        cfg = dataclasses.replace(
+            cfg,
+            server=dataclasses.replace(cfg.server, port=args.port),
+        )
     backend = make_backend(cfg)
 
     if args.command == "serve":
+        if args.slurm_job is not None:
+            backend.job_port = args.slurm_job
+        if args.nodes is not None:
+            backend.slurm_nodes = args.nodes
         serve(cfg, backend, warm=args.warm)
         return 0
 

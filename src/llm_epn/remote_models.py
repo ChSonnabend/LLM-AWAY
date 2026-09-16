@@ -38,7 +38,7 @@ def installed_models(workdir):
              'toggle=no; if declare -F llamacpp_apply_mtp_mode >/dev/null; then toggle=yes; fi; '
              'printf "%s\\0%s\\0%s\\0%s\\0%s\\0%s" "$MODEL_ALIAS" "$path" '
              '"${MODEL_DRAFT_GGUF:-}" "${LLAMACPP_SPEC_TYPE:-draft-mtp}" '
-             '"${LLAMACPP_SPEC_DRAFT_N_MAX:-3}" "$toggle"',
+             '"${LLAMACPP_SPEC_DRAFT_N_MAX:-8}" "$toggle"',
              "discover-model", str(library), preset.parent.name],
             cwd=str(root), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True, timeout=15,
