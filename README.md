@@ -377,7 +377,7 @@ Physical SSH/node names (`epnh`, `epnNNN`) are unchanged. On epnh the old
 
 Hydra profiles use `/scratch/alice/csonnab/misc/LLM-AWAY-remote`:
 
-- `hydra-agent` (or `hydra`): H200, `nvidia_gpu`, CUDA, four GPUs by default.
+- `hydra-h200` (or `hydra`): H200, `nvidia_gpu`, CUDA, four GPUs by default.
 - `hydra-mi100`: MI100, `amd_gpu`, ROCm `gfx908`, eight GPUs by default.
 
 Both preserve Slurm GPU visibility and accept `--gpus N`; profile-specific state
@@ -399,8 +399,8 @@ Suggested manual checks from the local project (not run during this migration):
 
 ```bash
 ./bin/llm-away list-models --host default
-./bin/llm-away list-models --host hydra-agent
-./bin/llm-away serve --host hydra-agent --gpus 4 --warm
+./bin/llm-away list-models --host hydra-h200
+./bin/llm-away serve --host hydra-h200 --gpus 4 --warm
 # Stop with Ctrl+C, then try MI100:
 ./bin/llm-away serve --host hydra-mi100 --gpus 8 --warm
 # Optional local regression suite:

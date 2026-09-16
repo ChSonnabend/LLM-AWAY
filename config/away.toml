@@ -57,7 +57,7 @@ debug = false
 # Additional remote hosts. `llm-away serve --host NAME` (or REMOTE_HOST=NAME away-agent)
 # connects to that host instead of [ssh].host. Models/infrastructure must exist
 # there before the host can be used (see README "Host selection").
-[hosts.hydra-agent]
+[hosts.hydra-h200]
 ssh_host = "hydra"
 partition = "nvidia_gpu"
 exclusive = false
@@ -72,6 +72,7 @@ visible_devices = ""
 remote_workdir = "/scratch/alice/csonnab/misc/LLM-AWAY-remote"
 runner = "/scratch/alice/csonnab/misc/LLM-AWAY-remote/scripts/remote/llm-away-slurm-run"
 serverctl = "/scratch/alice/csonnab/misc/LLM-AWAY-remote/scripts/remote/llm-away-serverctl"
+# Preserve the existing state location so active jobs remain discoverable.
 state_dir = "$HOME/.cache/llm-away/hydra-agent"
 custom_options = ["--cpus-per-task=16", "--mem=64G", "--time=02:00:00"]
 
