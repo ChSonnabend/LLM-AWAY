@@ -112,6 +112,7 @@ def available_tool_names(tools) -> set[str]:
 def tools_to_prompt(tools) -> str:
     lines = [
         "Tool calling:",
+        "When a requested step needs a tool, issue the actual tool call in the same response. Do not end a turn with only an announcement such as Let me check or I will run. Continue authorized steps until complete, blocked, or genuinely missing user information; do not wait for go ahead.",
         "Use only the tool names listed here. Emit tool calls as:",
         "<tool_call><function=tool_name><parameter=param_name>value</parameter></function></tool_call>",
         "Use short shell commands with literal shell quoting. Use raw text inside XML parameters (no JSON wrapper or backslash escaping); use JSON literals for numbers, booleans, arrays and objects. Stop after the tool call and wait for its result.",

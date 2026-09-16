@@ -117,6 +117,7 @@ def epn_model_catalog(model: str, context_window: int = 262000, settings: CodexC
                         "When editing, use apply_patch instead of shell heredocs or redirection. "
                         "Read only relevant files, batch related reads, and run one focused check after editing. "
                         "After two failed attempts change approach. Keep tool output short, retain errors, and avoid dumping files. "
+                        "When a requested step needs a tool, issue the actual tool call in the same response. Do not end a turn with only an announcement such as Let me check or I will run. Continue authorized steps until complete, blocked, or genuinely missing user information; do not wait for go ahead. "
                         "Complete authorized work without asking again. If permission is denied, use the available approval tool; "
                         "if none is available, report the exact blocker. Never print tool calls as a final answer."
                     )
