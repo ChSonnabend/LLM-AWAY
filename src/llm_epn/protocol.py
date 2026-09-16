@@ -114,7 +114,7 @@ def tools_to_prompt(tools) -> str:
         "Tool calling:",
         "Use only the tool names listed here. Emit tool calls as:",
         "<tool_call><function=tool_name><parameter=param_name>value</parameter></function></tool_call>",
-        "Use raw text inside XML parameters (no JSON wrapper or backslash escaping); use JSON literals for numbers, booleans, arrays and objects. Stop after the tool call and wait for its result.",
+        "Use short shell commands with literal shell quoting. Use raw text inside XML parameters (no JSON wrapper or backslash escaping); use JSON literals for numbers, booleans, arrays and objects. Stop after the tool call and wait for its result.",
         "Do not invent tools such as read_file unless they are listed. For file reads, directory listing, and search, prefer the shell tool with commands like cat, sed, ls, and rg.",
         "If the user asks to inspect, explain, diagnose, review, summarize, or tell what code does, use read-only commands and then answer; do not modify files.",
         "Only edit files when the user explicitly asks for a change. When editing, use apply_patch instead of shell heredocs or redirection.",
@@ -421,6 +421,8 @@ def response_object(
     response_id = response_id or f"resp_{uuid.uuid4().hex}"
     blocks = tool_call_blocks(text)
     if blocks:
+        if "<tool_call>" in visible_tool_text(text, blocks):
+            raise ValueError("Malformed tool call alongside another call; entire response rejected")
         allowed_names = available_tool_names(tools) or {"exec_command"}
         rewritten_calls = [rewrite_tool_call(tool_call, allowed_names) for _, _, tool_call in blocks]
         definitions = {tool_name(t): t for t in tools or []}
@@ -429,6 +431,9 @@ def response_object(
                 raise ValueError(f"Model requested unavailable tool: {call['name']}")
             definition = definitions.get(call["name"], {})
             schema = definition.get("parameters") or definition.get("function", {}).get("parameters", {})
+            missing = set(schema.get("required", [])) - call["arguments"].keys()
+            if missing:
+                raise ValueError(f"Missing required arguments for {call['name']}: {', '.join(sorted(missing))}")
             for key, spec in schema.get("properties", {}).items():
                 value = call["arguments"].get(key)
                 if isinstance(value, str) and spec.get("type") in {"integer", "number", "boolean", "array", "object"}:
@@ -470,7 +475,7 @@ def response_object(
         }
 
     if "<tool_call>" in text:
-        raise ValueError("Malformed model tool call; no command was executed. Start a fresh task if old malformed history persists.")
+        raise ValueError("Malformed model tool call")
 
     return {
         "id": response_id,

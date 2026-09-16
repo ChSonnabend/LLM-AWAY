@@ -37,6 +37,13 @@ class ProviderHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
+            self._do_POST()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Escape/Ctrl+C in Codex closes this request, not the gateway.
+            self.close_connection = True
+
+    def _do_POST(self) -> None:
+        try:
             payload = self.read_json()
             if self.path == "/v1/chat/completions":
                 self.handle_chat(payload)
@@ -44,6 +51,8 @@ class ProviderHandler(BaseHTTPRequestHandler):
                 self.handle_responses(payload)
             else:
                 self.write_json({"error": "not found"}, status=404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            raise
         except BackendError as exc:
             self.write_json({"error": {"message": str(exc), "type": "backend_error"}}, status=502)
         except Exception as exc:
@@ -68,8 +77,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
         if payload.get("stream"):
             self.handle_responses_stream(model, prompt, len(raw_prompt), payload.get("tools", []), messages)
             return
-        text = self.backend.infer(InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=len(raw_prompt), messages=messages))
-        response = response_object(model, text, tools=payload.get("tools", []))
+        response = self.infer_response(model, prompt, len(raw_prompt), payload.get("tools", []), messages)
         self.write_json(response)
 
     def read_json(self) -> dict:
@@ -155,6 +163,36 @@ class ProviderHandler(BaseHTTPRequestHandler):
         self.write_sse("message", chat_completion_chunk(model, "", finish=True))
         self.write_sse("message", "[DONE]")
 
+    def infer_response(self, model, prompt, raw_prompt_chars=None, tools=None, messages=None, response_id=None):
+        """Allow one format correction; never execute or guess malformed commands."""
+        request = InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=raw_prompt_chars, messages=messages)
+        for attempt in range(2):
+            text = self.backend.infer(request)
+            try:
+                return response_object(model, text, response_id=response_id, tools=tools)
+            except ValueError as exc:
+                if attempt:
+                    return response_object(
+                        model, "The model produced an invalid tool call twice. No tool from these attempts was executed. "
+                        + str(exc).rstrip(".") + ".", response_id=response_id,
+                    )
+                correction = (
+                    "Your previous tool call was rejected before execution: " + str(exc) + "\n"
+                    "Regenerate the intended next call using only a listed tool and its required parameters. "
+                    "Use <tool_call><function=NAME><parameter=KEY>literal value</parameter></function></tool_call>. "
+                    "Put shell commands or patches directly in XML parameter text: no JSON string wrapper, "
+                    "no extra escaping of quotes. Keep shell commands short. Close all tags, then stop."
+                )
+                previous = text[:6000] + ("\n[invalid output truncated]" if len(text) > 6000 else "")
+                retry_messages = None if messages is None else [
+                    *messages, {"role": "assistant", "content": previous},
+                    {"role": "user", "content": correction},
+                ]
+                request = InferenceRequest(
+                    prompt=prompt + "\nassistant: " + previous + "\nuser: " + correction + "\nassistant:",
+                    model=model, raw_prompt_chars=raw_prompt_chars, messages=retry_messages,
+                )
+
     def handle_responses_stream(
         self, model: str, prompt: str, raw_prompt_chars: int | None = None, tools=None, messages=None
     ) -> None:
@@ -176,10 +214,9 @@ class ProviderHandler(BaseHTTPRequestHandler):
             {"type": "response.created", "sequence_number": 0, "response": created},
         )
         try:
-            text = self.backend.infer(
-                InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=raw_prompt_chars, messages=messages)
-            )
-            response = response_object(model, text, response_id=response_id, tools=tools)
+            response = self.infer_response(model, prompt, raw_prompt_chars, tools, messages, response_id)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            raise
         except Exception as exc:
             failed = dict(created)
             failed["status"] = "failed"

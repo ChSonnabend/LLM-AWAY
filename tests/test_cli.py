@@ -55,8 +55,8 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(model["slug"], "epn")
         self.assertEqual(model["display_name"], "EPN")
-        self.assertEqual(model["tool_mode"], "code_mode_only")
-        self.assertTrue(model["use_responses_lite"])
+        self.assertNotIn("tool_mode", model)
+        self.assertFalse(model["use_responses_lite"])
         self.assertFalse(model["include_apps_usage_instructions"])
         self.assertFalse(model["include_plugin_usage_instructions"])
         self.assertFalse(model["include_skills_usage_instructions"])

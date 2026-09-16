@@ -44,7 +44,7 @@ class ToolBridgeTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 response_object('epn', text, tools=[{'type': 'function', 'name': 'exec_command'}])
 
-    def test_malformed_call_produces_failed_sse_event(self):
+    def test_malformed_call_completes_with_error_without_transport_retry(self):
         handler = object.__new__(ProviderHandler)
         handler.begin_sse = lambda: None
         events = []
@@ -54,5 +54,36 @@ class ToolBridgeTests(unittest.TestCase):
                 return '<tool_call>{bad JSON}</tool_call>'
         handler.backend = Backend()
         handler.handle_responses_stream('epn', 'test')
-        self.assertEqual(events[-1][0], 'response.failed')
-        self.assertIn('no command was executed', events[-1][1]['response']['error']['message'])
+        self.assertEqual(events[-1][0], 'response.completed')
+        self.assertIn('No tool from these attempts was executed', events[-1][1]['response']['output_text'])
+
+    def test_one_format_retry_recovers_without_changing_shell_quotes(self):
+        handler = object.__new__(ProviderHandler)
+        requests = []
+        command = 'ls -d "/Applications/Visual Studio Code.app"'
+        good = '<tool_call><function=exec_command><parameter=cmd>' + command + '</parameter></function></tool_call>'
+        class Backend:
+            def infer(self, request):
+                requests.append(request)
+                return '<tool_call>{bad JSON}</tool_call>' if len(requests) == 1 else good
+        handler.backend = Backend()
+        original = [{'role': 'user', 'content': 'Inspect VS Code'}]
+        result = handler.infer_response('epn', 'Inspect VS Code', messages=original,
+                                      tools=[{'type':'function','name':'exec_command'}])
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(len(original), 1)
+        self.assertEqual(json.loads(result['output'][0]['arguments'])['cmd'], command)
+
+    def test_repeated_invalid_calls_stop_after_one_retry(self):
+        handler = object.__new__(ProviderHandler)
+        requests = []
+        class Backend:
+            def infer(self, request):
+                requests.append(request)
+                return '<tool_call>{bad JSON}</tool_call>'
+        handler.backend = Backend()
+        result = handler.infer_response('epn', 'test')
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(result['status'], 'completed')
+        self.assertIn('invalid tool call twice', result['output_text'])
+        self.assertEqual([i['type'] for i in result['output']], ['message'])

@@ -14,6 +14,7 @@ import tempfile
 import time
 
 from .config import AppConfig, _loads_toml, load_config
+from .prompt import choose_option, interactive_available
 
 
 def mtp_label(model: dict) -> str:
@@ -32,6 +33,9 @@ def choose_mtp(model: dict, current: str = "auto", requested: str | None = None,
     mode = requested if requested is not None else current
     if interactive and requested is None and mtp.get("available") and mtp.get("toggle_supported"):
         default = mode != "off"
+        if interactive_available():
+            index = choose_option(["MTP on", "MTP off"], "MTP", 0 if default else 1)
+            return choose_mtp(model, current, "on" if index == 0 else "off")
         while True:
             answer = input("Use MTP? " + ("[Y/n]" if default else "[y/N]") + ", q to cancel: ").strip().lower()
             if answer == "q":
@@ -91,6 +95,10 @@ def choose_model(models: list[dict], current: str, requested: str | None = None)
             if model["name"] == requested:
                 return model
         raise ValueError(f"Model {requested!r} is unavailable; run list-models to see installed models")
+    if interactive_available():
+        default_index = next((i for i, model in enumerate(models) if model["name"] == current), 0)
+        labels = [f"{m['name']} — {m['size_bytes'] / 1024**3:.1f} GiB; {mtp_label(m)}" for m in models]
+        return models[choose_option(labels, "model", default_index)]
     for index, model in enumerate(models, 1):
         marker = " (current)" if model["name"] == current else ""
         print(f"  {index}. {model['name']} — {model['size_bytes'] / 1024**3:.1f} GiB{marker}; {mtp_label(model)}")
