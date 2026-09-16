@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: llm-epn-slurm-run --json < payload.json" >&2
+    echo "Usage: llm-away-slurm-run --json < payload.json" >&2
 }
 
 if [[ "${1:-}" != "--json" ]]; then
@@ -40,7 +40,7 @@ def rocm_arch_command():
     )
 
 def progress_static(message):
-    return "echo " + q("llm-epn: " + message) + " >&2"
+    return "echo " + q("llm-away: " + message) + " >&2"
 
 def node_options():
     partition = payload.get("partition", "prod")
@@ -58,19 +58,19 @@ def node_options():
         opts.extend(["-w", "$(printf 'epn%03d' $(( RANDOM % 279 )))"])
     elif node_class == "mi100":
         # Match the user's shell function: epn280..epn349 and export marker.
-        opts.extend(["-w", "$(printf 'epn%03d' $(( 280 + RANDOM % 70 )))", "--export=ALL,EPN_NODE_MI100=1"])
+        opts.extend(["-w", "$(printf 'epn%03d' $(( 280 + RANDOM % 70 )))", "--export=ALL,REMOTE_NODE_MI100=1"])
     elif node_class:
         opts.extend(["-w", node_class])
     return opts
 
 setup = [
-    'echo "llm-epn: allocated $(hostname -s)" >&2',
+    'echo "llm-away: allocated $(hostname -s)" >&2',
     f"cd {q(payload['remote_workdir'])}",
     f"export MODEL_NAME={q(llama.get('model_name') or payload['model'])}",
     f"export LLAMACPP_MTP={q(mtp)}",
     f"export LLAMACPP_BACKEND={q(llama.get('backend', 'rocm'))}",
     rocm_arch_command(),
-    'echo "llm-epn: using ROCm arch $LLAMACPP_ROCM_ARCH" >&2',
+    'echo "llm-away: using ROCm arch $LLAMACPP_ROCM_ARCH" >&2',
     f"export LLAMACPP_VISIBLE_DEVICES={q(llama.get('visible_devices', '0,1,2,3,4,5,6,7'))}",
 ]
 if mtp != "auto":
@@ -98,7 +98,7 @@ if timeout_seconds > 0:
         timed
         + " || { status=$?; "
         + "if [ \"$status\" -eq 124 ]; then echo "
-        + q("llm-epn: inference timed out; run_cli may be interactive/REPL-only")
+        + q("llm-away: inference timed out; run_cli may be interactive/REPL-only")
         + " >&2; fi; exit \"$status\"; }"
     )
 else:
@@ -107,10 +107,10 @@ inner = " && ".join(setup)
 
 srun = node_options()
 cmd = " ".join(srun) + " /bin/bash -lc " + q(inner)
-sys.stderr.write("llm-epn: submitting Slurm job\n")
+sys.stderr.write("llm-away: submitting Slurm job\n")
 sys.stderr.flush()
 if payload.get("debug"):
-    sys.stderr.write("llm-epn remote command: " + cmd + "\n")
+    sys.stderr.write("llm-away remote command: " + cmd + "\n")
     sys.stderr.flush()
 
 completed = subprocess.Popen(

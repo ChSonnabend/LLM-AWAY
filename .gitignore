@@ -8,3 +8,6 @@ __pycache__/
 run/
 local.env
 config/*.toml.backup-*
+
+.DS_Store
+._*

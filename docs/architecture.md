@@ -15,7 +15,7 @@ Codex CLI
 
 ## Local Provider
 
-`llm-epn serve` exposes:
+`llm-away serve` exposes:
 
 - `GET /health`
 - `POST /v1/chat/completions`
@@ -25,9 +25,9 @@ The provider converts Codex/OpenAI-style requests into a plain prompt and sends 
 
 ## Slurm Server Backend
 
-The default backend uses SSH to run `~/.local/bin/llm-epn-serverctl ensure --json` on `epnh`.
+The default backend uses SSH to run `~/.local/bin/llm-away-serverctl ensure --json` on `epnh`.
 
-The remote host provisions the helpers once using the standalone `scripts/remote/setup.sh` bundle (deployed as `scripts/epn/` in the remote runner project). Client initialization does not install remote files; see the README's Remote Host Setup section for prerequisites and configuration.
+The remote host provisions the helpers once using the standalone `scripts/remote/setup.sh` bundle (deployed as `scripts/remote/` in the remote runner project). Client initialization does not install remote files; see the README's Remote Host Setup section for prerequisites and configuration.
 
 The remote controller:
 
@@ -40,13 +40,13 @@ The local backend polls status, opens an SSH tunnel from `gateway.local_port` to
 
 ## One-Shot Slurm Backend
 
-The older diagnostic backend uses SSH to run `~/.local/bin/llm-epn-slurm-run --json` on `epnh`.
+The older diagnostic backend uses SSH to run `~/.local/bin/llm-away-slurm-run --json` on `epnh`.
 
 The remote runner reads a JSON payload and builds a non-interactive `srun` command. The default behavior mirrors the no-argument path of the supplied `node` shell function:
 
 - no class/custom options: let Slurm choose from the partition
 - `mi50`: random `epn000` through `epn278`
-- `mi100`: random `epn280` through `epn349`, with `EPN_NODE_MI100=1`
+- `mi100`: random `epn280` through `epn349`, with `REMOTE_NODE_MI100=1`
 - custom options: passed through to `srun`
 
 When `llamacpp.rocm_arch` is `auto`, the remote runner chooses the architecture after Slurm allocation:

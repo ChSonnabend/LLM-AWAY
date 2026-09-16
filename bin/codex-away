@@ -2,14 +2,14 @@
 set -euo pipefail
 
 repo_dir="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "${BASH_SOURCE[0]}")"
-config="${LLM_EPN_CONFIG:-$repo_dir/config/epn.toml}"
-host="${LLM_EPN_HOST:-127.0.0.1}"
-port="${LLM_EPN_PORT:-8765}"
+config="${LLM_REMOTE_CONFIG:-$repo_dir/config/away.toml}"
+host="${LLM_REMOTE_HOST:-127.0.0.1}"
+port="${LLM_REMOTE_PORT:-8765}"
 log_dir="${XDG_RUNTIME_DIR:-/tmp}"
-log_path="${LLM_EPN_PROVIDER_LOG:-$log_dir/llm-epn-provider-${USER:-user}.log}"
+log_path="${LLM_REMOTE_PROVIDER_LOG:-$log_dir/llm-away-provider-${USER:-user}.log}"
 provider_pid=""
 # Default to owning the provider so /exit and Ctrl+C cleanly tear down the Slurm job.
-restart_provider="${LLM_EPN_RESTART_PROVIDER:-1}"
+restart_provider="${LLM_REMOTE_RESTART_PROVIDER:-1}"
 tty_state="$(stty -g 2>/dev/null || true)"
 
 healthcheck() {
@@ -62,7 +62,7 @@ for line in listing.splitlines():
         continue
     pid, command = fields
     # ps prints arguments without shell quoting, including paths with spaces.
-    marker = " -m llm_epn.cli serve --config " + str(Path(sys.argv[1]).resolve())
+    marker = " -m llm_away.cli serve --config " + str(Path(sys.argv[1]).resolve())
     if marker not in command:
         continue
     suffix = command.split(marker, 1)[1]
@@ -95,41 +95,45 @@ PY
 }
 
 if [[ "$restart_provider" == "1" ]] && healthcheck; then
-    echo "llm-epn: stopping existing local provider on http://$host:$port" >&2
+    echo "llm-away: stopping existing local provider on http://$host:$port" >&2
     stop_existing_provider
     sleep 0.2
 fi
 
 if ! healthcheck; then
-    echo "llm-epn: starting local provider on http://$host:$port (log: $log_path)" >&2
-    "$repo_dir/bin/llm-epn" serve --config "$config" >"$log_path" 2>&1 &
+    echo "llm-away: starting local provider on http://$host:$port (log: $log_path)" >&2
+    host_args=()
+    if [[ -n "${REMOTE_HOST:-}" ]]; then
+        host_args=(--host "$REMOTE_HOST")
+    fi
+    "$repo_dir/bin/llm-away" serve --config "$config" "${host_args[@]+${host_args[@]}}" >"$log_path" 2>&1 &
     provider_pid=$!
     for ((attempt = 0; attempt < 50; attempt++)); do
         if healthcheck; then
             break
         fi
         if ! kill -0 "$provider_pid" 2>/dev/null; then
-            echo "llm-epn: provider exited during startup; log follows:" >&2
+            echo "llm-away: provider exited during startup; log follows:" >&2
             sed -n '1,200p' "$log_path" >&2 || true
             exit 1
         fi
         sleep 0.1
     done
     if ! healthcheck; then
-        echo "llm-epn: provider did not become healthy; log follows:" >&2
+        echo "llm-away: provider did not become healthy; log follows:" >&2
         sed -n '1,200p' "$log_path" >&2 || true
         exit 1
     fi
 else
-    echo "llm-epn: reusing existing local provider on http://$host:$port" >&2
+    echo "llm-away: reusing existing local provider on http://$host:$port" >&2
 fi
 
 if [[ -t 1 ]]; then
-    codex --no-alt-screen --profile epn "$@"
+    codex --no-alt-screen --profile away "$@"
 elif [[ -r /dev/tty && -w /dev/tty ]]; then
     exec </dev/tty >/dev/tty 2>&1
-    codex --no-alt-screen --profile epn "$@"
+    codex --no-alt-screen --profile away "$@"
 else
-    echo "llm-epn: stdout is not a terminal and /dev/tty is unavailable" >&2
+    echo "llm-away: stdout is not a terminal and /dev/tty is unavailable" >&2
     exit 1
 fi

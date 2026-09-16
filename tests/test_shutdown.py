@@ -34,9 +34,9 @@ else:
     print(json.dumps({'active': (root / 'allocated').exists(), 'job_id': '123'}))
 ''')
             ssh.chmod(0o755)
-            script = '''from llm_epn.config import AppConfig, ServerConfig
-from llm_epn.backends import SlurmServerBackend
-from llm_epn.server import serve
+            script = '''from llm_away.config import AppConfig, ServerConfig
+from llm_away.backends import SlurmServerBackend
+from llm_away.server import serve
 cfg=AppConfig(server=ServerConfig(port=0))
 serve(cfg, SlurmServerBackend(cfg), warm=True)
 '''
@@ -70,10 +70,10 @@ serve(cfg, SlurmServerBackend(cfg), warm=True)
                     process.communicate()
 
     def test_symlink_launcher_with_spaces_and_no_gnu_readlink(self):
-        with tempfile.TemporaryDirectory(prefix='epn portable ') as tmp:
+        with tempfile.TemporaryDirectory(prefix='away portable ') as tmp:
             root=Path(tmp)
-            link=root/'llm epn'
-            link.symlink_to(REPO/'bin/llm-epn')
+            link=root/'llm away'
+            link.symlink_to(REPO/'bin/llm-away')
             readlink=root/'readlink'
             readlink.write_text('#!/bin/sh\nexit 99\n')
             readlink.chmod(0o755)

@@ -20,6 +20,12 @@ class BackendError(RuntimeError):
     pass
 
 
+def gpus_for_cfg(cfg: AppConfig) -> int:
+    """GPU count for the active host (from [hosts.NAME].gpus); 0 = cluster default."""
+    active = next((h for h in cfg.host_configs() if h.ssh_host == cfg.ssh.host), None)
+    return active.gpus if active else 0
+
+
 @dataclass(frozen=True)
 class InferenceRequest:
     prompt: str
@@ -61,6 +67,7 @@ class SlurmSshBackend(Backend):
                 "backend": cfg.llamacpp.backend,
                 "rocm_arch": cfg.llamacpp.rocm_arch,
                 "visible_devices": cfg.llamacpp.visible_devices,
+                "gpus": gpus_for_cfg(cfg),
                 "build_before_run": cfg.llamacpp.build_before_run,
                 "show_config_before_run": cfg.llamacpp.show_config_before_run,
                 "list_devices_before_run": cfg.llamacpp.list_devices_before_run,
@@ -104,7 +111,7 @@ class SubprocessSlurmSshBackend(SlurmSshBackend):
             if process.returncode != 255 or attempt == attempts:
                 break
             print(
-                f"llm-epn: SSH failed with exit 255; retrying in {self.config.ssh.retry_delay_seconds}s",
+                f"llm-away: SSH failed with exit 255; retrying in {self.config.ssh.retry_delay_seconds}s",
                 file=sys.stderr,
             )
             time.sleep(self.config.ssh.retry_delay_seconds)
@@ -135,7 +142,7 @@ class SlurmServerBackend(Backend):
         text = self.completion(request.prompt, messages=request.messages)
         completed_at = time.time()
         print(
-            "llm-epn: request timing "
+            "llm-away: request timing "
             f"ready={ready_at - started:.2f}s "
             f"completion={completed_at - ready_at:.2f}s "
             f"total={completed_at - started:.2f}s "
@@ -168,14 +175,14 @@ class SlurmServerBackend(Backend):
                 self._reused_job = False
                 self._log_offset = 0
                 if self._owned_job_id:
-                    print(f"llm-epn: submitted new Slurm job {self._owned_job_id} (remote port {self.job_port})", file=sys.stderr)
+                    print(f"llm-away: submitted new Slurm job {self._owned_job_id} (remote port {self.job_port})", file=sys.stderr)
             else:
                 state = self.serverctl("ensure", model)
                 self._reused_job = bool(before.get("active") and state.get("active"))
                 if not before.get("active") and state.get("active") and state.get("job_id"):
                     self._owned_job_id = str(state["job_id"])
                     self._log_offset = 0
-                    print(f"llm-epn: submitted Slurm job {self._owned_job_id}", file=sys.stderr)
+                    print(f"llm-away: submitted Slurm job {self._owned_job_id}", file=sys.stderr)
             deadline = time.time() + self.config.gateway.startup_timeout_seconds
 
             last_phase = None
@@ -184,7 +191,7 @@ class SlurmServerBackend(Backend):
                 phase = state.get("slurm_state")
                 progress = (phase, state.get("reason"))
                 if phase and progress != last_phase:
-                    print(f"llm-epn: Slurm job {state.get('job_id')}: {phase} ({state.get('reason') or 'no reason reported'})", file=sys.stderr)
+                    print(f"llm-away: Slurm job {state.get('job_id')}: {phase} ({state.get('reason') or 'no reason reported'})", file=sys.stderr)
                     last_phase = progress
                 if self._owned_job_id and phase not in ("PENDING", "CONFIGURING"):
                     self.stream_log(model)
@@ -215,6 +222,7 @@ class SlurmServerBackend(Backend):
             "node_class": cfg.slurm.node_class,
             "mi50_fallback": cfg.slurm.mi50_fallback,
             "nodes": self.slurm_nodes or cfg.slurm.nodes,
+            "gpus": gpus_for_cfg(cfg),
             "custom_options": cfg.slurm.custom_options,
             "server_port": (extra or {}).get("server_port", self.job_port) or cfg.gateway.server_port,
             "llamacpp": {
@@ -253,7 +261,7 @@ class SlurmServerBackend(Backend):
             if completed.returncode != 255 or attempt == attempts:
                 raise BackendError(f"serverctl {command} failed with exit {completed.returncode}: {detail}")
             print(
-                f"llm-epn: serverctl SSH failed with exit 255; retrying in {cfg.ssh.retry_delay_seconds}s",
+                f"llm-away: serverctl SSH failed with exit 255; retrying in {cfg.ssh.retry_delay_seconds}s",
                 file=sys.stderr,
             )
             time.sleep(cfg.ssh.retry_delay_seconds)
@@ -389,7 +397,7 @@ class SlurmServerBackend(Backend):
             ("ConnectTimeout", str(self.config.ssh.connect_timeout_seconds)),
             ("ControlMaster", "auto"),
             ("ControlPersist", "10m"),
-            ("ControlPath", "/tmp/llm-epn-ssh-%C"),
+            ("ControlPath", "/tmp/llm-away-ssh-%C"),
             ("ServerAliveInterval", "30"),
         ]
         if exit_on_forward_failure:
@@ -416,11 +424,11 @@ class SlurmServerBackend(Backend):
             if should_cancel:
                 try:
                     job_label = self._owned_job_id or "reused server"
-                    print(f"llm-epn: canceling Slurm job for {job_label}", file=sys.stderr)
+                    print(f"llm-away: canceling Slurm job for {job_label}", file=sys.stderr)
                     extra = {"job_id": self._owned_job_id} if self._owned_job_id else None
                     self.serverctl("cancel", self.config.model.name, extra)
                 except Exception as exc:
-                    print(f"llm-epn: failed to cancel Slurm job: {exc}", file=sys.stderr)
+                    print(f"llm-away: failed to cancel Slurm job: {exc}", file=sys.stderr)
                     return  # Keep the job reference so atexit can retry.
                 self._owned_job_id = None
                 self._ready_model = None

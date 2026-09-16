@@ -2,7 +2,7 @@ import unittest
 
 import json
 
-from llm_epn.protocol import (
+from llm_away.protocol import (
     messages_to_prompt,
     models_list,
     parse_tool_call,
@@ -92,7 +92,7 @@ class ProtocolTests(unittest.TestCase):
         data = models_list("qwen3-coder-next-f16-1m")
         self.assertEqual(data["object"], "list")
         self.assertEqual(data["data"][0]["id"], "qwen3-coder-next-f16-1m")
-        self.assertEqual(data["data"][0]["owned_by"], "llm-epn")
+        self.assertEqual(data["data"][0]["owned_by"], "llm-away")
 
     def test_parse_qwen_tool_call(self):
         call = parse_tool_call(
@@ -111,22 +111,22 @@ class ProtocolTests(unittest.TestCase):
             "<tool_call>\n"
             "<function=read_file>\n"
             "<parameter=path>\n"
-            "/home/chris/alice/misc/LLM_EPN/README.md\n"
+            "/home/chris/alice/misc/LLM_AWAY/README.md\n"
             "</parameter>\n"
             "</function>\n"
             "</tool_call>\n"
             "<tool_call>\n"
             "<function=read_file>\n"
             "<parameter=path>\n"
-            "/home/chris/alice/misc/LLM_EPN/src/llm_epn/server.py\n"
+            "/home/chris/alice/misc/LLM_AWAY/src/llm_away/server.py\n"
             "</parameter>\n"
             "</function>\n"
             "</tool_call>"
         )
 
         self.assertEqual([call["name"] for call in calls], ["read_file", "read_file"])
-        self.assertEqual(calls[0]["arguments"]["path"], "/home/chris/alice/misc/LLM_EPN/README.md")
-        self.assertEqual(calls[1]["arguments"]["path"], "/home/chris/alice/misc/LLM_EPN/src/llm_epn/server.py")
+        self.assertEqual(calls[0]["arguments"]["path"], "/home/chris/alice/misc/LLM_AWAY/README.md")
+        self.assertEqual(calls[1]["arguments"]["path"], "/home/chris/alice/misc/LLM_AWAY/src/llm_away/server.py")
 
     def test_response_object_emits_function_call_for_qwen_markup(self):
         response = response_object(
@@ -169,7 +169,7 @@ class ProtocolTests(unittest.TestCase):
         response = response_object(
             "qwen3-coder-next-f16-1m",
             "<tool_call><function=read_file><parameter=path>README.md</parameter></function></tool_call>"
-            "<tool_call><function=read_file><parameter=path>src/llm_epn/server.py</parameter></function></tool_call>",
+            "<tool_call><function=read_file><parameter=path>src/llm_away/server.py</parameter></function></tool_call>",
         )
 
         self.assertEqual(response["output_text"], "")
@@ -177,7 +177,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in response["output"]], ["exec_command", "exec_command"])
         self.assertEqual(
             json.loads(response["output"][1]["arguments"]),
-            {"cmd": "sed -n '1,240p' -- src/llm_epn/server.py"},
+            {"cmd": "sed -n '1,240p' -- src/llm_away/server.py"},
         )
 
     def test_response_object_rewrites_unsupported_read_file_to_exec(self):

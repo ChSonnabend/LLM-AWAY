@@ -5,24 +5,24 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from llm_epn.cli import codex_provider_display_name, epn_model_catalog, install_codex_config, main, remove_toml_table
+from llm_away.cli import codex_provider_display_name, remote_model_catalog, install_codex_config, main, remove_toml_table
 
 
 class CliTests(unittest.TestCase):
     def test_codex_provider_display_name_defaults_to_user(self):
-        previous_name = os.environ.get("LLM_EPN_CODEX_PROVIDER_NAME")
+        previous_name = os.environ.get("LLM_REMOTE_CODEX_PROVIDER_NAME")
         previous_user = os.environ.get("USER")
         previous_username = os.environ.get("USERNAME")
-        os.environ.pop("LLM_EPN_CODEX_PROVIDER_NAME", None)
+        os.environ.pop("LLM_REMOTE_CODEX_PROVIDER_NAME", None)
         os.environ["USER"] = "alice"
         os.environ.pop("USERNAME", None)
         try:
             self.assertEqual(codex_provider_display_name(), "alice")
         finally:
             if previous_name is None:
-                os.environ.pop("LLM_EPN_CODEX_PROVIDER_NAME", None)
+                os.environ.pop("LLM_REMOTE_CODEX_PROVIDER_NAME", None)
             else:
-                os.environ["LLM_EPN_CODEX_PROVIDER_NAME"] = previous_name
+                os.environ["LLM_REMOTE_CODEX_PROVIDER_NAME"] = previous_name
             if previous_user is None:
                 os.environ.pop("USER", None)
             else:
@@ -33,28 +33,28 @@ class CliTests(unittest.TestCase):
                 os.environ["USERNAME"] = previous_username
 
     def test_codex_provider_display_name_uses_config_before_user(self):
-        previous_name = os.environ.get("LLM_EPN_CODEX_PROVIDER_NAME")
+        previous_name = os.environ.get("LLM_REMOTE_CODEX_PROVIDER_NAME")
         previous_user = os.environ.get("USER")
-        os.environ.pop("LLM_EPN_CODEX_PROVIDER_NAME", None)
+        os.environ.pop("LLM_REMOTE_CODEX_PROVIDER_NAME", None)
         os.environ["USER"] = "alice"
         try:
             self.assertEqual(codex_provider_display_name("Christian Sonnabend"), "Christian Sonnabend")
         finally:
             if previous_name is None:
-                os.environ.pop("LLM_EPN_CODEX_PROVIDER_NAME", None)
+                os.environ.pop("LLM_REMOTE_CODEX_PROVIDER_NAME", None)
             else:
-                os.environ["LLM_EPN_CODEX_PROVIDER_NAME"] = previous_name
+                os.environ["LLM_REMOTE_CODEX_PROVIDER_NAME"] = previous_name
             if previous_user is None:
                 os.environ.pop("USER", None)
             else:
                 os.environ["USER"] = previous_user
 
-    def test_epn_model_catalog_advertises_coding_agent_mode(self):
-        catalog = epn_model_catalog("qwen3.8-flash-next-125b-ultralite-37g")
+    def test_away_model_catalog_advertises_coding_agent_mode(self):
+        catalog = remote_model_catalog("qwen3.8-flash-next-125b-ultralite-37g")
         model = catalog["models"][0]
 
-        self.assertEqual(model["slug"], "epn")
-        self.assertEqual(model["display_name"], "EPN")
+        self.assertEqual(model["slug"], "away")
+        self.assertEqual(model["display_name"], "AWAY")
         self.assertNotIn("tool_mode", model)
         self.assertFalse(model["use_responses_lite"])
         self.assertFalse(model["include_apps_usage_instructions"])
@@ -71,27 +71,27 @@ class CliTests(unittest.TestCase):
         text = """
 model = "gpt-5.5"
 
-[model_providers.epn]
+[model_providers.away]
 name = "old"
 
-[model_providers.epn.auth]
+[model_providers.away.auth]
 command = "token"
 
 [desktop]
 followUpQueueMode = "steer"
 """.lstrip()
 
-        result = remove_toml_table(text, "model_providers.epn")
+        result = remove_toml_table(text, "model_providers.away")
 
-        self.assertNotIn("[model_providers.epn]", result)
-        self.assertNotIn("[model_providers.epn.auth]", result)
+        self.assertNotIn("[model_providers.away]", result)
+        self.assertNotIn("[model_providers.away.auth]", result)
         self.assertIn("[desktop]", result)
 
     def test_install_codex_config_writes_default_remote_host_setup(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             codex_home = tmp / "codex"
-            config = tmp / "epn.toml"
+            config = tmp / "away.toml"
             config.write_text(
                 """
 [server]
@@ -122,21 +122,21 @@ account_email = "sonnabendch@gmail.com"
                     os.environ["CODEX_HOME"] = previous
 
             active_config = (codex_home / "config.toml").read_text(encoding="utf-8")
-            profile = (codex_home / "epn.config.toml").read_text(encoding="utf-8")
+            profile = (codex_home / "away.config.toml").read_text(encoding="utf-8")
 
-            self.assertIn('model = "epn"', profile)
-            self.assertIn('model_provider = "epn"', profile)
+            self.assertIn('model = "away"', profile)
+            self.assertIn('model_provider = "away"', profile)
             self.assertNotIn('model_provider =', active_config)
             self.assertNotIn('model_catalog_json =', active_config)
-            self.assertIn("[model_providers.epn]", active_config)
+            self.assertIn("[model_providers.away]", active_config)
             self.assertIn('name = "Christian Sonnabend"', active_config)
-            self.assertNotIn('name = "EPN Slurm llama.cpp"', active_config)
+            self.assertNotIn('name = "AWAY Slurm llama.cpp"', active_config)
             self.assertIn('base_url = "http://127.0.0.1:8765/v1"', active_config)
             self.assertIn('model_reasoning_effort = "low"', profile)
-            self.assertTrue((codex_home / "model-catalogs" / "epn.json").exists())
-            self.assertFalse((codex_home / "config-epn.toml").exists())
+            self.assertTrue((codex_home / "model-catalogs" / "away.json").exists())
+            self.assertFalse((codex_home / "config-away.toml").exists())
 
-            combined_catalog = (codex_home / "model-catalogs" / "combined-with-epn.json").read_text(
+            combined_catalog = (codex_home / "model-catalogs" / "combined-with-away.json").read_text(
                 encoding="utf-8"
             )
             self.assertIn('"truncation_policy"', combined_catalog)
@@ -167,7 +167,7 @@ account_email = "sonnabendch@gmail.com"
                     # Exercise both the bare CLI default and the actual init script.
                     self.assertEqual(main(["install-codex-config"]), 0)
                     installed = config_file.read_text(encoding="utf-8")
-                    self.assertEqual(remove_toml_table(installed, "model_providers.epn"), original)
+                    self.assertEqual(remove_toml_table(installed, "model_providers.away"), original)
                     backups = list(codex_home.glob("config.toml.bak-*"))
                     self.assertEqual(len(backups), 1)
                     self.assertEqual(backups[0].read_text(encoding="utf-8"), original)
@@ -182,10 +182,10 @@ account_email = "sonnabendch@gmail.com"
             home = Path(tmpdir)
             config = (home / "config.toml").read_text(encoding="utf-8")
             self.assertTrue(config.startswith('model = '))
-            self.assertIn('model_provider = "epn"', config)
+            self.assertIn('model_provider = "away"', config)
             self.assertIn('model_reasoning_effort = "low"', config)
             self.assertIn('model_catalog_json = ', config)
-            self.assertEqual((home / "config-epn.toml").read_text(encoding="utf-8"), config)
+            self.assertEqual((home / "config-away.toml").read_text(encoding="utf-8"), config)
 
 
 if __name__ == "__main__":

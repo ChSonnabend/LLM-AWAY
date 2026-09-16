@@ -5,8 +5,8 @@ import sys
 import textwrap
 import unittest
 
-from llm_epn.config import AppConfig, GatewayConfig
-from llm_epn.server import ProviderHandler
+from llm_away.config import AppConfig, GatewayConfig
+from llm_away.server import ProviderHandler
 
 
 class CompactPromptTests(unittest.TestCase):
@@ -46,9 +46,9 @@ class ServerTests(unittest.TestCase):
     def test_server_exits_on_sigint(self):
         script = textwrap.dedent(
             """
-            from llm_epn.backends import Backend
-            from llm_epn.config import AppConfig, ServerConfig
-            from llm_epn.server import serve
+            from llm_away.backends import Backend
+            from llm_away.config import AppConfig, ServerConfig
+            from llm_away.server import serve
 
             class FakeBackend(Backend):
                 def infer(self, request):
@@ -69,7 +69,7 @@ class ServerTests(unittest.TestCase):
         )
         try:
             line = process.stdout.readline()
-            self.assertIn("llm-epn provider listening", line)
+            self.assertIn("llm-away provider listening", line)
             process.send_signal(signal.SIGINT)
             _, stderr = process.communicate(timeout=5)
         finally:
@@ -78,7 +78,7 @@ class ServerTests(unittest.TestCase):
                 process.communicate(timeout=5)
 
         self.assertEqual(process.returncode, 0, stderr)
-        self.assertIn("llm-epn: shutting down", stderr)
+        self.assertIn("llm-away: shutting down", stderr)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 import json
 import unittest
 
-from llm_epn.protocol import response_object, responses_request_to_messages, parse_tool_call
-from llm_epn.server import ProviderHandler
+from llm_away.protocol import response_object, responses_request_to_messages, parse_tool_call
+from llm_away.server import ProviderHandler
 
 
 class ToolBridgeTests(unittest.TestCase):
@@ -14,7 +14,7 @@ class ToolBridgeTests(unittest.TestCase):
         self.assertNotIn('\\\\', markup)
         tools = [{'type': 'function', 'name': 'exec_command', 'parameters': {'properties': {
             'max_output_tokens': {'type': 'integer'}}}}]
-        result = response_object('epn', markup, tools=tools)
+        result = response_object('away', markup, tools=tools)
         self.assertEqual(json.loads(result['output'][0]['arguments']), args)
         self.assertEqual(result['output_text'], '')
 
@@ -24,7 +24,7 @@ class ToolBridgeTests(unittest.TestCase):
             {'type': 'custom_tool_call', 'name': 'apply_patch', 'input': patch},
             {'type': 'custom_tool_call_output', 'call_id': 'x', 'output': 'Success'}]})
         self.assertIn('Success', messages[-1]['content'])
-        result = response_object('epn', messages[-2]['content'], tools=[{'type': 'custom', 'name': 'apply_patch'}])
+        result = response_object('away', messages[-2]['content'], tools=[{'type': 'custom', 'name': 'apply_patch'}])
         item = result['output'][0]
         self.assertEqual(item['type'], 'custom_tool_call')
         self.assertEqual(item['input'], patch)
@@ -42,7 +42,7 @@ class ToolBridgeTests(unittest.TestCase):
                      '<tool_call>{"name":"exec_command"}',
                      '<tool_call>{"name":"unknown","arguments":{}}</tool_call>']:
             with self.subTest(text=text), self.assertRaises(ValueError):
-                response_object('epn', text, tools=[{'type': 'function', 'name': 'exec_command'}])
+                response_object('away', text, tools=[{'type': 'function', 'name': 'exec_command'}])
 
     def test_malformed_call_completes_with_error_without_transport_retry(self):
         handler = object.__new__(ProviderHandler)
@@ -53,7 +53,7 @@ class ToolBridgeTests(unittest.TestCase):
             def infer(self, request):
                 return '<tool_call>{bad JSON}</tool_call>'
         handler.backend = Backend()
-        handler.handle_responses_stream('epn', 'test')
+        handler.handle_responses_stream('away', 'test')
         self.assertEqual(events[-1][0], 'response.completed')
         self.assertIn('No tool from these attempts was executed', events[-1][1]['response']['output_text'])
 
@@ -68,7 +68,7 @@ class ToolBridgeTests(unittest.TestCase):
                 return '<tool_call>{bad JSON}</tool_call>' if len(requests) == 1 else good
         handler.backend = Backend()
         original = [{'role': 'user', 'content': 'Inspect VS Code'}]
-        result = handler.infer_response('epn', 'Inspect VS Code', messages=original,
+        result = handler.infer_response('away', 'Inspect VS Code', messages=original,
                                       tools=[{'type':'function','name':'exec_command'}])
         self.assertEqual(len(requests), 2)
         self.assertEqual(len(original), 1)
@@ -82,7 +82,7 @@ class ToolBridgeTests(unittest.TestCase):
                 requests.append(request)
                 return '<tool_call>{bad JSON}</tool_call>'
         handler.backend = Backend()
-        result = handler.infer_response('epn', 'test')
+        result = handler.infer_response('away', 'test')
         self.assertEqual(len(requests), 2)
         self.assertEqual(result['status'], 'completed')
         self.assertIn('invalid tool call twice', result['output_text'])

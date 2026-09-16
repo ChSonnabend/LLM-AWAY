@@ -17,7 +17,7 @@ approval_policy = "never"
 context_window = 65536
 auto_compact_token_limit = 45000
 tool_output_token_limit = 2000
-# Initial prompt copied into the EPN model catalog by install-codex-config.
+# Initial prompt copied into the AWAY model catalog by install-codex-config.
 instructions = "You are a coding agent sharing the user's workspace. Complete requested work using the available tools. Read only relevant files; batch related reads. Preserve existing changes. For inspection requests, use read-only commands and then answer. For edits, use apply_patch instead of shell heredocs or hand-counted git patches. After two failed attempts change approach. Keep commands and tool output short; retain errors and use targeted ranges instead of dumping files. Run one focused check after editing. Continue authorized work without asking again. When a requested step needs a tool, issue the actual tool call in the same response. Do not end a turn with only an announcement such as Let me check or I will run. Continue authorized steps until complete, blocked, or genuinely missing user information; do not wait for go ahead. If access is denied, use an available permission tool; otherwise report the exact blocker and needed action. Never claim execution without a tool result. Never print tool-call markup as an answer. Keep the final answer brief: result, checks, and any blocker. Be very token efficient, fix broken files, edit quick and run as few tests as possible, in the best case none at all."
 
 [backend]
@@ -33,10 +33,10 @@ retries = 2
 retry_delay_seconds = 2
 
 [remote]
-runner = "/scratch/csonnabe/cern-fellowship/misc/lamacpp-llm/scripts/epn/llm-epn-slurm-run"
-serverctl = "/scratch/csonnabe/cern-fellowship/misc/lamacpp-llm/scripts/epn/llm-epn-serverctl"
-workdir = "/scratch/csonnabe/cern-fellowship/misc/lamacpp-llm"
-state_dir = "$HOME/.cache/llm-epn"
+runner = "/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY-remote/scripts/remote/llm-away-slurm-run"
+serverctl = "/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY-remote/scripts/remote/llm-away-serverctl"
+workdir = "/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY-remote"
+state_dir = "$HOME/.cache/llm-away"
 
 [slurm]
 partition = "prod"
@@ -48,11 +48,28 @@ mi50_fallback = true
 # multi-node allocation, which only increases VRAM for one model when the remote
 # wrapper spans it across nodes (llama.cpp RPC/multi-node) and Slurm is IB-aware.
 # With the current single-node wrapper, N>1 yields N independent nodes but the
-# server still uses one. Override per launch with: llm-epn serve --nodes N
-# or EPN_NODES=N epn-agent
+# server still uses one. Override per launch with: llm-away serve --nodes N
+# or REMOTE_NODES=N away-agent
 nodes = 1
 custom_options = []
 debug = false
+
+# Additional remote hosts. `llm-away serve --host NAME` (or REMOTE_HOST=NAME away-agent)
+# connects to that host instead of [ssh].host. Models/infrastructure must exist
+# there before the host can be used (see README "Host selection").
+[hosts.hydra-agent]
+# SSH Host alias from ~/.ssh/config (H200 cluster; partial-node allocations).
+ssh_host = "hydra"
+# GPUs per allocation (2-8 possible; 0 = let the remote wrapper decide).
+gpus = 4
+# TODO: fill in once the llama.cpp setup lands on hydra:
+# partition = "prod"
+# exclusive = true
+# node_class = ""
+# mi50_fallback = false
+# nodes = 1
+# custom_options = []
+# debug = false
 
 [gateway]
 # 0 means choose a free local SSH tunnel port for each gateway process.
@@ -62,7 +79,7 @@ startup_timeout_seconds = 900
 poll_interval_seconds = 5
 idle_timeout_minutes = 20
 cancel_on_exit = true
-# Also cancel an already-running EPN job when this local provider session exits.
+# Also cancel an already-running AWAY job when this local provider session exits.
 cancel_reused_on_exit = true
 stream_startup_log = true
 # Disable character truncation; llama.cpp enforces the token context limit.

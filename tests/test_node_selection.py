@@ -6,7 +6,7 @@ import re
 import time
 import sys
 
-SOURCE = (Path(__file__).resolve().parents[1] / 'scripts/remote/llm-epn-serverctl').read_text()
+SOURCE = (Path(__file__).resolve().parents[1] / 'scripts/remote/llm-away-serverctl').read_text()
 FUNCTION = SOURCE[SOURCE.index('def choose_node(node_class):'):SOURCE.index('\ndef submit():')]
 
 class NodeSelectionTests(unittest.TestCase):

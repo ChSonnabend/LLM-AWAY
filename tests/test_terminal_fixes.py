@@ -9,8 +9,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from llm_epn.server import ProviderHandler
-from llm_epn.models import choose_model, choose_mtp
+from llm_away.server import ProviderHandler
+from llm_away.models import choose_model, choose_mtp
 
 
 class DisconnectTests(unittest.TestCase):
@@ -40,7 +40,7 @@ class DisconnectTests(unittest.TestCase):
             def infer(self, request):
                 return '<tool_call>{"name":"apply_patch","arguments":{"input":"patch"}}</tool_call>'
         handler.backend = Backend()
-        handler.handle_responses_stream('epn', 'test', tools=[{'type':'function','name':'exec_command'}])
+        handler.handle_responses_stream('away', 'test', tools=[{'type':'function','name':'exec_command'}])
         self.assertEqual(events[-1][0], 'response.completed')
         self.assertIn('No tool from these attempts was executed', events[-1][1]['response']['output_text'])
 
@@ -49,7 +49,7 @@ class TerminalTests(unittest.TestCase):
     def run_menu(self, keys):
         master, slave = pty.openpty()
         original = termios.tcgetattr(slave)
-        code = '''from llm_epn.prompt import choose_option, PromptCanceled
+        code = '''from llm_away.prompt import choose_option, PromptCanceled
 import termios, sys
 before = termios.tcgetattr(sys.stdin.fileno())
 try:
@@ -102,7 +102,7 @@ assert after == before
 
     def test_model_and_mtp_use_menu_and_preserve_default(self):
         models = [{'name':name, 'size_bytes':1} for name in ('one','two')]
-        with patch('llm_epn.models.interactive_available',return_value=True), patch('llm_epn.models.choose_option',return_value=0) as menu:
+        with patch('llm_away.models.interactive_available',return_value=True), patch('llm_away.models.choose_option',return_value=0) as menu:
             self.assertEqual(choose_model(models,'two'),models[0])
             self.assertEqual(menu.call_args.args[2],1)
             mtp={'mtp':{'available':True,'toggle_supported':True}}

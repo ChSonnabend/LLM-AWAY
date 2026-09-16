@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 import ast
 
@@ -18,7 +18,7 @@ class ServerConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    name: str = "epn-llamacpp"
+    name: str = "away-llamacpp"
 
 
 @dataclass(frozen=True)
@@ -35,11 +35,40 @@ class SshConfig:
 
 
 @dataclass(frozen=True)
+class HostConfig:
+    """One remote compute host: its SSH alias and how jobs are submitted there."""
+    name: str = ""
+    ssh_host: str = ""
+    ssh_user: str = ""
+    partition: str = ""
+    exclusive: bool = True
+    node_class: str = ""
+    mi50_fallback: bool = False
+    # Number of full nodes per allocation. 1 is the current single-node behavior;
+    # >1 requests a multi-node allocation (needs a multi-node-capable remote wrapper
+    # and Slurm IB config to actually span the model across nodes).
+    nodes: int = 1
+    custom_options: list[str] = field(default_factory=list)
+    debug: bool = False
+    # GPU count per allocation. 0 lets Slurm/the remote wrapper decide (default);
+    # set to e.g. 4 for `--gres=gpu:4` partial-node allocations (H100/H200 hosts).
+    gpus: int = 0
+
+    @property
+    def destination(self) -> str:
+        return f"{self.ssh_user}@{self.ssh_host}" if self.ssh_user else self.ssh_host
+
+    @property
+    def label(self) -> str:
+        return self.name or self.ssh_host or "default"
+
+
+@dataclass(frozen=True)
 class RemoteConfig:
-    runner: str = "$HOME/.local/bin/llm-epn-slurm-run"
-    serverctl: str = "$HOME/.local/bin/llm-epn-serverctl"
-    workdir: str = "/scratch/csonnabe/cern-fellowship/misc/lamacpp-llm"
-    state_dir: str = "$HOME/.cache/llm-epn"
+    runner: str = "$HOME/.local/bin/llm-away-slurm-run"
+    serverctl: str = "$HOME/.local/bin/llm-away-serverctl"
+    workdir: str = "/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY-remote"
+    state_dir: str = "$HOME/.cache/llm-away"
 
 
 @dataclass(frozen=True)
@@ -128,6 +157,42 @@ class AppConfig:
     llamacpp: LlamaCppConfig = field(default_factory=LlamaCppConfig)
     codex: CodexConfig = field(default_factory=CodexConfig)
     backend_type: str = "slurm_server"
+    hosts: dict[str, HostConfig] = field(default_factory=dict)
+
+    def host_configs(self) -> list[HostConfig]:
+        """Configured hosts first (in [hosts] order); the default host last."""
+        result = [host for host in self.hosts.values() if host.name or host.ssh_host]
+        if not any(host.ssh_host == self.ssh.host for host in result):
+            result.append(HostConfig(name="default", ssh_host=self.ssh.host, ssh_user=self.ssh.user))
+        return result
+
+    def host_config(self, name: str | None = None) -> HostConfig:
+        name = (name or "").strip().lower()
+        for host in self.host_configs():
+            if host.label.lower() == name or host.name.lower() == name or host.ssh_host.lower() == name:
+                return host
+        known = ", ".join(host.label for host in self.host_configs()) or "<none>"
+        raise ValueError(f"unknown host {name!r}; configured hosts: {known}")
+
+    def with_host(self, name: str | None = None) -> "AppConfig":
+        """Return a copy whose top-level ssh/slurm settings come from one host."""
+        if not (name or "").strip():
+            return self
+        host = self.host_config(name)
+        return replace(
+            self,
+            ssh=replace(self.ssh, host=host.ssh_host, user=host.ssh_user),
+            slurm=replace(
+                self.slurm,
+                partition=host.partition or self.slurm.partition,
+                exclusive=host.exclusive,
+                node_class=host.node_class,
+                mi50_fallback=host.mi50_fallback,
+                nodes=host.nodes,
+                custom_options=list(host.custom_options),
+                debug=host.debug,
+            ),
+        )
 
 
 def _merge(defaults: dict, values: dict) -> dict:
@@ -175,12 +240,30 @@ def _loads_toml(text: str) -> dict:
 def load_config(path: str | Path) -> AppConfig:
     raw = _loads_toml(Path(path).read_text(encoding="utf-8"))
     backend = raw.get("backend", {})
+    hosts: dict[str, HostConfig] = {}
+    for key, values in raw.items():
+        if not key.startswith("hosts.") or not isinstance(values, dict):
+            continue
+        values = dict(values)
+        name = values.pop("name", key[len("hosts."):])
+        values.pop("name", None)
+        hosts[name] = HostConfig(**_merge(HostConfig(name=name).__dict__, values))
+    host_table = raw.get("hosts")
+    if isinstance(host_table, dict):
+        for name, values in host_table.items():
+            if not isinstance(values, dict):
+                continue
+            values = dict(values)
+            display = values.pop("name", name)
+            values.pop("name", None)
+            hosts[display] = HostConfig(**_merge(HostConfig(name=display).__dict__, values))
     return AppConfig(
         server=ServerConfig(**_merge(ServerConfig().__dict__, raw.get("server", {}))),
         model=ModelConfig(**_merge(ModelConfig().__dict__, raw.get("model", {}))),
         ssh=SshConfig(**_merge(SshConfig().__dict__, raw.get("ssh", {}))),
         remote=RemoteConfig(**_merge(RemoteConfig().__dict__, raw.get("remote", {}))),
         slurm=SlurmConfig(**_merge(SlurmConfig().__dict__, raw.get("slurm", {}))),
+        hosts=hosts,
         gateway=GatewayConfig(**_merge(GatewayConfig().__dict__, raw.get("gateway", {}))),
         llamacpp=LlamaCppConfig(**_merge(LlamaCppConfig().__dict__, raw.get("llamacpp", {}))),
         codex=CodexConfig(**_merge(CodexConfig().__dict__, raw.get("codex", {}))),

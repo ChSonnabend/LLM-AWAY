@@ -7,8 +7,8 @@ import subprocess
 import tempfile
 import unittest
 
-from llm_epn.backends import SlurmServerBackend
-from llm_epn.config import AppConfig, GatewayConfig
+from llm_away.backends import SlurmServerBackend
+from llm_away.config import AppConfig, GatewayConfig
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -32,7 +32,7 @@ class StartupLogTests(unittest.TestCase):
             payload = {'model': 'preset', 'state_dir': str(state), 'remote_workdir': str(root),
                        'server_port': 8080, 'llamacpp': {}}
             def call(command):
-                result = subprocess.run(['bash', str(REPO / 'scripts/remote/llm-epn-serverctl'), command, '--json'],
+                result = subprocess.run(['bash', str(REPO / 'scripts/remote/llm-away-serverctl'), command, '--json'],
                                         input=json.dumps(payload), text=True, capture_output=True, env=env)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 return json.loads(result.stdout)

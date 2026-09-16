@@ -6,10 +6,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from llm_epn.cli import main
-from llm_epn.config import AppConfig, _loads_toml, load_config
-from llm_epn.models import choose_model, discover_models, save_model
-from llm_epn.remote_models import installed_models
+from llm_away.cli import main
+from llm_away.config import AppConfig, _loads_toml, load_config
+from llm_away.models import choose_model, discover_models, save_model
+from llm_away.remote_models import installed_models
 
 
 class ModelTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class ModelTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.config = self.root / "epn.toml"
+        self.config = self.root / "away.toml"
         self.config.write_text('# Keep this comment\n[model]\nname = "old"\n'
                                '[llamacpp]\nmodel_name = "old"\ncontext_size = 12345\n'
                                '[ssh]\nhost = "example"\n', encoding="utf-8")
@@ -35,7 +35,7 @@ class ModelTests(unittest.TestCase):
         saved = self.config.read_text()
         save_model(str(self.config), self.model)
         self.assertEqual(saved, self.config.read_text())
-        backups = list(self.root.glob("epn.toml.backup-*"))
+        backups = list(self.root.glob("away.toml.backup-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), original)
 
@@ -69,18 +69,18 @@ class ModelTests(unittest.TestCase):
         home.mkdir()
         global_config = home / "config.toml"
         global_config.write_text('model_provider = "openai"\nmodel = "user-model"\n')
-        with patch.dict(os.environ, {"CODEX_HOME": str(home)}), patch("llm_epn.cli.discover_models", return_value=[self.model]):
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}), patch("llm_away.cli.discover_models", return_value=[self.model]):
             self.assertEqual(main(["select-model", "--config", str(self.config), "--model", "preset"]), 0)
         self.assertEqual(load_config(self.config).model.name, "served-alias")
         self.assertTrue(global_config.read_text().startswith('model_provider = "openai"\nmodel = "user-model"\n'))
         self.assertNotIn("model_catalog_json", global_config.read_text())
-        self.assertIn('model = "epn"', (home / "epn.config.toml").read_text())
-        catalog = json.loads((home / "model-catalogs/epn.json").read_text())
-        self.assertEqual(catalog["models"][0]["display_name"], "EPN")
+        self.assertIn('model = "away"', (home / "away.config.toml").read_text())
+        catalog = json.loads((home / "model-catalogs/away.json").read_text())
+        self.assertEqual(catalog["models"][0]["display_name"], "AWAY")
 
     def test_discovery_failure_does_not_write(self):
         original = self.config.read_text()
-        with patch("llm_epn.cli.discover_models", side_effect=ValueError("SSH unavailable")):
+        with patch("llm_away.cli.discover_models", side_effect=ValueError("SSH unavailable")):
             self.assertEqual(main(["select-model", "--config", str(self.config), "--model", "preset"]), 2)
         self.assertEqual(self.config.read_text(), original)
         self.assertFalse(list(self.root.glob("*.backup-*")))
@@ -104,16 +104,16 @@ class ModelTests(unittest.TestCase):
         result = subprocess.run(command + ["preset"], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(load_config(self.config).llamacpp.model_name, "preset")
-        self.assertTrue((home / ".local/bin/codex-epn").is_symlink())
-        self.assertIn('model = "epn"', (home / ".codex/epn.config.toml").read_text())
+        self.assertTrue((home / ".local/bin/codex-away").is_symlink())
+        self.assertIn('model = "away"', (home / ".codex/away.config.toml").read_text())
         self.assertNotIn('model_provider =', (home / ".codex/config.toml").read_text())
 
     def test_discovery_ssh_transport_and_invalid_output(self):
-        with patch("llm_epn.models.subprocess.run", return_value=subprocess.CompletedProcess([], 0, json.dumps([self.model]), "")) as run:
+        with patch("llm_away.models.subprocess.run", return_value=subprocess.CompletedProcess([], 0, json.dumps([self.model]), "")) as run:
             self.assertEqual(discover_models(AppConfig()), [self.model])
             self.assertIn("epnh", run.call_args.args[0])
             self.assertIn("def installed_models", run.call_args.kwargs["input"])
-        with patch("llm_epn.models.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")):
+        with patch("llm_away.models.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")):
             with self.assertRaisesRegex(ValueError, "invalid model list"):
                 discover_models(AppConfig())
 

@@ -17,7 +17,7 @@ from .models import choose_model, choose_mtp, discover_models, mtp_label, save_m
 
 
 def default_config_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "config" / "epn.toml"
+    return Path(__file__).resolve().parents[2] / "config" / "away.toml"
 
 
 def print_codex_config(config_path: str) -> None:
@@ -25,16 +25,16 @@ def print_codex_config(config_path: str) -> None:
     base_url = f"http://{cfg.server.host}:{cfg.server.port}/v1"
     print(
         f'''# Add this provider block to ~/.codex/config.toml.
-[model_providers.epn]
+[model_providers.away]
 name = "{codex_provider_display_name(cfg.codex.provider_display_name)}"
 base_url = "{base_url}"
 wire_api = "responses"
 
-# Add this profile block to ~/.codex/epn.config.toml.
-model_provider = "epn"
-model = "epn"
+# Add this profile block to ~/.codex/away.config.toml.
+model_provider = "away"
+model = "away"
 model_reasoning_effort = "low"
-model_catalog_json = "~/.codex/model-catalogs/epn.json"
+model_catalog_json = "~/.codex/model-catalogs/away.json"
 '''
     )
 
@@ -45,26 +45,62 @@ def codex_home() -> Path:
 
 def codex_provider_display_name(configured_name: str = "") -> str:
     return (
-        os.environ.get("LLM_EPN_CODEX_PROVIDER_NAME")
+        os.environ.get("LLM_REMOTE_CODEX_PROVIDER_NAME")
         or configured_name
         or os.environ.get("USER")
         or os.environ.get("USERNAME")
-        or "EPN"
+        or "AWAY"
     )
+
+
+def choose_host(options: list[str], current: str) -> str | None:
+    """Ask which remote host to run the models on; None means the user canceled."""
+    from .prompt import choose_option, interactive_available
+    labels = [f"{name} (ssh: {name})" if name == "default" else f"{name}" for name in options]
+    if interactive_available():
+        try:
+            index = choose_option(labels, "remote host", 0)
+        except (ValueError, KeyboardInterrupt) as exc:
+            print(f"\nHost selection canceled: {exc}", file=sys.stderr)
+            return None
+        print(f"llm-away: selected host {options[index]}", file=sys.stderr)
+        return options[index]
+    # Non-interactive: fall back to the default host unless exactly one is configured.
+    if len(options) == 1:
+        return options[0]
+    for index, name in enumerate(options, 1):
+        marker = " (current)" if name == "default" else ""
+        print(f"  {index}. {name}{marker}")
+    while True:
+        try:
+            answer = input("Choose remote host number or name [Enter keeps default], q to cancel: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nHost selection canceled.", file=sys.stderr)
+            return None
+        if answer.lower() == "q":
+            return None
+        if not answer:
+            return "default" if "default" in options else options[0]
+        if answer.isdigit() and 1 <= int(answer) <= len(options):
+            return options[int(answer) - 1]
+        for name in options:
+            if name.lower() == answer.lower():
+                return name
+        print("Choose one of the listed hosts.")
 
 
 def quoted(value: str) -> str:
     return json.dumps(value)
 
 
-def epn_model_catalog(model: str, context_window: int = 262000, settings: CodexConfig | None = None) -> dict:
+def remote_model_catalog(model: str, context_window: int = 262000, settings: CodexConfig | None = None) -> dict:
     settings = settings or CodexConfig()
     return {
         "models": [
             {
-                "slug": "epn",
-                "display_name": "EPN",
-                "description": f"Use the selected remote EPN model (currently {model}).",
+                "slug": "away",
+                "display_name": "AWAY",
+                "description": f"Use the selected remote AWAY model (currently {model}).",
                 "default_reasoning_level": "low",
                 "supported_reasoning_levels": [
                     {"effort": "low", "description": "Fast responses"},
@@ -108,7 +144,7 @@ def epn_model_catalog(model: str, context_window: int = 262000, settings: CodexC
                 "model_messages": {
                     "instructions_template": settings.instructions or (
                         "You are a coding agent. You and the user share one workspace. "
-                        f"The configured model is {model}, served by llama.cpp through the EPN gateway. "
+                        f"The configured model is {model}, served by llama.cpp through the AWAY gateway. "
                         "Answer the latest user question directly. For greetings and model identity questions, answer without tools. "
                         "Help with coding, debugging, editing files, and explaining technical work. "
                         "Be concise, inspect the repository before changing code, and preserve user work. "
@@ -123,7 +159,7 @@ def epn_model_catalog(model: str, context_window: int = 262000, settings: CodexC
                         "if none is available, report the exact blocker. Never print tool calls as a final answer."
                     )
                 },
-                "comp_hash": "local-epn-preset",
+                "comp_hash": "local-away-preset",
             }
         ]
     }
@@ -132,26 +168,26 @@ def epn_model_catalog(model: str, context_window: int = 262000, settings: CodexC
 def write_model_catalogs(home: Path, model: str, context_window: int = 262000, settings: CodexConfig | None = None) -> tuple[Path, Path]:
     catalog_dir = home / "model-catalogs"
     catalog_dir.mkdir(parents=True, exist_ok=True)
-    epn_path = catalog_dir / "epn.json"
-    combined_path = catalog_dir / "combined-with-epn.json"
-    epn_catalog = epn_model_catalog(model, context_window=context_window, settings=settings)
-    epn_path.write_text(json.dumps(epn_catalog, indent=2) + "\n", encoding="utf-8")
+    remote_path = catalog_dir / "away.json"
+    combined_path = catalog_dir / "combined-with-away.json"
+    remote_catalog = remote_model_catalog(model, context_window=context_window, settings=settings)
+    remote_path.write_text(json.dumps(remote_catalog, indent=2) + "\n", encoding="utf-8")
 
-    combined = epn_catalog
+    combined = remote_catalog
     if combined_path.exists():
         try:
             combined = json.loads(combined_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            combined = epn_catalog
+            combined = remote_catalog
     models = [
         entry
         for entry in combined.get("models", [])
-        if entry.get("slug") not in (model, "epn") and not str(entry.get("comp_hash", "")).startswith("local-epn-")
+        if entry.get("slug") not in (model, "away") and not str(entry.get("comp_hash", "")).startswith("local-away-")
     ]
-    models.append(epn_catalog["models"][0])
+    models.append(remote_catalog["models"][0])
     combined["models"] = models
     combined_path.write_text(json.dumps(combined, indent=2) + "\n", encoding="utf-8")
-    return epn_path, combined_path
+    return remote_path, combined_path
 
 
 def remove_toml_table(text: str, table: str) -> str:
@@ -166,7 +202,7 @@ def remove_toml_table(text: str, table: str) -> str:
             while result:
                 while result and not result[-1].strip():
                     result.pop()
-                if result and result[-1].strip() == "# LLM EPN provider":
+                if result and result[-1].strip() == "# LLM AWAY provider":
                     result.pop()
                     continue
                 break
@@ -209,28 +245,28 @@ def install_codex_config(config_path: str, activate: bool = False) -> None:
     home = codex_home()
     home.mkdir(parents=True, exist_ok=True)
     config_file = home / "config.toml"
-    profile_file = home / "epn.config.toml"
+    profile_file = home / "away.config.toml"
 
-    epn_catalog, combined_catalog = write_model_catalogs(
+    remote_catalog, combined_catalog = write_model_catalogs(
         home, cfg.model.name, context_window=min(cfg.codex.context_window, cfg.llamacpp.context_size), settings=cfg.codex
     )
     base_url = f"http://{cfg.server.host}:{cfg.server.port}/v1"
 
     existing = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
-    updated = remove_toml_table(existing, "model_providers.epn")
+    updated = remove_toml_table(existing, "model_providers.away")
     if activate:
         updated = set_root_keys(
             updated,
             {
-                "model": "epn",
-                "model_provider": "epn",
+                "model": "away",
+                "model_provider": "away",
                 "model_reasoning_effort": "low",
-                "model_catalog_json": str(epn_catalog),
+                "model_catalog_json": str(remote_catalog),
             },
         )
     provider_block = f'''
-# LLM EPN provider
-[model_providers.epn]
+# LLM AWAY provider
+[model_providers.away]
 name = "{codex_provider_display_name(cfg.codex.provider_display_name)}"
 base_url = "{base_url}"
 wire_api = "responses"
@@ -238,7 +274,7 @@ wire_api = "responses"
     final_config = updated.rstrip() + "\n\n" + provider_block.lstrip()
     if final_config != existing:
         if existing:
-            backup = home / f"config.toml.bak-before-llm-epn-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            backup = home / f"config.toml.bak-before-llm-away-{datetime.now().strftime('%Y%m%d%H%M%S')}"
             backup.write_text(existing, encoding="utf-8")
             openai_copy = home / "config-openai.toml"
             if not openai_copy.exists():
@@ -248,10 +284,10 @@ wire_api = "responses"
     profile_text = (
         "\n".join(
             [
-                'model_provider = "epn"',
-                'model = "epn"',
+                'model_provider = "away"',
+                'model = "away"',
                 'model_reasoning_effort = "low"',
-                f"model_catalog_json = {quoted(str(epn_catalog))}",
+                f"model_catalog_json = {quoted(str(remote_catalog))}",
                 f"sandbox_mode = {quoted(cfg.codex.sandbox_mode)}",
                 f"approval_policy = {quoted(cfg.codex.approval_policy)}",
                 f"model_context_window = {min(cfg.codex.context_window, cfg.llamacpp.context_size)}",
@@ -266,20 +302,47 @@ wire_api = "responses"
     if not profile_file.exists() or profile_file.read_text(encoding="utf-8") != profile_text:
         profile_file.write_text(profile_text, encoding="utf-8")
     if activate:
-        shutil.copy2(config_file, home / "config-epn.toml")
+        shutil.copy2(config_file, home / "config-away.toml")
 
-    print(f"Installed EPN Codex provider in {config_file}")
-    print(f"Installed EPN profile in {profile_file}")
-    print(f"Installed EPN model catalog in {epn_catalog}")
+    print(f"Installed AWAY Codex provider in {config_file}")
+    print(f"Installed AWAY profile in {profile_file}")
+    print(f"Installed AWAY model catalog in {remote_catalog}")
     if activate:
-        print("EPN is active for Codex clients that read the default config.")
+        print("AWAY is active for Codex clients that read the default config.")
     else:
-        print("Global Codex settings preserved. Use codex-epn or --profile epn to select EPN.")
+        print("Global Codex settings preserved. Use codex-away or --profile away to select AWAY.")
+
+
+def visible_devices_for_gpus(gpus: int) -> str:
+    """Map a GPU count to a comma-separated list of device indices (0..gpus-1)."""
+    if gpus < 1:
+        raise ValueError("--gpus must be >= 1")
+    return ",".join(str(i) for i in range(gpus))
+
+
+def resolve_host(cfg, host_arg: str | None, command: str):
+    """Apply --host / REMOTE_HOST to cfg; ask interactively when several hosts exist.
+    Returns None if the user canceled host selection."""
+    host_name = host_arg or os.environ.get("REMOTE_HOST")
+    if not host_name and command in ("serve", "list-models", "select-model", "server-status", "server-cancel", "infer"):
+        available = [h.label for h in cfg.host_configs()]
+        if len(available) > 1:
+            host_name = choose_host(available, cfg.ssh.host)
+            if host_name is None:
+                return None
+    if host_name:
+        try:
+            cfg = cfg.with_host(host_name)
+        except ValueError as exc:
+            print(f"llm-away: {exc}", file=sys.stderr)
+            return None
+        print(f"llm-away: using host {cfg.ssh.destination}", file=sys.stderr)
+    return cfg
 
 
 def main(argv: list[str] | None = None) -> int:
     config_parent = argparse.ArgumentParser(add_help=False)
-    config_parent.add_argument("--config", default=str(default_config_path()), help="Path to epn.toml")
+    config_parent.add_argument("--config", default=str(default_config_path()), help="Path to away.toml")
     config_parent.add_argument(
         "--port",
         type=int,
@@ -287,9 +350,16 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PORT",
         help="Local provider port for this instance, overriding [server].port (use different ports for parallel agents)",
     )
+    config_parent.add_argument(
+        "--host",
+        default=None,
+        metavar="NAME",
+        help="Remote host to use (a [hosts] name from away.toml or the default [ssh].host); "
+             "overrides REMOTE_HOST. Omit to ask interactively when several hosts are configured.",
+    )
 
-    parser = argparse.ArgumentParser(prog="llm-epn")
-    parser.add_argument("--config", default=str(default_config_path()), help="Path to epn.toml")
+    parser = argparse.ArgumentParser(prog="llm-away")
+    parser.add_argument("--config", default=str(default_config_path()), help="Path to away.toml")
     sub = parser.add_subparsers(dest="command", required=True)
 
     serve_parser = sub.add_parser("serve", parents=[config_parent], help="Run the local OpenAI-compatible provider (one per concurrent agent)")
@@ -310,19 +380,27 @@ def main(argv: list[str] | None = None) -> int:
         help="Full Slurm nodes per allocation, overriding [slurm].nodes (multi-node needs a "
              "multi-node-capable remote wrapper + Slurm IB config; default 1).",
     )
+    serve_parser.add_argument(
+        "--gpus",
+        type=int,
+        default=None,
+        metavar="N",
+        help="GPUs per allocation (e.g. 2-8 on the H200 host), overriding [hosts.NAME].gpus. "
+             "Only used by hosts that support partial GPU allocations.",
+    )
     sub.add_parser("codex-config", parents=[config_parent], help="Print a Codex config.toml snippet")
-    setup_parser = sub.add_parser("configure-local", parents=[config_parent], help="Select your SSH alias and shared EPN installation")
-    setup_parser.add_argument("--ssh-alias", help="EPN login-node Host alias from ~/.ssh/config")
-    setup_parser.add_argument("--remote-workdir", default="/scratch/csonnabe/cern-fellowship/misc/lamacpp-llm")
+    setup_parser = sub.add_parser("configure-local", parents=[config_parent], help="Select your SSH alias and shared AWAY installation")
+    setup_parser.add_argument("--ssh-alias", help="AWAY login-node Host alias from ~/.ssh/config")
+    setup_parser.add_argument("--remote-workdir", default="/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY-remote")
     list_parser = sub.add_parser("list-models", parents=[config_parent], help="Query installed managed models on the SSH host")
     list_parser.add_argument("--json", action="store_true", help="Print model metadata as JSON")
-    select_parser = sub.add_parser("select-model", parents=[config_parent], help="Query remote models and save a choice for EPN")
+    select_parser = sub.add_parser("select-model", parents=[config_parent], help="Query remote models and save a choice for AWAY")
     select_parser.add_argument("--model", help="Select an installed preset by name without prompting")
     select_parser.add_argument("--mtp", choices=("auto", "on", "off"),
                                help="MTP: follow remote preset (auto), enable, or disable")
-    install_parser = sub.add_parser("install-codex-config", parents=[config_parent], help="Install the Codex EPN provider/profile")
+    install_parser = sub.add_parser("install-codex-config", parents=[config_parent], help="Install the Codex AWAY provider/profile")
     activation = install_parser.add_mutually_exclusive_group()
-    activation.add_argument("--activate", action="store_true", help="Make EPN the global default, replacing the model, provider, reasoning effort, and catalog settings")
+    activation.add_argument("--activate", action="store_true", help="Make AWAY the global default, replacing the model, provider, reasoning effort, and catalog settings")
     activation.add_argument("--no-activate", action="store_true", help="Preserve global Codex settings (default; retained for compatibility)")
     sub.add_parser("server-status", parents=[config_parent], help="Show persistent Slurm server status")
     sub.add_parser("server-cancel", parents=[config_parent], help="Cancel the persistent Slurm server job")
@@ -346,7 +424,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command in ("list-models", "select-model"):
         try:
-            cfg = load_config(args.config)
+            cfg = resolve_host(load_config(args.config), args.host, args.command)
+            if cfg is None:
+                return 130
             models = discover_models(cfg)
             if args.command == "list-models":
                 if args.json:
@@ -363,11 +443,11 @@ def main(argv: list[str] | None = None) -> int:
             mtp = choose_mtp(model, current_mtp, args.mtp, interactive=args.model is None)
             save_model(args.config, model, mtp=mtp)
             install_codex_config(args.config)
-            print(f"Selected {model['name']}; MTP: {mtp}. Restart the EPN provider and start a new EPN Codex session to use it.")
-            print("If an allocation is still running, use llm-epn server-cancel with this config before restarting to apply MTP changes.")
+            print(f"Selected {model['name']}; MTP: {mtp}. Restart the AWAY provider and start a new AWAY Codex session to use it.")
+            print("If an allocation is still running, use llm-away server-cancel with this config before restarting to apply MTP changes.")
             return 0
         except (OSError, ValueError, subprocess.SubprocessError, EOFError) as exc:
-            print(f"llm-epn: {exc}", file=sys.stderr)
+            print(f"llm-away: {exc}", file=sys.stderr)
             return 2
         except KeyboardInterrupt:
             print("\nModel selection canceled.", file=sys.stderr)
@@ -381,7 +461,17 @@ def main(argv: list[str] | None = None) -> int:
         install_codex_config(args.config, activate=args.activate)
         return 0
 
-    cfg = load_config(args.config)
+    cfg = resolve_host(load_config(args.config), args.host, args.command)
+    if cfg is None:
+        return 130
+    if args.command == "serve":
+        gpus = args.gpus or os.environ.get("REMOTE_GPUS")
+        if gpus:
+            try:
+                cfg = dataclasses.replace(cfg, llamacpp=dataclasses.replace(cfg.llamacpp, visible_devices=visible_devices_for_gpus(int(gpus))))
+            except ValueError as exc:
+                print(f"llm-away: {exc}", file=sys.stderr)
+                return 2
     if args.port is not None:
         cfg = dataclasses.replace(
             cfg,

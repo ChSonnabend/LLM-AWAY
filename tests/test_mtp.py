@@ -7,11 +7,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from llm_epn.backends import SlurmServerBackend, SlurmSshBackend, InferenceRequest
-from llm_epn.cli import main
-from llm_epn.config import AppConfig, GatewayConfig, LlamaCppConfig, load_config
-from llm_epn.models import choose_mtp, mtp_label, save_model
-from llm_epn.remote_models import installed_models
+from llm_away.backends import SlurmServerBackend, SlurmSshBackend, InferenceRequest
+from llm_away.cli import main
+from llm_away.config import AppConfig, GatewayConfig, LlamaCppConfig, load_config
+from llm_away.models import choose_mtp, mtp_label, save_model
+from llm_away.remote_models import installed_models
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -64,7 +64,7 @@ class MtpTests(unittest.TestCase):
         self.assertEqual(LlamaCppConfig().mtp, "auto")
 
     def test_selection_persists_mtp_without_changing_other_arguments(self):
-        config = self.root / "epn.toml"
+        config = self.root / "away.toml"
         config.write_text('[llamacpp]\nmodel_name = "preset"\nserver_extra_args = ["--reasoning", "off"]\n')
         save_model(str(config), self.model, mtp="off")
         parsed = load_config(config)
@@ -72,15 +72,15 @@ class MtpTests(unittest.TestCase):
         self.assertEqual(parsed.llamacpp.server_extra_args, ["--reasoning", "off"])
 
     def test_switching_to_non_mtp_model_resets_sticky_on_and_cancel_writes_nothing(self):
-        config = self.root / "epn.toml"
+        config = self.root / "away.toml"
         config.write_text('[llamacpp]\nmodel_name = "previous"\nmtp = "on"\n')
         plain = {key: value for key, value in self.model.items() if key != "mtp"}
-        with patch("llm_epn.cli.discover_models", return_value=[plain]), patch("llm_epn.cli.install_codex_config"):
+        with patch("llm_away.cli.discover_models", return_value=[plain]), patch("llm_away.cli.install_codex_config"):
             self.assertEqual(main(["select-model", "--config", str(config), "--model", "preset"]), 0)
         self.assertEqual(load_config(config).llamacpp.mtp, "auto")
         original = config.read_text()
-        with patch("llm_epn.cli.discover_models", return_value=[self.model]), patch("sys.stdin.isatty", return_value=True), \
-             patch("builtins.input", side_effect=["1", "q"]), patch("llm_epn.cli.install_codex_config") as install:
+        with patch("llm_away.cli.discover_models", return_value=[self.model]), patch("sys.stdin.isatty", return_value=True), \
+             patch("builtins.input", side_effect=["1", "q"]), patch("llm_away.cli.install_codex_config") as install:
             self.assertEqual(main(["select-model", "--config", str(config)]), 2)
             install.assert_not_called()
         self.assertEqual(config.read_text(), original)
@@ -91,7 +91,7 @@ class MtpTests(unittest.TestCase):
             _, data = SlurmSshBackend(config).build_command(InferenceRequest("hello", "preset"))
             self.assertEqual(json.loads(data)["llamacpp"]["mtp"], mode)
             backend = SlurmServerBackend(config)
-            with patch("llm_epn.backends.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")) as run:
+            with patch("llm_away.backends.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")) as run:
                 backend.serverctl("status", "preset")
                 payload = json.loads(run.call_args.kwargs["input"])
             self.assertEqual(payload["llamacpp"]["mtp"], mode)
@@ -136,7 +136,7 @@ class MtpTests(unittest.TestCase):
         env = dict(os.environ, PATH=str(commands) + ":" + os.environ["PATH"], CAPTURE=str(capture))
         payload = {"model": "preset", "state_dir": str(self.root / "state"), "remote_workdir": str(self.root),
                    "server_port": 8080, "llamacpp": {"mtp": "off"}}
-        command = ["bash", str(REPO / "scripts/remote/llm-epn-serverctl"), "ensure", "--json"]
+        command = ["bash", str(REPO / "scripts/remote/llm-away-serverctl"), "ensure", "--json"]
         first = subprocess.run(command, input=json.dumps(payload), env=env, text=True, capture_output=True)
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(json.loads(first.stdout)["mtp"], "off")

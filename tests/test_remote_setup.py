@@ -6,12 +6,12 @@ import unittest
 
 
 SETUP = Path(__file__).resolve().parents[1] / "scripts/remote/setup.sh"
-HELPERS = ("llm-epn-slurm-run", "llm-epn-serverctl")
+HELPERS = ("llm-away-slurm-run", "llm-away-serverctl")
 
 
 class RemoteSetupTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="epn-remote-setup-")
+        self.temp = tempfile.TemporaryDirectory(prefix="away-remote-setup-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.workdir = self.root / "runner 'with spaces'"
@@ -95,7 +95,7 @@ class RemoteSetupTests(unittest.TestCase):
         self.command("cp", 'if [[ "$1" == -p ]]; then exit 9; fi\nexec /bin/cp "$@"\n')
         self.run_setup(success=False)
         self.assertEqual(path.read_text(), "previous helper\n")
-        self.assertFalse(list(self.dest.glob(".llm-epn-*")))
+        self.assertFalse(list(self.dest.glob(".llm-away-*")))
 
 
 if __name__ == "__main__":

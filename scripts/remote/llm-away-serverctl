@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: llm-epn-serverctl ensure|status|cancel --json < payload.json" >&2
+    echo "Usage: llm-away-serverctl ensure|status|cancel --json < payload.json" >&2
 }
 
 cmd="${1:-}"
@@ -151,7 +151,15 @@ def server_command():
 
 def sbatch_options():
     nodes = max(1, int(payload.get("nodes") or 1))
+    gpus = max(0, int(payload.get("gpus") or 0))
     opts = ["#SBATCH -p " + payload.get("partition", "prod")]
+    if gpus > 0:
+        # Partial-node GPU allocation (H100/H200 hosts): request N GPUs on a
+        # single node without --exclusive, so other jobs can share the node.
+        opts.append("#SBATCH --gres=gpu:" + str(gpus))
+        if nodes > 1:
+            opts.append("#SBATCH --nodes=" + str(nodes))
+        return "\n".join(opts)
     if nodes > 1:
         # Multi-node: request N full nodes. The remote wrapper must span the model
         # across nodes (e.g. llama.cpp RPC/multi-node) for this to increase VRAM;
@@ -164,7 +172,7 @@ def sbatch_options():
             chosen = choose_node(node_class, count=nodes)
             opts.append("#SBATCH -w " + ",".join(chosen))
             if node_class == "mi100" and any(int(n[3:]) >= 280 for n in chosen):
-                opts.append("#SBATCH --export=ALL,EPN_NODE_MI100=1")
+                opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=1")
         return "\n".join(opts)
     if payload.get("exclusive", True):
         opts.append("#SBATCH --exclusive")
@@ -186,9 +194,9 @@ def sbatch_options():
         node = choose_node("mi100")
         opts.append("#SBATCH -w " + node)
         if int(node[3:]) >= 280:
-            opts.append("#SBATCH --export=ALL,EPN_NODE_MI100=1")
+            opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=1")
         else:
-            opts.append("#SBATCH --export=ALL,EPN_NODE_MI100=0")
+            opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=0")
     elif node_class:
         opts.append("#SBATCH -w " + node_class)
     return "\n".join(opts)
@@ -242,7 +250,7 @@ def submit():
     state = current_status()
     if state.get("active") and not payload.get("force_new_job"):
         if state.get("mtp", "auto") != mtp:
-            sys.exit("Running server has a different MTP setting; cancel it with llm-epn server-cancel before restarting")
+            sys.exit("Running server has a different MTP setting; cancel it with llm-away server-cancel before restarting")
         print(json.dumps(state))
         return
     try:
@@ -254,7 +262,7 @@ def submit():
     job_log_template = os.path.join(state_dir, model_name + "-%j.log")
     script = """#!/usr/bin/env bash
 {sbatch_opts}
-#SBATCH -J llm-epn-{model_name}
+#SBATCH -J llm-away-{model_name}
 #SBATCH -o {log_q}
 #SBATCH -e {log_q}
 
@@ -270,7 +278,7 @@ export LLAMACPP_PORT={server_port_q}
 export LLAMACPP_CTX_SIZE={context_size_q}
 export LLAMACPP_MTP={mtp_q}
 {mtp_check}
-echo "llm-epn: server job on $(hostname -s), ROCm arch $LLAMACPP_ROCM_ARCH" >&2
+echo "llm-away: server job on $(hostname -s), ROCm arch $LLAMACPP_ROCM_ARCH" >&2
 {build}
 exec {server_cmd}
 """.format(
@@ -293,7 +301,7 @@ exec {server_cmd}
         server_cmd=server_command(),
     )
 
-    fd, path = tempfile.mkstemp(prefix="llm-epn-", suffix=".sbatch", dir=state_dir)
+    fd, path = tempfile.mkstemp(prefix="llm-away-", suffix=".sbatch", dir=state_dir)
     with os.fdopen(fd, "w") as handle:
         handle.write(script)
     completed = run_capture(["sbatch", "--parsable", path])

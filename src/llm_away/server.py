@@ -31,7 +31,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
             self.write_json({"status": "ok", "model": self.config.model.name})
             return
         if self.path == "/v1/models":
-            self.write_json(models_list("epn"))
+            self.write_json(models_list("away"))
             return
         self.write_json({"error": "not found"}, status=404)
 
@@ -91,7 +91,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
         total = sum(len(message["content"]) for message in messages)
         if limit <= 0 or total <= limit:
             return messages
-        marker = "\n[llm-epn: earlier context omitted]\n"
+        marker = "\n[llm-away: earlier context omitted]\n"
         if limit <= 2 * len(marker):
             return [{**messages[-1], "content": messages[-1]["content"][-limit:]}]
         # At most two boundary messages need a truncation marker.
@@ -124,7 +124,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
         if head_chars + tail_chars >= limit:
             tail_chars = max(0, limit - head_chars)
         omitted = len(prompt) - head_chars - tail_chars
-        marker = f"\n\n[llm-epn: compacted {omitted} characters from the middle of the Codex context]\n\n"
+        marker = f"\n\n[llm-away: compacted {omitted} characters from the middle of the Codex context]\n\n"
         if len(marker) >= limit:
             return prompt[-limit:]
 
@@ -343,7 +343,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
         )
 
     def log_message(self, fmt: str, *args) -> None:
-        sys.stderr.write(f"[llm-epn] {self.address_string()} {fmt % args}\n")
+        sys.stderr.write(f"[llm-away] {self.address_string()} {fmt % args}\n")
 
 
 def warm_backend(config: AppConfig, backend: Backend) -> None:
@@ -351,14 +351,14 @@ def warm_backend(config: AppConfig, backend: Backend) -> None:
     if ensure_ready is None:
         return
     try:
-        print(f"llm-epn: warming backend for model {config.model.name}", file=sys.stderr, flush=True)
+        print(f"llm-away: warming backend for model {config.model.name}", file=sys.stderr, flush=True)
         ensure_ready(config.model.name)
         completion = getattr(backend, "completion", None)
         if completion is not None:
             completion("Reply with OK.", max_tokens=1)
-        print(f"llm-epn: backend ready for model {config.model.name}", file=sys.stderr, flush=True)
+        print(f"llm-away: backend ready for model {config.model.name}", file=sys.stderr, flush=True)
     except Exception as exc:
-        print(f"llm-epn: backend warmup failed: {exc}", file=sys.stderr, flush=True)
+        print(f"llm-away: backend warmup failed: {exc}", file=sys.stderr, flush=True)
 
 
 def serve(config: AppConfig, backend: Backend, warm: bool = False) -> None:
@@ -376,14 +376,14 @@ def serve(config: AppConfig, backend: Backend, warm: bool = False) -> None:
         if shutdown_started:
             return
         shutdown_started = True
-        print("llm-epn: shutting down", file=sys.stderr, flush=True)
+        print("llm-away: shutting down", file=sys.stderr, flush=True)
         threading.Thread(target=httpd.shutdown, daemon=True).start()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         previous_handlers[sig] = signal.getsignal(sig)
         signal.signal(sig, stop)
 
-    print(f"llm-epn provider listening on http://{config.server.host}:{config.server.port}", flush=True)
+    print(f"llm-away provider listening on http://{config.server.host}:{config.server.port}", flush=True)
     if warm:
         threading.Thread(target=warm_backend, args=(config, backend), daemon=True).start()
     try:

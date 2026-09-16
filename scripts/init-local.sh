@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "${BASH_SOURCE[0]}")"
 cd "$ROOT"
 
-config="${LLM_EPN_CONFIG:-$ROOT/config/epn.toml}"
+config="${LLM_REMOTE_CONFIG:-$ROOT/config/away.toml}"
 selection_args=()
 mtp_args=()
 connection_args=()
@@ -35,7 +35,7 @@ if [[ "$skip_selection" == 1 && ( ${#selection_args[@]} -gt 0 || ${#mtp_args[@]}
     exit 2
 fi
 if [[ "$skip_selection" == 0 ]]; then
-    "$ROOT/bin/llm-epn" select-model --config "$config" ${selection_args[@]+"${selection_args[@]}"} ${mtp_args[@]+"${mtp_args[@]}"}
+    "$ROOT/bin/llm-away" select-model --config "$config" ${selection_args[@]+"${selection_args[@]}"} ${mtp_args[@]+"${mtp_args[@]}"}
 fi
 
 mkdir -p "$HOME/.local/bin"
@@ -54,20 +54,20 @@ install_link() {
     ln -s "$source_path" "$dest_path"
 }
 
-install_link "$ROOT/bin/llm-epn"
-install_link "$ROOT/bin/epn-agent"
-install_link "$ROOT/bin/code-epn"
-install_link "$ROOT/bin/codex-epn"
+install_link "$ROOT/bin/llm-away"
+install_link "$ROOT/bin/away-agent"
+install_link "$ROOT/bin/code-away"
+install_link "$ROOT/bin/codex-away"
 
-"$ROOT/bin/llm-epn" install-codex-config --config "$config" --no-activate
+"$ROOT/bin/llm-away" install-codex-config --config "$config" --no-activate
 
-echo "Local llm-epn environment is ready."
+echo "Local llm-away environment is ready."
 echo
-echo "For an already-open local or Remote-SSH VS Code window, start the EPN Codex provider with:"
-echo "  epn-agent"
+echo "For an already-open local or Remote-SSH VS Code window, start the AWAY Codex provider with:"
+echo "  away-agent"
 echo
 echo "To open VS Code and keep the provider alive until the window closes, run:"
-echo "  code-epn /path/to/project"
+echo "  code-away /path/to/project"
 echo
 echo "If ~/.local/bin is not on PATH, use:"
-echo "  $ROOT/bin/epn-agent"
+echo "  $ROOT/bin/away-agent"

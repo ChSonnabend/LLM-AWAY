@@ -4,10 +4,10 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-from llm_epn.backends import BackendError, SlurmServerBackend
-from llm_epn.config import AppConfig, GatewayConfig
-from llm_epn.protocol import normalize_chat_messages, responses_request_to_messages
-from llm_epn.server import ProviderHandler
+from llm_away.backends import BackendError, SlurmServerBackend
+from llm_away.config import AppConfig, GatewayConfig
+from llm_away.protocol import normalize_chat_messages, responses_request_to_messages
+from llm_away.server import ProviderHandler
 
 
 class QwenMessagesTests(unittest.TestCase):
@@ -40,7 +40,7 @@ class QwenMessagesTests(unittest.TestCase):
         self.assertIn("tool_call", messages[2]["content"])
         self.assertEqual(messages[-1]["content"], "Next question")
 
-    def test_chat_endpoint_preserves_roles_and_epn_alias(self):
+    def test_chat_endpoint_preserves_roles_and_away_alias(self):
         handler = object.__new__(ProviderHandler)
         handler.config = AppConfig()
         seen = []
@@ -50,11 +50,11 @@ class QwenMessagesTests(unittest.TestCase):
                 return "OK"
         handler.backend = Backend()
         handler.write_json = lambda result: None
-        handler.handle_chat({"model": "epn", "messages": [
+        handler.handle_chat({"model": "away", "messages": [
             {"role": "system", "content": "Base"},
             {"role": "user", "content": "Hello"},
             {"role": "developer", "content": "Update"}]})
-        self.assertEqual(seen[0].model, "epn")
+        self.assertEqual(seen[0].model, "away")
         self.assertEqual(seen[0].messages, [{"role": "system", "content": "Base\n\nUpdate"}, {"role": "user", "content": "Hello"}])
 
     def test_upstream_template_error_is_reported_in_failed_stream(self):
@@ -62,7 +62,7 @@ class QwenMessagesTests(unittest.TestCase):
         detail = "System message must be at the beginning."
         body = json.dumps({"error": {"message": detail}}).encode()
         error = HTTPError('http://localhost', 500, 'Internal Server Error', {}, io.BytesIO(body))
-        with patch('llm_epn.backends.urlopen', side_effect=error):
+        with patch('llm_away.backends.urlopen', side_effect=error):
             with self.assertRaisesRegex(BackendError, detail):
                 backend.completion("Hello")
         handler = object.__new__(ProviderHandler)
@@ -73,7 +73,7 @@ class QwenMessagesTests(unittest.TestCase):
             def infer(self, request):
                 raise BackendError(detail)
         handler.backend = FailingBackend()
-        handler.handle_responses_stream('epn', 'Hello', messages=[])
+        handler.handle_responses_stream('away', 'Hello', messages=[])
         self.assertEqual([event for event, _ in events], ['response.created', 'response.failed'])
         self.assertIn(detail, events[-1][1]['response']['error']['message'])
         self.assertEqual(events[-1][1]['response']['error']['code'], "server_error")

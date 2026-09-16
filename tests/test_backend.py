@@ -5,8 +5,8 @@ import unittest
 import json
 from pathlib import Path
 
-from llm_epn.backends import InferenceRequest, SlurmServerBackend, SlurmSshBackend
-from llm_epn.config import AppConfig, ModelConfig
+from llm_away.backends import InferenceRequest, SlurmServerBackend, SlurmSshBackend
+from llm_away.config import AppConfig, ModelConfig
 
 
 class RecordingSlurmServerBackend(SlurmServerBackend):
@@ -25,11 +25,11 @@ class RecordingSlurmServerBackend(SlurmServerBackend):
 class BackendTests(unittest.TestCase):
     def test_build_command_targets_ssh_host(self):
         backend = SlurmSshBackend(AppConfig())
-        cmd, stdin = backend.build_command(InferenceRequest(prompt="Hello", model="epn-llamacpp"))
+        cmd, stdin = backend.build_command(InferenceRequest(prompt="Hello", model="away-llamacpp"))
         self.assertEqual(cmd[:3], ["ssh", "-o", "ConnectTimeout=60"])
         self.assertIn("epnh", cmd)
         self.assertIn("bash -lc", cmd[-1])
-        self.assertIn("$HOME/.local/bin/llm-epn-slurm-run --json", cmd[-1])
+        self.assertIn("$HOME/.local/bin/llm-away-slurm-run --json", cmd[-1])
         self.assertIn('"prompt": "Hello"', stdin)
         self.assertEqual(json.loads(stdin)["llamacpp"]["model_name"], AppConfig().llamacpp.model_name)
 
@@ -51,13 +51,13 @@ class BackendTests(unittest.TestCase):
         backend = RecordingSlurmServerBackend(AppConfig())
         messages = [{"role": "system", "content": "Be concise."},
                     {"role": "user", "content": "Which model are you?"}]
-        backend.infer(InferenceRequest(prompt="fallback", model="epn", messages=messages))
+        backend.infer(InferenceRequest(prompt="fallback", model="away", messages=messages))
         payload = json.loads(backend.completion_payload("fallback", messages=backend.messages))
         self.assertEqual(payload["messages"], messages)
         self.assertEqual(payload["max_tokens"], 16384)
 
     def test_remote_serverctl_locks_ensure_submission(self):
-        script = Path("scripts/remote/llm-epn-serverctl").read_text(encoding="utf-8")
+        script = Path("scripts/remote/llm-away-serverctl").read_text(encoding="utf-8")
 
         self.assertIn("import fcntl", script)
         self.assertIn("lock_path = os.path.join(state_dir, model_name + \".lock\")", script)

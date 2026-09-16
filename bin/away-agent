@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_dir="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "${BASH_SOURCE[0]}")"
-config="${LLM_EPN_CONFIG:-$repo_dir/config/epn.toml}"
+config="${LLM_REMOTE_CONFIG:-$repo_dir/config/away.toml}"
 tty_state="$(stty -g 2>/dev/null || true)"
 
 restore_terminal() {
@@ -20,14 +20,20 @@ trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
 args=(serve --config "$config")
-if [[ -n "${EPN_PORT:-}" ]]; then
-    args+=(--port "$EPN_PORT")
+if [[ -n "${REMOTE_PORT:-}" ]]; then
+    args+=(--port "$REMOTE_PORT")
 fi
-if [[ -n "${EPN_SLURM_JOB:-}" ]]; then
-    args+=(--slurm-job "$EPN_SLURM_JOB")
+if [[ -n "${REMOTE_HOST:-}" ]]; then
+    args+=(--host "$REMOTE_HOST")
 fi
-if [[ -n "${EPN_NODES:-}" ]]; then
-    args+=(--nodes "$EPN_NODES")
+if [[ -n "${REMOTE_SLURM_JOB:-}" ]]; then
+    args+=(--slurm-job "$REMOTE_SLURM_JOB")
+fi
+if [[ -n "${REMOTE_NODES:-}" ]]; then
+    args+=(--nodes "$REMOTE_NODES")
+fi
+if [[ -n "${REMOTE_GPUS:-}" ]]; then
+    args+=(--gpus "$REMOTE_GPUS")
 fi
 args+=(--warm)
-"$repo_dir/bin/llm-epn" "${args[@]}"
+"$repo_dir/bin/llm-away" "${args[@]}"

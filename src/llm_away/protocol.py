@@ -16,7 +16,7 @@ def models_list(model: str) -> dict:
                 "id": model,
                 "object": "model",
                 "created": int(time.time()),
-                "owned_by": "llm-epn",
+                "owned_by": "llm-away",
             }
         ],
     }
