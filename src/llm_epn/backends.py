@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import AppConfig
+from .protocol import normalize_chat_messages
 
 
 class BackendError(RuntimeError):
@@ -24,6 +25,7 @@ class InferenceRequest:
     prompt: str
     model: str
     raw_prompt_chars: int | None = None
+    messages: list[dict] | None = None
 
 
 class Backend:
@@ -52,6 +54,7 @@ class SlurmSshBackend(Backend):
             "partition": cfg.slurm.partition,
             "exclusive": cfg.slurm.exclusive,
             "node_class": cfg.slurm.node_class,
+            "mi50_fallback": cfg.slurm.mi50_fallback,
             "custom_options": cfg.slurm.custom_options,
             "debug": cfg.slurm.debug,
             "llamacpp": {
@@ -62,8 +65,10 @@ class SlurmSshBackend(Backend):
                 "show_config_before_run": cfg.llamacpp.show_config_before_run,
                 "list_devices_before_run": cfg.llamacpp.list_devices_before_run,
                 "run_cli": cfg.llamacpp.run_cli,
+                "model_name": cfg.llamacpp.model_name or cfg.model.name,
                 "inference_timeout_seconds": cfg.llamacpp.inference_timeout_seconds,
                 "extra_args": cfg.llamacpp.extra_args,
+                "mtp": cfg.llamacpp.mtp,
             },
         }
         remote = "bash -lc " + shlex.quote(f"{cfg.remote.runner} --json")
@@ -117,13 +122,15 @@ class SlurmServerBackend(Backend):
         self._log_offset = 0
         self._ready_model: str | None = None
         self._ready_lock = threading.Lock()
+        self._closing = threading.Event()
+        self._reused_job = False
         atexit.register(self.close)
 
     def infer(self, request: InferenceRequest) -> str:
         started = time.time()
         self.ensure_ready(self.config.model.name)
         ready_at = time.time()
-        text = self.completion(request.prompt)
+        text = self.completion(request.prompt, messages=request.messages)
         completed_at = time.time()
         print(
             "llm-epn: request timing "
@@ -142,19 +149,31 @@ class SlurmServerBackend(Backend):
 
     def ensure_ready(self, model: str) -> None:
         with self._ready_lock:
+            if self._closing.is_set():
+                raise BackendError("backend is shutting down")
             if self._ready_model == model and self._tunnel and self._tunnel.poll() is None and self.http_ready(model):
                 return
 
             before = self.serverctl("status", model)
+            if self._closing.is_set():
+                raise BackendError("backend is shutting down")
             state = self.serverctl("ensure", model)
+            self._reused_job = bool(before.get("active") and state.get("active"))
             if not before.get("active") and state.get("active") and state.get("job_id"):
                 self._owned_job_id = str(state["job_id"])
+                self._log_offset = 0
                 print(f"llm-epn: submitted Slurm job {self._owned_job_id}", file=sys.stderr)
             deadline = time.time() + self.config.gateway.startup_timeout_seconds
 
-            while time.time() < deadline:
+            last_phase = None
+            while time.time() < deadline and not self._closing.is_set():
                 state = self.serverctl("status", model)
-                if self._owned_job_id:
+                phase = state.get("slurm_state")
+                progress = (phase, state.get("reason"))
+                if phase and progress != last_phase:
+                    print(f"llm-epn: Slurm job {state.get('job_id')}: {phase} ({state.get('reason') or 'no reason reported'})", file=sys.stderr)
+                    last_phase = progress
+                if self._owned_job_id and phase not in ("PENDING", "CONFIGURING"):
                     self.stream_log(model)
                 if state.get("job_id") and not state.get("active"):
                     log_path = state.get("log_path", "<unknown>")
@@ -165,10 +184,12 @@ class SlurmServerBackend(Backend):
                     if self.http_ready(model):
                         self._ready_model = model
                         return
-                time.sleep(self.config.gateway.poll_interval_seconds)
+                self._closing.wait(self.config.gateway.poll_interval_seconds)
 
+            if self._closing.is_set():
+                raise BackendError("backend is shutting down")
             log_path = state.get("log_path", "<unknown>")
-            raise BackendError(f"server did not become ready before timeout; remote log: {log_path}")
+            raise BackendError(f"server did not become ready before timeout; Slurm state: {state.get('slurm_state') or 'unknown'}, reason: {state.get('reason') or 'unknown'}; remote log: {log_path}")
 
     def serverctl(self, command: str, model: str, extra: dict | None = None) -> dict:
         cfg = self.config
@@ -179,6 +200,7 @@ class SlurmServerBackend(Backend):
             "partition": cfg.slurm.partition,
             "exclusive": cfg.slurm.exclusive,
             "node_class": cfg.slurm.node_class,
+            "mi50_fallback": cfg.slurm.mi50_fallback,
             "custom_options": cfg.slurm.custom_options,
             "server_port": cfg.gateway.server_port,
             "llamacpp": {
@@ -191,6 +213,7 @@ class SlurmServerBackend(Backend):
                 "model_path": cfg.llamacpp.model_path,
                 "context_size": cfg.llamacpp.context_size,
                 "server_extra_args": cfg.llamacpp.server_extra_args,
+                "mtp": cfg.llamacpp.mtp,
                 "server_command": cfg.llamacpp.server_command,
             },
         }
@@ -205,7 +228,7 @@ class SlurmServerBackend(Backend):
         ]
         attempts = max(1, cfg.ssh.retries)
         for attempt in range(1, attempts + 1):
-            completed = subprocess.run(cmd, input=json.dumps(payload), text=True, capture_output=True, check=False)
+            completed = subprocess.run(cmd, input=json.dumps(payload), text=True, capture_output=True, check=False, start_new_session=True)
             if completed.returncode == 0:
                 try:
                     return json.loads(completed.stdout)
@@ -293,20 +316,20 @@ class SlurmServerBackend(Backend):
                 return True
         return False
 
-    def completion_payload(self, prompt: str, max_tokens: int | None = None) -> bytes:
+    def completion_payload(self, prompt: str, max_tokens: int | None = None, messages: list[dict] | None = None) -> bytes:
         if max_tokens is None:
             max_tokens = self.config.llamacpp.max_tokens
         payload = json.dumps(
             {
                 "model": self.config.model.name,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": normalize_chat_messages(messages) if messages is not None else [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
             }
         ).encode("utf-8")
         return payload
 
-    def completion(self, prompt: str, max_tokens: int | None = None) -> str:
-        payload = self.completion_payload(prompt, max_tokens=max_tokens)
+    def completion(self, prompt: str, max_tokens: int | None = None, messages: list[dict] | None = None) -> str:
+        payload = self.completion_payload(prompt, max_tokens=max_tokens, messages=messages)
         request = Request(
             self.local_url("/v1/chat/completions"),
             data=payload,
@@ -316,6 +339,15 @@ class SlurmServerBackend(Backend):
         try:
             with urlopen(request, timeout=self.config.llamacpp.inference_timeout_seconds) as response:
                 raw = response.read().decode("utf-8")
+        except HTTPError as exc:
+            detail = exc.read(16384).decode("utf-8", "replace")
+            try:
+                error = json.loads(detail).get("error", {})
+                if isinstance(error, dict):
+                    detail = str(error.get("message") or detail)
+            except (ValueError, AttributeError):
+                pass
+            raise BackendError(f"llama-server HTTP {exc.code}: {detail or exc.reason}") from exc
         except Exception as exc:
             raise BackendError(f"llama-server completion request failed: {exc}") from exc
 
@@ -326,7 +358,12 @@ class SlurmServerBackend(Backend):
         choices = data.get("choices") or []
         if choices:
             message = choices[0].get("message") or {}
-            return str(message.get("content") or choices[0].get("text") or data)
+            return str(
+                message.get("content")
+                or message.get("reasoning_content")
+                or choices[0].get("text")
+                or data
+            )
         return str(data.get("content") or data.get("response") or data)
 
     def local_url(self, path: str) -> str:
@@ -348,21 +385,30 @@ class SlurmServerBackend(Backend):
         return flattened
 
     def close(self) -> None:
-        if self._tunnel and self._tunnel.poll() is None:
-            self._tunnel.terminate()
-        should_cancel = self.config.gateway.cancel_on_exit and (
-            self._owned_job_id or (self.config.gateway.cancel_reused_on_exit and self._ready_model)
-        )
-        if should_cancel:
-            try:
-                job_label = self._owned_job_id or "reused server"
-                print(f"llm-epn: canceling Slurm job for {job_label}", file=sys.stderr)
-                self.serverctl("cancel", self.config.model.name)
-            except Exception as exc:
-                print(f"llm-epn: failed to cancel Slurm job: {exc}", file=sys.stderr)
-            finally:
+        self._closing.set()
+        # Wait for an in-flight submission to record its job ID before canceling.
+        with self._ready_lock:
+            if self._tunnel and self._tunnel.poll() is None:
+                self._tunnel.terminate()
+                try:
+                    self._tunnel.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._tunnel.kill()
+                    self._tunnel.wait()
+            should_cancel = self.config.gateway.cancel_on_exit and (
+                self._owned_job_id or (self.config.gateway.cancel_reused_on_exit and (self._reused_job or self._ready_model))
+            )
+            if should_cancel:
+                try:
+                    job_label = self._owned_job_id or "reused server"
+                    print(f"llm-epn: canceling Slurm job for {job_label}", file=sys.stderr)
+                    self.serverctl("cancel", self.config.model.name)
+                except Exception as exc:
+                    print(f"llm-epn: failed to cancel Slurm job: {exc}", file=sys.stderr)
+                    return  # Keep the job reference so atexit can retry.
                 self._owned_job_id = None
                 self._ready_model = None
+                self._reused_job = False
 
     @staticmethod
     def find_free_port() -> int:

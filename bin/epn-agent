@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+repo_dir="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "${BASH_SOURCE[0]}")"
 config="${LLM_EPN_CONFIG:-$repo_dir/config/epn.toml}"
 tty_state="$(stty -g 2>/dev/null || true)"
 
@@ -12,6 +12,7 @@ restore_terminal() {
 }
 
 cleanup() {
+    trap "" INT TERM
     restore_terminal
 }
 trap cleanup EXIT

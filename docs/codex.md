@@ -6,25 +6,41 @@ Install launcher links, Codex config, and model catalog with:
 ./scripts/init-local.sh
 ```
 
+Setup queries the remote managed model presets and prompts for an installed model before installing the EPN profile. Use `--model NAME` for noninteractive selection or `--skip-model-selection` for offline setup. To change the model later, run `./bin/llm-epn select-model`; it updates the project model settings and EPN profile/catalog, then asks you to restart the EPN provider and start a new EPN Codex session. `./bin/llm-epn list-models --json` returns the discovered preset names, served aliases, paths, and file sizes without changing settings.
+
 Run the same command on any Remote-SSH development host where the VS Code Codex extension should use EPN. Codex reads config on the host where its extension/backend process runs, so each remote host needs its own `~/.codex` setup.
 
-The generated profile uses:
+Initialization installs the EPN provider/profile while preserving global settings, including the selected model/provider and any catalog override. Repeated runs preserve those settings too. Use the EPN profile to select EPN for a session. To deliberately replace the global defaults, run `./bin/llm-epn install-codex-config --activate`. The compatibility flag `--no-activate` explicitly requests the default behavior.
+
+The generated provider in `config.toml` uses:
 
 ```toml
 [model_providers.epn]
 name = "Christian Sonnabend"
 base_url = "http://127.0.0.1:8765/v1"
 wire_api = "responses"
+```
 
+The generated `epn.config.toml` profile uses:
+
+```toml
 model_provider = "epn"
-model = "qwen3-coder-next-f16-1m"
+model = "epn"
 model_reasoning_effort = "high"
 model_catalog_json = "/home/chris/.codex/model-catalogs/epn.json"
 ```
 
-For global model pickers, `~/.codex/config.toml` can point `model_catalog_json` at
-`~/.codex/model-catalogs/combined-with-epn.json`, which contains the normal Codex model catalog plus
-`qwen3-coder-next-f16-1m`.
+The installer also writes `~/.codex/model-catalogs/combined-with-epn.json`, preserving
+existing non-EPN entries and updating the stable EPN entry. This is an export
+artifact, not a routing table. It does not fetch or replace the normal Codex
+catalog. Explicit `--activate` selects the EPN-only catalog and provider globally.
+
+The EPN catalog advertises the configured `llamacpp.context_size`. Input and
+output share the server context window. Character truncation is disabled by default.
+After changing these settings, reinstall the catalog with
+`./bin/llm-epn install-codex-config`, restart the gateway and remote server allocation,
+and start a fresh Codex session. Codex sizes the skills-list budget from its model
+catalog, so changing only the remote model preset does not update that budget.
 
 Run:
 
@@ -49,3 +65,16 @@ Notes:
 - When a model answer contains tool calls, the proxy preserves any visible text around those calls. If the answer contains only tool calls, it emits a short progress message such as `Calling exec (2 calls).` before the hidden `function_call` items.
 - Codex tool access is granted by the Codex client, not by the llama.cpp model. The proxy now includes the Responses `tools` list in Qwen's prompt so it sees the real tool names. If Qwen still emits common file-tool aliases such as `read_file`, `list_files`, or `search_files` when only `exec` is available, the proxy rewrites those calls to `exec` shell commands before returning them to Codex.
 - Official OpenAI documentation describes `codex exec` for automation and `config.toml` model providers/profiles; this repo uses those surfaces rather than wrapping Codex internals.
+
+## Native model picker scope
+
+The generated entry has slug `epn` and display name `EPN`, independent of the
+remote preset. It routes through the existing EPN profile and follows the
+gateway's configured model. The default OpenAI provider and catalog remain
+unchanged. Run `codex --profile epn` for EPN and normal `codex` for your default.
+
+The installed app/VS Code model picker does not attach a different provider to
+each model entry. A merged catalog alone cannot safely switch between OpenAI
+and EPN. Setup therefore does not install a global merged picker or promise
+simultaneous native dropdown access. The EPN entry is scoped to EPN-configured
+sessions; GUI availability depends on that client's provider/profile support.

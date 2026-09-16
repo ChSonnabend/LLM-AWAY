@@ -27,6 +27,8 @@ The provider converts Codex/OpenAI-style requests into a plain prompt and sends 
 
 The default backend uses SSH to run `~/.local/bin/llm-epn-serverctl ensure --json` on `epnh`.
 
+The remote host provisions the helpers once using the standalone `scripts/remote/setup.sh` bundle (deployed as `scripts/epn/` in the remote runner project). Client initialization does not install remote files; see the README's Remote Host Setup section for prerequisites and configuration.
+
 The remote controller:
 
 - maps the requested model to a state file under `remote.state_dir`

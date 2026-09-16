@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+repo_dir="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "${BASH_SOURCE[0]}")"
 config="${LLM_EPN_CONFIG:-$repo_dir/config/epn.toml}"
 host="${LLM_EPN_HOST:-127.0.0.1}"
 port="${LLM_EPN_PORT:-8765}"
@@ -13,7 +13,7 @@ restart_provider="${LLM_EPN_RESTART_PROVIDER:-1}"
 tty_state="$(stty -g 2>/dev/null || true)"
 
 healthcheck() {
-    python - "$host" "$port" <<'PY' >/dev/null 2>&1
+    python3 - "$host" "$port" <<'PY' >/dev/null 2>&1
 import sys
 from urllib.request import urlopen
 
@@ -30,6 +30,7 @@ restore_terminal() {
 }
 
 cleanup() {
+    trap "" INT TERM
     if [[ -n "$provider_pid" ]] && kill -0 "$provider_pid" 2>/dev/null; then
         kill "$provider_pid" 2>/dev/null || true
         wait "$provider_pid" 2>/dev/null || true
@@ -41,48 +42,55 @@ trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
 stop_existing_provider() {
-    python - <<'PY'
+    python3 - "$config" <<'PY'
 import os
+from pathlib import Path
 import signal
+import subprocess
+import sys
 import time
 
-needles = ("llm-epn serve", "llm_epn.cli serve")
+# BSD/macOS and Linux ps both support these options; only inspect our user.
+listing = subprocess.check_output(
+    ["ps", "-ww", "-U", str(os.getuid()), "-o", "pid=", "-o", "args="],
+    universal_newlines=True,
+)
 pids = []
-for pid in os.listdir("/proc"):
-    if not pid.isdigit() or int(pid) == os.getpid():
+for line in listing.splitlines():
+    fields = line.strip().split(None, 1)
+    if len(fields) != 2:
         continue
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as handle:
-            cmdline = handle.read().replace(b"\0", b" ").decode("utf-8", "replace")
-    except OSError:
+    pid, command = fields
+    # ps prints arguments without shell quoting, including paths with spaces.
+    marker = " -m llm_epn.cli serve --config " + str(Path(sys.argv[1]).resolve())
+    if marker not in command:
         continue
-    if any(needle in cmdline for needle in needles):
-        pids.append(int(pid))
+    suffix = command.split(marker, 1)[1]
+    if suffix and not suffix.startswith(" "):
+        continue
+    pids.append(int(pid))
 
 for pid in pids:
     try:
         os.kill(pid, signal.SIGTERM)
-    except OSError:
+    except ProcessLookupError:
         pass
 
-deadline = time.time() + 5
-while time.time() < deadline and pids:
+deadline = time.monotonic() + 60
+while pids and time.monotonic() < deadline:
     alive = []
     for pid in pids:
         try:
             os.kill(pid, 0)
             alive.append(pid)
-        except OSError:
+        except ProcessLookupError:
             pass
     pids = alive
     if pids:
         time.sleep(0.1)
+if pids:
+    sys.exit("Provider is still cleaning up; wait before restarting it.")
 
-for pid in pids:
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        pass
 PY
 }
 
@@ -96,7 +104,7 @@ if ! healthcheck; then
     echo "llm-epn: starting local provider on http://$host:$port (log: $log_path)" >&2
     "$repo_dir/bin/llm-epn" serve --config "$config" >"$log_path" 2>&1 &
     provider_pid=$!
-    for _ in $(seq 1 50); do
+    for ((attempt = 0; attempt < 50; attempt++)); do
         if healthcheck; then
             break
         fi

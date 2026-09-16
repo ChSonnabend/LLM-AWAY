@@ -47,6 +47,7 @@ class SlurmConfig:
     partition: str = "prod"
     exclusive: bool = True
     node_class: str = ""
+    mi50_fallback: bool = False
     custom_options: list[str] = field(default_factory=list)
     debug: bool = False
 
@@ -61,7 +62,7 @@ class GatewayConfig:
     cancel_on_exit: bool = True
     cancel_reused_on_exit: bool = True
     stream_startup_log: bool = True
-    max_prompt_chars: int = 20000
+    max_prompt_chars: int = 0
     prompt_keep_tail_chars: int = 16000
     prompt_keep_head_chars: int = 4000
 
@@ -75,16 +76,26 @@ class LlamaCppConfig:
     show_config_before_run: bool = False
     list_devices_before_run: bool = False
     run_cli: str = "bin/run-cli"
-    inference_timeout_seconds: int = 120
-    max_tokens: int = 256
+    inference_timeout_seconds: int = 900
+    max_tokens: int = 262000
     extra_args: list[str] = field(default_factory=lambda: ["-n", "64"])
-    model_name: str = "qwen3-coder-next-f16-1m"
+    model_name: str = "qwen3.8-flash-next-125b-ultralite-37g"
     server_cli: str = "bin/run-server"
     model_path: str = ""
-    context_size: int = 8192
+    context_size: int = 262000
     server_extra_args: list[str] = field(default_factory=list)
     server_command: list[str] = field(default_factory=list)
+    mtp: str = "auto"
 
+    def __post_init__(self):
+        if self.mtp not in ("auto", "on", "off"):
+            raise ValueError("llamacpp.mtp must be auto, on, or off")
+        if self.mtp != "auto":
+            if self.model_path or self.server_command:
+                raise ValueError("llamacpp.mtp overrides require a managed model (empty model_path and server_command)")
+            controls = {"--spec-type", "--spec-draft-model", "--model-draft", "-md"}
+            if any(arg.split("=", 1)[0] in controls for arg in self.extra_args + self.server_extra_args):
+                raise ValueError("Use llamacpp.mtp or manual speculative type/model arguments, not both")
 
 @dataclass(frozen=True)
 class CodexConfig:

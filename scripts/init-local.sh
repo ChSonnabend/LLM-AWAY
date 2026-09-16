@@ -1,8 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+ROOT="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "${BASH_SOURCE[0]}")"
 cd "$ROOT"
+
+config="${LLM_EPN_CONFIG:-$ROOT/config/epn.toml}"
+selection_args=()
+mtp_args=()
+connection_args=()
+skip_selection=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --model|--config|--mtp|--ssh-alias|--remote-workdir)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "$1 requires a value" >&2
+                exit 2
+            fi
+            if [[ "$1" == --model ]]; then selection_args=(--model "$2");
+            elif [[ "$1" == --mtp ]]; then mtp_args=(--mtp "$2");
+            elif [[ "$1" == --config ]]; then config="$2";
+            else connection_args+=("$1" "$2"); fi
+            shift 2
+            ;;
+        --skip-model-selection) skip_selection=1; shift ;;
+        -h|--help)
+            echo "Usage: init-local.sh [--config PATH] [--ssh-alias NAME] [--remote-workdir PATH] [--model NAME] [--mtp auto|on|off] [--skip-model-selection]"
+            exit 0
+            ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
+    esac
+done
+if [[ "$skip_selection" == 1 && ( ${#selection_args[@]} -gt 0 || ${#mtp_args[@]} -gt 0 ) ]]; then
+    echo "--model/--mtp and --skip-model-selection cannot be combined" >&2
+    exit 2
+fi
+if [[ "$skip_selection" == 0 ]]; then
+    "$ROOT/bin/llm-epn" select-model --config "$config" ${selection_args[@]+"${selection_args[@]}"} ${mtp_args[@]+"${mtp_args[@]}"}
+fi
 
 mkdir -p "$HOME/.local/bin"
 
@@ -25,7 +59,7 @@ install_link "$ROOT/bin/epn-agent"
 install_link "$ROOT/bin/code-epn"
 install_link "$ROOT/bin/codex-epn"
 
-"$ROOT/bin/llm-epn" install-codex-config --config "$ROOT/config/epn.toml"
+"$ROOT/bin/llm-epn" install-codex-config --config "$config" --no-activate
 
 echo "Local llm-epn environment is ready."
 echo

@@ -20,6 +20,9 @@ import sys
 
 payload = json.loads(sys.argv[1])
 llama = payload["llamacpp"]
+mtp = llama.get("mtp", "auto")
+if mtp not in ("auto", "on", "off"):
+    sys.exit("invalid MTP mode; expected auto, on, or off")
 
 def q(value):
     return shlex.quote(str(value))
@@ -63,11 +66,17 @@ def node_options():
 setup = [
     'echo "llm-epn: allocated $(hostname -s)" >&2',
     f"cd {q(payload['remote_workdir'])}",
+    f"export MODEL_NAME={q(llama.get('model_name') or payload['model'])}",
+    f"export LLAMACPP_MTP={q(mtp)}",
     f"export LLAMACPP_BACKEND={q(llama.get('backend', 'rocm'))}",
     rocm_arch_command(),
     'echo "llm-epn: using ROCm arch $LLAMACPP_ROCM_ARCH" >&2',
     f"export LLAMACPP_VISIBLE_DEVICES={q(llama.get('visible_devices', '0,1,2,3,4,5,6,7'))}",
 ]
+if mtp != "auto":
+    setup.append("source scripts/lib/llamacpp-env.sh")
+    setup.append("{ declare -F llamacpp_apply_mtp_mode >/dev/null || "
+                 "{ echo 'Remote wrapper lacks LLAMACPP_MTP support' >&2; exit 2; }; }")
 if llama.get("build_before_run"):
     setup.append(progress_static("building llama.cpp"))
     setup.append("bin/build-llama >&2")

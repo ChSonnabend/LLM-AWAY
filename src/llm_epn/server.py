@@ -15,8 +15,10 @@ from .protocol import (
     chat_completion_chunk,
     messages_to_prompt,
     models_list,
+    normalize_chat_messages,
     response_object,
     responses_request_to_prompt,
+    responses_request_to_messages,
 )
 
 
@@ -29,7 +31,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
             self.write_json({"status": "ok", "model": self.config.model.name})
             return
         if self.path == "/v1/models":
-            self.write_json(models_list(self.config.model.name))
+            self.write_json(models_list("epn"))
             return
         self.write_json({"error": "not found"}, status=404)
 
@@ -51,7 +53,8 @@ class ProviderHandler(BaseHTTPRequestHandler):
         model = payload.get("model") or self.config.model.name
         raw_prompt = messages_to_prompt(payload.get("messages", []))
         prompt = self.compact_prompt(raw_prompt)
-        text = self.backend.infer(InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=len(raw_prompt)))
+        messages = self.compact_messages(normalize_chat_messages(payload.get("messages", [])))
+        text = self.backend.infer(InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=len(raw_prompt), messages=messages))
         if payload.get("stream"):
             self.write_chat_stream(model, text)
             return
@@ -61,10 +64,11 @@ class ProviderHandler(BaseHTTPRequestHandler):
         model = payload.get("model") or self.config.model.name
         raw_prompt = responses_request_to_prompt(payload)
         prompt = self.compact_prompt(raw_prompt)
+        messages = self.compact_messages(responses_request_to_messages(payload))
         if payload.get("stream"):
-            self.handle_responses_stream(model, prompt, len(raw_prompt), payload.get("tools", []))
+            self.handle_responses_stream(model, prompt, len(raw_prompt), payload.get("tools", []), messages)
             return
-        text = self.backend.infer(InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=len(raw_prompt)))
+        text = self.backend.infer(InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=len(raw_prompt), messages=messages))
         response = response_object(model, text, tools=payload.get("tools", []))
         self.write_json(response)
 
@@ -72,6 +76,35 @@ class ProviderHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length", "0"))
         raw = self.rfile.read(length).decode("utf-8")
         return json.loads(raw) if raw else {}
+
+    def compact_messages(self, messages: list[dict]) -> list[dict]:
+        """Apply the head/tail budget without losing message role boundaries."""
+        limit = self.config.gateway.max_prompt_chars
+        total = sum(len(message["content"]) for message in messages)
+        if limit <= 0 or total <= limit:
+            return messages
+        marker = "\n[llm-epn: earlier context omitted]\n"
+        if limit <= 2 * len(marker):
+            return [{**messages[-1], "content": messages[-1]["content"][-limit:]}]
+        # At most two boundary messages need a truncation marker.
+        available = max(0, limit - 2 * len(marker))
+        latest_size = min(len(messages[-1]["content"]), available)
+        head = min(max(0, self.config.gateway.prompt_keep_head_chars), available - latest_size)
+        tail_start = total - (available - head)
+        compacted = []
+        offset = 0
+        for message in messages:
+            content = message["content"]
+            end = offset + len(content)
+            prefix = content[:max(0, head - offset)] if offset < head else ""
+            suffix = content[max(0, tail_start - offset):] if end > tail_start else ""
+            kept = prefix + suffix
+            if kept:
+                if len(kept) < len(content):
+                    kept = prefix + marker + suffix
+                compacted.append({**message, "content": kept})
+            offset = end
+        return compacted
 
     def compact_prompt(self, prompt: str) -> str:
         limit = self.config.gateway.max_prompt_chars
@@ -90,7 +123,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
         available = limit - len(marker)
         kept_head = min(head_chars, available)
         kept_tail = max(0, available - kept_head)
-        return prompt[:kept_head] + marker + prompt[-kept_tail:]
+        return prompt[:kept_head] + marker + (prompt[-kept_tail:] if kept_tail else "")
 
     def write_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -123,7 +156,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
         self.write_sse("message", "[DONE]")
 
     def handle_responses_stream(
-        self, model: str, prompt: str, raw_prompt_chars: int | None = None, tools=None
+        self, model: str, prompt: str, raw_prompt_chars: int | None = None, tools=None, messages=None
     ) -> None:
         response_id = f"resp_{uuid.uuid4().hex}"
         created = {
@@ -144,12 +177,12 @@ class ProviderHandler(BaseHTTPRequestHandler):
         )
         try:
             text = self.backend.infer(
-                InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=raw_prompt_chars)
+                InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=raw_prompt_chars, messages=messages)
             )
         except Exception as exc:
             failed = dict(created)
             failed["status"] = "failed"
-            failed["error"] = {"message": str(exc), "type": "backend_error"}
+            failed["error"] = {"message": str(exc), "code": "server_error"}
             self.write_sse(
                 "response.failed",
                 {"type": "response.failed", "sequence_number": 1, "response": failed},
@@ -320,5 +353,6 @@ def serve(config: AppConfig, backend: Backend, warm: bool = False) -> None:
         close = getattr(backend, "close", None)
         if close:
             close()
+        httpd.server_close()
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)

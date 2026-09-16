@@ -10,6 +10,24 @@ from llm_epn.server import ProviderHandler
 
 
 class CompactPromptTests(unittest.TestCase):
+    def test_default_does_not_truncate_large_input(self):
+        handler = object.__new__(ProviderHandler)
+        handler.config = AppConfig()
+        messages = [{"role": "system", "content": "x" * 25000},
+                    {"role": "user", "content": "Which model are you?"}]
+        self.assertEqual(handler.compact_messages(messages), messages)
+        self.assertEqual(handler.compact_prompt("x" * 25000), "x" * 25000)
+
+    def test_compaction_preserves_latest_question_and_roles(self):
+        handler = object.__new__(ProviderHandler)
+        handler.config = AppConfig(gateway=GatewayConfig(max_prompt_chars=200, prompt_keep_head_chars=4000))
+        messages = [{"role": "system", "content": "x" * 500},
+                    {"role": "user", "content": "Which model are you?"}]
+        result = handler.compact_messages(messages)
+        self.assertEqual(result[-1], messages[-1])
+        self.assertEqual(result[0]["role"], "system")
+        self.assertLessEqual(sum(len(m["content"]) for m in result), 200)
+
     def test_compacted_prompt_stays_within_limit(self):
         class Handler(ProviderHandler):
             pass

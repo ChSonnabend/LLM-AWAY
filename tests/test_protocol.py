@@ -10,10 +10,33 @@ from llm_epn.protocol import (
     response_object,
     responses_input_to_prompt,
     responses_request_to_prompt,
+    responses_request_to_messages,
 )
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_responses_messages_keep_question_separate_from_instructions(self):
+        messages = responses_request_to_messages({
+            "instructions": "Be concise.",
+            "input": [
+                {"role": "developer", "content": "File access requires permission."},
+                {"role": "user", "content": [{"type": "input_text", "text": "Hi, which model are you?"}]},
+            ],
+        })
+        self.assertEqual([m["role"] for m in messages], ["system", "user"])
+        self.assertEqual(messages[-1]["content"], "Hi, which model are you?")
+        self.assertIn("Be concise.", messages[0]["content"])
+
+    def test_responses_messages_preserve_tool_round_trip(self):
+        messages = responses_request_to_messages({"input": [
+            {"type": "function_call", "name": "exec_command", "arguments": '{"cmd":"pwd"}'},
+            {"type": "function_call_output", "call_id": "call_1", "output": "/workspace"},
+        ]})
+        self.assertEqual(messages[-2]["role"], "assistant")
+        self.assertIn("exec_command", messages[-2]["content"])
+        self.assertEqual(messages[-1]["role"], "user")
+        self.assertIn("/workspace", messages[-1]["content"])
+
     def test_messages_to_prompt(self):
         prompt = messages_to_prompt([
             {"role": "system", "content": "Be brief."},

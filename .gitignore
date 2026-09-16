@@ -7,3 +7,4 @@ __pycache__/
 *.log
 run/
 local.env
+config/*.toml.backup-*

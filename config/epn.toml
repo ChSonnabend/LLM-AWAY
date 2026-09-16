@@ -3,7 +3,7 @@ host = "127.0.0.1"
 port = 8765
 
 [model]
-name = "qwen3-coder-next-f16-1m"
+name = "qwen3.8-27b-q4km"
 
 [codex]
 provider_display_name = "Christian Sonnabend"
@@ -23,16 +23,17 @@ retries = 2
 retry_delay_seconds = 2
 
 [remote]
-runner = "$HOME/.local/bin/llm-epn-slurm-run"
-serverctl = "$HOME/.local/bin/llm-epn-serverctl"
+runner = "/scratch/csonnabe/cern-fellowship/misc/lamacpp-llm/scripts/epn/llm-epn-slurm-run"
+serverctl = "/scratch/csonnabe/cern-fellowship/misc/lamacpp-llm/scripts/epn/llm-epn-serverctl"
 workdir = "/scratch/csonnabe/cern-fellowship/misc/lamacpp-llm"
 state_dir = "$HOME/.cache/llm-epn"
 
 [slurm]
 partition = "prod"
 exclusive = true
-# Qwen3-Coder-Next needs MI100/gfx908 on this cluster; MI50/gfx906 fails with split-buffer support.
+# Prefer MI100; use an idle MI50 when no MI100 is idle.
 node_class = "mi100"
+mi50_fallback = true
 custom_options = []
 debug = false
 
@@ -47,8 +48,8 @@ cancel_on_exit = true
 # Also cancel an already-running EPN job when this local provider session exits.
 cancel_reused_on_exit = true
 stream_startup_log = true
-# Keep local-model traffic bounded. The head preserves system/task framing; the tail preserves the latest turn.
-max_prompt_chars = 20000
+# Disable character truncation; llama.cpp enforces the token context limit.
+max_prompt_chars = 0
 prompt_keep_head_chars = 4000
 prompt_keep_tail_chars = 16000
 
@@ -61,16 +62,17 @@ build_before_run = false
 show_config_before_run = false
 list_devices_before_run = false
 run_cli = "bin/run-cli"
-inference_timeout_seconds = 120
-max_tokens = 256
+inference_timeout_seconds = 900
+max_tokens = 262000
 extra_args = ["-n", "64"]
-model_name = "qwen3-coder-next-f16-1m"
+model_name = "qwen3.8-27b-q4km"
+# auto follows the remote preset; on/off explicitly control MTP in the remote wrapper.
+mtp = "on"
 server_cli = "bin/run-server"
 model_path = ""
-context_size = 8192
-# Qwen's model.env sets split-mode=row, but ROCm llama.cpp rejects split buffers on these nodes.
-# Passing this after wrapper defaults lets llama-server use layer split instead.
-server_extra_args = ["--split-mode", "layer"]
+context_size = 262000
+# Qwen 3.8 otherwise returns its internal reasoning separately; direct content works best for the proxy.
+server_extra_args = ["--reasoning", "off"]
 # Optional full server command, relative to remote.workdir if not absolute.
 # When set, this replaces server_cli/server_extra_args.
 server_command = []

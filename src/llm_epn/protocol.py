@@ -52,6 +52,21 @@ def content_to_text(content) -> str:
     return str(content)
 
 
+def normalize_chat_messages(messages: list[dict]) -> list[dict]:
+    """Keep all instructions in Qwen's single leading system slot."""
+    instructions = []
+    conversation = []
+    for message in messages:
+        item = {**message, "content": content_to_text(message.get("content", ""))}
+        if item.get("role") in ("system", "developer"):
+            if item["content"]:
+                instructions.append(item["content"])
+        else:
+            conversation.append(item)
+    leading = [{"role": "system", "content": "\n\n".join(instructions)}] if instructions else []
+    return leading + conversation
+
+
 def responses_input_to_prompt(value) -> str:
     if isinstance(value, str):
         return value
@@ -137,6 +152,40 @@ def responses_request_to_prompt(payload: dict) -> str:
     parts.append(tools_to_prompt(payload.get("tools", [])))
     parts.append(responses_input_to_prompt(payload.get("input", "")))
     return "\n\n".join(part for part in parts if part)
+
+
+def responses_request_to_messages(payload: dict) -> list[dict]:
+    """Keep conversation roles for llama.cpp's chat template.
+
+    Tool calls remain textual because this bridge parses Qwen tool markup rather
+    than using llama.cpp's native tool-call protocol.
+    """
+    instructions = content_to_text(payload.get("instructions") or "")
+    messages = [{"role": "system", "content": "\n\n".join(
+        part for part in (instructions, tools_to_prompt(payload.get("tools", []))) if part
+    )}]
+    items = payload.get("input", "")
+    if isinstance(items, str):
+        items = [{"role": "user", "content": items}]
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type")
+        if "role" in item or kind in {"message", "input_text"}:
+            role = item.get("role", "user")
+            # Qwen chat templates use system rather than developer messages.
+            role = "system" if role == "developer" else role
+            content = content_to_text(item.get("content", item.get("text", "")))
+        elif kind == "function_call":
+            role = "assistant"
+            content = f"<tool_call>{json.dumps({'name': item.get('name', ''), 'arguments': item.get('arguments', '')})}</tool_call>"
+        elif kind == "function_call_output":
+            role = "user"
+            content = f"<tool_response call_id={json.dumps(item.get('call_id', ''))}>\n{content_to_text(item.get('output', ''))}\n</tool_response>"
+        else:
+            continue
+        messages.append({"role": role, "content": content})
+    return normalize_chat_messages(messages)
 
 
 def normalize_tool_arguments(arguments) -> dict:
@@ -241,14 +290,7 @@ def visible_tool_text(text: str, blocks: list[tuple[int, int, dict]], display_ca
     if visible:
         return visible
 
-    calls = display_calls if display_calls is not None else [call for _, _, call in blocks]
-    names = [call["name"] for call in calls]
-    unique_names = list(dict.fromkeys(names))
-    if len(blocks) == 1:
-        return f"Calling {names[0]}."
-    if len(unique_names) == 1:
-        return f"Calling {unique_names[0]} ({len(blocks)} calls)."
-    return f"Calling tools ({len(blocks)} calls): {', '.join(unique_names)}."
+    return ""
 
 
 def message_output(text: str, item_id: str | None = None, content_id: str | None = None) -> dict:

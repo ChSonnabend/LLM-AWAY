@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+repo_dir="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "${BASH_SOURCE[0]}")"
 config="${LLM_EPN_CONFIG:-$repo_dir/config/epn.toml}"
 host="${LLM_EPN_HOST:-127.0.0.1}"
 port="${LLM_EPN_PORT:-8765}"
@@ -11,7 +11,7 @@ provider_pid=""
 tty_state="$(stty -g 2>/dev/null || true)"
 
 healthcheck() {
-    python - "$host" "$port" <<'PY' >/dev/null 2>&1
+    python3 - "$host" "$port" <<'PY' >/dev/null 2>&1
 import sys
 from urllib.request import urlopen
 
@@ -28,6 +28,7 @@ restore_terminal() {
 }
 
 cleanup() {
+    trap "" INT TERM
     if [[ -n "$provider_pid" ]] && kill -0 "$provider_pid" 2>/dev/null; then
         kill "$provider_pid" 2>/dev/null || true
         wait "$provider_pid" 2>/dev/null || true
@@ -42,7 +43,7 @@ if ! healthcheck; then
     echo "llm-epn: starting local provider on http://$host:$port (log: $log_path)" >&2
     "$repo_dir/bin/llm-epn" serve --config "$config" --warm >"$log_path" 2>&1 &
     provider_pid=$!
-    for _ in $(seq 1 50); do
+    for ((attempt = 0; attempt < 50; attempt++)); do
         if healthcheck; then
             break
         fi

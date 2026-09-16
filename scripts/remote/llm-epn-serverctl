@@ -28,6 +28,9 @@ import time
 command = sys.argv[1]
 payload = json.loads(sys.argv[2])
 llama = payload["llamacpp"]
+mtp = llama.get("mtp", "auto")
+if mtp not in ("auto", "on", "off"):
+    sys.exit("invalid MTP mode; expected auto, on, or off")
 
 def q(value):
     return shlex.quote(str(value))
@@ -67,33 +70,40 @@ def run_capture(args):
         universal_newlines=True,
     )
 
-def job_active(job_id):
+def job_status(job_id):
     if not job_id:
-        return False
-    completed = run_capture(["squeue", "-h", "-j", str(job_id), "-o", "%T"])
-    return completed.returncode == 0 and bool(completed.stdout.strip())
+        return "", ""
+    completed = run_capture(["squeue", "-h", "-j", str(job_id), "-o", "%T|%R"])
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return "", ""
+    parts = completed.stdout.strip().splitlines()[0].split("|", 1)
+    return parts[0], parts[1] if len(parts) > 1 else ""
 
 def current_status():
     state = read_state()
-    active = job_active(state.get("job_id"))
-    if active and os.path.exists(host_path):
+    phase, reason = job_status(state.get("job_id"))
+    active = bool(phase)
+    state["slurm_state"] = phase
+    state["reason"] = reason
+    if phase in ("RUNNING", "COMPLETING") and os.path.exists(host_path):
         with open(host_path, "r") as handle:
             state["host"] = handle.read().strip()
     elif "host" in state:
         state.pop("host", None)
     state["active"] = active
     state["state_path"] = state_path
-    state["log_path"] = log_path
+    state["log_path"] = state.get("log_path") or log_path
     return state
 
 def read_log_since(offset):
+    current_log = read_state().get("log_path") or log_path
     try:
-        size = os.path.getsize(log_path)
+        size = os.path.getsize(current_log)
     except OSError:
         return {"offset": offset, "data": ""}
     if offset > size:
         offset = 0
-    with open(log_path, "r", errors="replace") as handle:
+    with open(current_log, "r", errors="replace") as handle:
         handle.seek(offset)
         data = handle.read()
         offset = handle.tell()
@@ -119,7 +129,9 @@ def server_command():
     model_path = llama.get("model_path") or ""
     server_cli = llama.get("server_cli", "bin/run-server")
     if not model_path:
-        args = [server_cli]
+        # Managed model presets may assign LLAMACPP_CTX_SIZE while sourcing model.env,
+        # so pass the local override after the wrapper's generated arguments as well.
+        args = [server_cli, "--ctx-size", str(llama.get("context_size", 8192))]
         args.extend(llama.get("server_extra_args") or [])
         return " ".join(q(arg) for arg in args)
 
@@ -156,8 +168,12 @@ def sbatch_options():
     elif node_class == "mi50":
         opts.append("#SBATCH -w " + choose_node("mi50"))
     elif node_class == "mi100":
-        opts.append("#SBATCH -w " + choose_node("mi100"))
-        opts.append("#SBATCH --export=ALL,EPN_NODE_MI100=1")
+        node = choose_node("mi100")
+        opts.append("#SBATCH -w " + node)
+        if int(node[3:]) >= 280:
+            opts.append("#SBATCH --export=ALL,EPN_NODE_MI100=1")
+        else:
+            opts.append("#SBATCH --export=ALL,EPN_NODE_MI100=0")
     elif node_class:
         opts.append("#SBATCH -w " + node_class)
     return "\n".join(opts)
@@ -167,31 +183,41 @@ def choose_node(node_class):
         "mi50": lambda n: 0 <= n <= 279,
         "mi100": lambda n: 280 <= n <= 349,
     }
-    completed = run_capture(["sinfo", "-N", "-h", "-p", payload.get("partition", "prod"), "-o", "%N %t"])
-    candidates = []
-    if completed.returncode == 0:
-        for line in completed.stdout.splitlines():
-            parts = line.split()
-            if len(parts) < 2:
-                continue
-            host, state = parts[0], parts[1]
-            match = re.match(r"epn(\d+)$", host)
-            if not match:
-                continue
-            if state != "idle":
-                continue
-            number = int(match.group(1))
-            if ranges[node_class](number):
-                candidates.append(host)
-    if candidates:
-        return candidates[int(time.time()) % len(candidates)]
-    if node_class == "mi50":
-        return "epn%03d" % (int(time.time()) % 279)
-    return "epn%03d" % (280 + int(time.time()) % 70)
+    partition = payload.get("partition", "prod")
+    completed = run_capture(["sinfo", "-N", "-h", "-p", partition, "-o", "%N %t"])
+    if completed.returncode != 0:
+        sys.exit("Cannot discover Slurm nodes: " + completed.stderr.strip())
+    idle, busy, fallback = set(), set(), set()
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        host, state = parts[:2]
+        match = re.fullmatch(r"epn(\d+)", host)
+        if not match:
+            continue
+        number = int(match.group(1))
+        if node_class == "mi100" and payload.get("mi50_fallback", False) and ranges["mi50"](number) and state == "idle":
+            fallback.add(host)
+        if not ranges[node_class](number):
+            continue
+        # Never invent a hostname or select down/draining/unresponsive nodes.
+        if state == "idle":
+            idle.add(host)
+        elif state in ("alloc", "mix", "comp"):
+            busy.add(host)
+    if not idle and fallback and llama.get("rocm_arch", "auto") != "auto":
+        sys.exit("MI50 fallback requires llamacpp.rocm_arch = auto")
+    candidates = sorted(idle or fallback or busy)
+    if not candidates:
+        sys.exit("No usable " + node_class + " nodes reported by Slurm in partition " + partition)
+    return candidates[int(time.time()) % len(candidates)]
 
 def submit():
     state = current_status()
     if state.get("active"):
+        if state.get("mtp", "auto") != mtp:
+            sys.exit("Running server has a different MTP setting; cancel it with llm-epn server-cancel before restarting")
         print(json.dumps(state))
         return
     try:
@@ -200,6 +226,7 @@ def submit():
         pass
 
     workdir = payload["remote_workdir"]
+    job_log_template = os.path.join(state_dir, model_name + "-%j.log")
     script = """#!/usr/bin/env bash
 {sbatch_opts}
 #SBATCH -J llm-epn-{model_name}
@@ -215,13 +242,16 @@ export LLAMACPP_VISIBLE_DEVICES={devices_q}
 export MODEL_NAME={model_name_q}
 export LLAMACPP_HOST=0.0.0.0
 export LLAMACPP_PORT={server_port_q}
+export LLAMACPP_CTX_SIZE={context_size_q}
+export LLAMACPP_MTP={mtp_q}
+{mtp_check}
 echo "llm-epn: server job on $(hostname -s), ROCm arch $LLAMACPP_ROCM_ARCH" >&2
 {build}
 exec {server_cmd}
 """.format(
         sbatch_opts=sbatch_options(),
         model_name=model_name,
-        log_q=q(log_path),
+        log_q=q(job_log_template),
         host_q=q(host_path),
         workdir_q=q(workdir),
         backend_q=q(llama.get("backend", "rocm")),
@@ -229,6 +259,11 @@ exec {server_cmd}
         devices_q=q(llama.get("visible_devices", "0,1,2,3,4,5,6,7")),
         model_name_q=q(llama.get("model_name") or payload.get("model") or "deepseek-v2.5-q4km"),
         server_port_q=q(payload["server_port"]),
+        context_size_q=q(llama.get("context_size", 8192)),
+        mtp_q=q(mtp),
+        mtp_check=("source scripts/lib/llamacpp-env.sh\n"
+                   "declare -F llamacpp_apply_mtp_mode >/dev/null || "
+                   "{ echo 'Remote wrapper lacks LLAMACPP_MTP support' >&2; exit 2; }") if mtp != "auto" else ":",
         build="bin/build-llama >&2" if llama.get("build_before_run") else ":",
         server_cmd=server_command(),
     )
@@ -246,10 +281,11 @@ exec {server_cmd}
         "active": True,
         "job_id": job_id,
         "model": payload.get("model"),
+        "mtp": mtp,
         "server_port": payload["server_port"],
         "submitted_at": int(time.time()),
         "state_path": state_path,
-        "log_path": log_path,
+        "log_path": job_log_template.replace("%j", job_id),
     }
     write_state(state)
     print(json.dumps(current_status()))

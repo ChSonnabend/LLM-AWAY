@@ -6,11 +6,13 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 from .backends import InferenceRequest, SlurmServerBackend, make_backend
 from .config import load_config
 from .server import serve
+from .models import choose_model, choose_mtp, discover_models, mtp_label, save_model
 
 
 def default_config_path() -> Path:
@@ -29,7 +31,7 @@ wire_api = "responses"
 
 # Add this profile block to ~/.codex/epn.config.toml.
 model_provider = "epn"
-model = "{cfg.model.name}"
+model = "epn"
 model_reasoning_effort = "high"
 model_catalog_json = "~/.codex/model-catalogs/epn.json"
 '''
@@ -54,13 +56,13 @@ def quoted(value: str) -> str:
     return json.dumps(value)
 
 
-def epn_model_catalog(model: str) -> dict:
+def epn_model_catalog(model: str, context_window: int = 262000) -> dict:
     return {
         "models": [
             {
-                "slug": model,
-                "display_name": "EPN Qwen3 Coder Next F16 1M",
-                "description": "Local EPN Slurm-hosted llama.cpp server via llm-epn gateway.",
+                "slug": "epn",
+                "display_name": "EPN",
+                "description": f"Use the selected remote EPN model (currently {model}).",
                 "default_reasoning_level": "medium",
                 "supported_reasoning_levels": [
                     {"effort": "low", "description": "Fast responses"},
@@ -82,8 +84,8 @@ def epn_model_catalog(model: str) -> dict:
                     "mode": "tokens",
                     "limit": 10000,
                 },
-                "context_window": 131072,
-                "max_context_window": 1010000,
+                "context_window": context_window,
+                "max_context_window": context_window,
                 "effective_context_window_percent": 75,
                 "input_modalities": ["text"],
                 "supports_image_detail_original": False,
@@ -104,7 +106,9 @@ def epn_model_catalog(model: str) -> dict:
                 "multi_agent_version": "v2",
                 "model_messages": {
                     "instructions_template": (
-                        "You are Qwen3, a coding agent. You and the user share one workspace. "
+                        "You are a coding agent. You and the user share one workspace. "
+                        f"The configured model is {model}, served by llama.cpp through the EPN gateway. "
+                        "Answer the latest user question directly. For greetings and model identity questions, answer without tools. "
                         "Help with coding, debugging, editing files, and explaining technical work. "
                         "Be concise, inspect the repository before changing code, and preserve user work. "
                         "When the user asks to inspect, explain, diagnose, review, summarize, or tell what code does, "
@@ -113,18 +117,18 @@ def epn_model_catalog(model: str) -> dict:
                         "When editing, use apply_patch instead of shell heredocs or redirection."
                     )
                 },
-                "comp_hash": f"local-epn-{model}",
+                "comp_hash": "local-epn-preset",
             }
         ]
     }
 
 
-def write_model_catalogs(home: Path, model: str) -> tuple[Path, Path]:
+def write_model_catalogs(home: Path, model: str, context_window: int = 262000) -> tuple[Path, Path]:
     catalog_dir = home / "model-catalogs"
     catalog_dir.mkdir(parents=True, exist_ok=True)
     epn_path = catalog_dir / "epn.json"
     combined_path = catalog_dir / "combined-with-epn.json"
-    epn_catalog = epn_model_catalog(model)
+    epn_catalog = epn_model_catalog(model, context_window=context_window)
     epn_path.write_text(json.dumps(epn_catalog, indent=2) + "\n", encoding="utf-8")
 
     combined = epn_catalog
@@ -133,7 +137,11 @@ def write_model_catalogs(home: Path, model: str) -> tuple[Path, Path]:
             combined = json.loads(combined_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             combined = epn_catalog
-    models = [entry for entry in combined.get("models", []) if entry.get("slug") != model]
+    models = [
+        entry
+        for entry in combined.get("models", [])
+        if entry.get("slug") not in (model, "epn") and not str(entry.get("comp_hash", "")).startswith("local-epn-")
+    ]
     models.append(epn_catalog["models"][0])
     combined["models"] = models
     combined_path.write_text(json.dumps(combined, indent=2) + "\n", encoding="utf-8")
@@ -190,14 +198,16 @@ def set_root_keys(text: str, values: dict[str, str]) -> str:
     return "\n".join(new_root).rstrip() + "\n"
 
 
-def install_codex_config(config_path: str, activate: bool = True) -> None:
+def install_codex_config(config_path: str, activate: bool = False) -> None:
     cfg = load_config(config_path)
     home = codex_home()
     home.mkdir(parents=True, exist_ok=True)
     config_file = home / "config.toml"
     profile_file = home / "epn.config.toml"
 
-    epn_catalog, combined_catalog = write_model_catalogs(home, cfg.model.name)
+    epn_catalog, combined_catalog = write_model_catalogs(
+        home, cfg.model.name, context_window=cfg.llamacpp.context_size
+    )
     base_url = f"http://{cfg.server.host}:{cfg.server.port}/v1"
 
     existing = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
@@ -206,10 +216,10 @@ def install_codex_config(config_path: str, activate: bool = True) -> None:
         updated = set_root_keys(
             updated,
             {
-                "model": cfg.model.name,
+                "model": "epn",
                 "model_provider": "epn",
                 "model_reasoning_effort": "high",
-                "model_catalog_json": str(combined_catalog),
+                "model_catalog_json": str(epn_catalog),
             },
         )
     provider_block = f'''
@@ -233,7 +243,7 @@ wire_api = "responses"
         "\n".join(
             [
                 'model_provider = "epn"',
-                f"model = {quoted(cfg.model.name)}",
+                'model = "epn"',
                 'model_reasoning_effort = "high"',
                 f"model_catalog_json = {quoted(str(epn_catalog))}",
                 "",
@@ -250,6 +260,8 @@ wire_api = "responses"
     print(f"Installed EPN model catalog in {epn_catalog}")
     if activate:
         print("EPN is active for Codex clients that read the default config.")
+    else:
+        print("Global Codex settings preserved. Use codex-epn or --profile epn to select EPN.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -263,8 +275,19 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser = sub.add_parser("serve", parents=[config_parent], help="Run the local OpenAI-compatible provider")
     serve_parser.add_argument("--warm", action="store_true", help="Start the remote backend immediately")
     sub.add_parser("codex-config", parents=[config_parent], help="Print a Codex config.toml snippet")
+    setup_parser = sub.add_parser("configure-local", parents=[config_parent], help="Select your SSH alias and shared EPN installation")
+    setup_parser.add_argument("--ssh-alias", help="EPN login-node Host alias from ~/.ssh/config")
+    setup_parser.add_argument("--remote-workdir", default="/scratch/csonnabe/cern-fellowship/misc/lamacpp-llm")
+    list_parser = sub.add_parser("list-models", parents=[config_parent], help="Query installed managed models on the SSH host")
+    list_parser.add_argument("--json", action="store_true", help="Print model metadata as JSON")
+    select_parser = sub.add_parser("select-model", parents=[config_parent], help="Query remote models and save a choice for EPN")
+    select_parser.add_argument("--model", help="Select an installed preset by name without prompting")
+    select_parser.add_argument("--mtp", choices=("auto", "on", "off"),
+                               help="MTP: follow remote preset (auto), enable, or disable")
     install_parser = sub.add_parser("install-codex-config", parents=[config_parent], help="Install the Codex EPN provider/profile")
-    install_parser.add_argument("--no-activate", action="store_true", help="Install provider/profile without making EPN the default")
+    activation = install_parser.add_mutually_exclusive_group()
+    activation.add_argument("--activate", action="store_true", help="Make EPN the global default, replacing the model, provider, reasoning effort, and catalog settings")
+    activation.add_argument("--no-activate", action="store_true", help="Preserve global Codex settings (default; retained for compatibility)")
     sub.add_parser("server-status", parents=[config_parent], help="Show persistent Slurm server status")
     sub.add_parser("server-cancel", parents=[config_parent], help="Cancel the persistent Slurm server job")
 
@@ -273,12 +296,53 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    if args.command == "configure-local":
+        from .onboarding import configure_local
+        try:
+            configure_local(args.config, args.ssh_alias, args.remote_workdir)
+        except (ValueError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        except (KeyboardInterrupt, EOFError):
+            print("Setup canceled.", file=sys.stderr)
+            return 1
+        return 0
+
+    if args.command in ("list-models", "select-model"):
+        try:
+            cfg = load_config(args.config)
+            models = discover_models(cfg)
+            if args.command == "list-models":
+                if args.json:
+                    print(json.dumps(models, indent=2))
+                elif not models:
+                    print("No installed managed models found on the remote host.")
+                else:
+                    for model in models:
+                        print(f"{model['name']}  ({model['size_bytes'] / 1024**3:.1f} GiB)  {model['path']}  [{mtp_label(model)}]")
+                return 0
+            model = choose_model(models, cfg.llamacpp.model_name, args.model)
+            current_mtp = cfg.llamacpp.mtp if model["name"] == cfg.llamacpp.model_name else "auto"
+            print(mtp_label(model))
+            mtp = choose_mtp(model, current_mtp, args.mtp, interactive=args.model is None)
+            save_model(args.config, model, mtp=mtp)
+            install_codex_config(args.config)
+            print(f"Selected {model['name']}; MTP: {mtp}. Restart the EPN provider and start a new EPN Codex session to use it.")
+            print("If an allocation is still running, use llm-epn server-cancel with this config before restarting to apply MTP changes.")
+            return 0
+        except (OSError, ValueError, subprocess.SubprocessError, EOFError) as exc:
+            print(f"llm-epn: {exc}", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            print("\nModel selection canceled.", file=sys.stderr)
+            return 130
+
     if args.command == "codex-config":
         print_codex_config(args.config)
         return 0
 
     if args.command == "install-codex-config":
-        install_codex_config(args.config, activate=not args.no_activate)
+        install_codex_config(args.config, activate=args.activate)
         return 0
 
     cfg = load_config(args.config)
