@@ -67,6 +67,7 @@ nodes = 1
 gpus = 4
 backend = "cuda"
 container = "/lustre/alice/users/csonnab/TPC/TPC_PRODUCTION/Containers/llama-server-cuda.sif"
+container_source = "docker://ghcr.io/ggml-org/llama.cpp:server-cuda"
 rocm_arch = "auto"
 # Keep the GPU mask assigned by Slurm.
 visible_devices = ""
@@ -86,7 +87,8 @@ mi50_fallback = false
 nodes = 1
 gpus = 8
 backend = "rocm"
-container = "/lustre/alice/users/csonnab/TPC/TPC_PRODUCTION/Containers/rocm_torch_env.sif"
+container = "/lustre/alice/users/csonnab/TPC/TPC_PRODUCTION/Containers/llama-server-rocm.sif"
+container_source = "docker://ghcr.io/ggml-org/llama.cpp:server-rocm"
 rocm_arch = "gfx908"
 # Keep the GPU mask assigned by Slurm.
 visible_devices = ""

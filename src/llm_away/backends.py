@@ -67,6 +67,7 @@ class SlurmSshBackend(Backend):
             "llamacpp": {
                 "backend": cfg.llamacpp.backend,
                 "container": cfg.llamacpp.container,
+                "container_source": cfg.llamacpp.container_source,
                 "rocm_arch": cfg.llamacpp.rocm_arch,
                 "visible_devices": cfg.llamacpp.visible_devices,
                 "build_before_run": cfg.llamacpp.build_before_run,
@@ -229,6 +230,7 @@ class SlurmServerBackend(Backend):
             "llamacpp": {
                 "backend": cfg.llamacpp.backend,
                 "container": cfg.llamacpp.container,
+                "container_source": cfg.llamacpp.container_source,
                 "rocm_arch": cfg.llamacpp.rocm_arch,
                 "visible_devices": cfg.llamacpp.visible_devices,
                 "build_before_run": cfg.llamacpp.build_before_run,
@@ -250,6 +252,8 @@ class SlurmServerBackend(Backend):
             cfg.ssh.destination,
             remote,
         ]
+        if command == "ensure" and cfg.llamacpp.container:
+            print("llm-away: preparing remote container (first launch downloads it; later launches reuse it)", file=sys.stderr, flush=True)
         attempts = max(1, cfg.ssh.retries)
         for attempt in range(1, attempts + 1):
             completed = subprocess.run(cmd, input=json.dumps(payload), text=True, capture_output=True, check=False, start_new_session=True)

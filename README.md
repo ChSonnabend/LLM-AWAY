@@ -417,3 +417,19 @@ Use `bin/hydra-build rocm` or `bin/hydra-build cuda` in the remote project; do n
 The CUDA Torch image lacks compilers. The H200 profile now uses the upstream prebuilt `llama-server-cuda.sif`; pull it as documented below.
 A source-build alternative is provided in `containers/cuda-devel.def`.
 See the remote repository’s `docs/hydra-containers.md` for the commands.
+
+## Automatic Hydra container cache
+
+Both Hydra profiles now use prebuilt llama.cpp server images. On agent startup,
+missing SIF images are downloaded on the login host before GPUs are allocated,
+then cached in `/lustre/alice/users/csonnab/TPC/TPC_PRODUCTION/Containers` as
+`llama-server-cuda.sif` and `llama-server-rocm.sif`. Existing nonempty images are
+reused, never silently refreshed. Downloads are locked and published atomically.
+To change storage or pin an image version, edit the host profile's `container`
+and `container_source` fields. Keep the cache on shared storage visible to GPU nodes.
+
+Start locally with `REMOTE_HOST=hydra-h200 away-agent` or
+`REMOTE_HOST=hydra-mi100 away-agent`. Models must already be installed. No local
+llama.cpp source/build tree is needed for these server profiles. Keep model
+files, recipes, bin/ and scripts/. Source compilation and llama-cli diagnostics
+still require their own source/build or CLI-capable container.

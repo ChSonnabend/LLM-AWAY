@@ -250,6 +250,13 @@ def submit():
             sys.exit("Running server has a different MTP setting; cancel it with llm-away server-cancel before restarting")
         print(json.dumps(state))
         return
+    image = llama.get("container", "")
+    if image:
+        subprocess.check_call([
+            sys.executable,
+            os.path.join(payload["remote_workdir"], "scripts/remote/ensure-container.py"),
+            image, llama.get("container_source", ""),
+        ], stdout=sys.stderr)
     try:
         os.unlink(host_path)
     except OSError:
