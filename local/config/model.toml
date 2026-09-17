@@ -18,8 +18,8 @@ approval_policy = "never"
 context_window = 128000
 auto_compact_token_limit = 180000
 tool_output_token_limit = 2000
-# Low effort is the default for routine edits; raise it for difficult tasks.
-reasoning_effort = "low"
+# Medium by default; GLM maps medium to its supported high effort.
+reasoning_effort = "medium"
 model_verbosity = "low"
 hide_agent_reasoning = true
 # Initial prompt copied into the model catalog by install-codex-config.

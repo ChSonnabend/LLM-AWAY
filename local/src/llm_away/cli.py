@@ -32,8 +32,8 @@ wire_api = "responses"
 
 # Add this profile block to ~/.codex/remote.config.toml.
 model_provider = "remote"
-model = "model"
-model_reasoning_effort = "low"
+model = "{cfg.model.name}"
+model_reasoning_effort = "{cfg.codex.reasoning_effort}"
 model_catalog_json = "~/.codex/model-catalogs/model.json"
 '''
     )
@@ -100,8 +100,8 @@ def remote_model_catalog(model: str, context_window: int = 262000, settings: Cod
     return {
         "models": [
             {
-                "slug": "model",
-                "display_name": "GLM-5.3-Flash Q4" if model == "glm-5.3-flash-q4" else model,
+                "slug": model,
+                "display_name": {"glm-5.3-flash-q4":"GLM-5.3-Flash Q4", "qwen3.8-27b-q4km":"Qwen3.8 27B Q4_K_M"}.get(model,model),
                 "description": f"Use the selected remote model (currently {model}).",
                 "default_reasoning_level": settings.reasoning_effort,
                 "supported_reasoning_levels": [
@@ -245,7 +245,7 @@ def install_codex_config(config_path: str, activate: bool = False) -> None:
         updated = set_root_keys(
             updated,
             {
-                "model": "model",
+                "model": cfg.model.name,
                 "model_provider": "remote",
                 "model_reasoning_effort": cfg.codex.reasoning_effort,
                 "model_catalog_json": str(remote_catalog),
@@ -272,7 +272,7 @@ wire_api = "responses"
         "\n".join(
             [
                 'model_provider = "remote"',
-                'model = "model"',
+                f"model = {quoted(cfg.model.name)}",
                 f"model_reasoning_effort = {quoted(cfg.codex.reasoning_effort)}",
                 f"model_catalog_json = {quoted(str(remote_catalog))}",
                 f"sandbox_mode = {quoted(cfg.codex.sandbox_mode)}",

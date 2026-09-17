@@ -95,7 +95,7 @@ a host afresh; `init-local.sh` is only needed for the legacy launcher workflow.
 Every allocation asks for additional Slurm options, or Kubernetes CPU, memory,
 node selector, tolerations, priority and time limit. Existing allocations are unchanged.
 
-`run` uses the generic model name `model`, provider `remote_resource`, and a compact,
+`run` uses the selected model’s actual identifier and display name, provider `remote_resource`, and a compact,
 model-specific catalog enabled by `[codex] custom_metadata = true` in `model.toml`.
 Set it to false to restore fallback metadata. Agent settings refresh on each `run`.
 The configured compaction threshold is honored, capped at 70% of the active context;

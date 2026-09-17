@@ -34,7 +34,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
             self.write_json({"status": "ok", "model": self.config.model.name})
             return
         if self.path == "/v1/models":
-            self.write_json(models_list("model"))
+            self.write_json(models_list(self.config.model.name))
             return
         self.write_json({"error": "not found"}, status=404)
 

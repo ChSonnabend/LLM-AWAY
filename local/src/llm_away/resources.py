@@ -313,7 +313,7 @@ def run_agent(args):
                 catalog_data['models'][0]['visibility']='hide'
             catalog=path/'models.json';write(catalog,catalog_data)
             # Per-process overrides keep simultaneous sessions out of global Codex settings.
-            command=['codex','--no-alt-screen','-c','model_provider="remote_resource"','-c','model="model"',
+            command=['codex','--no-alt-screen','-c','model_provider="remote_resource"','-c','model='+json.dumps(model['alias']),
                      '-c','model_providers.remote_resource.name="Remote resource"',
                      '-c',f'model_providers.remote_resource.base_url="http://127.0.0.1:{cfg.server.port}/v1"',
                      '-c','model_providers.remote_resource.wire_api="responses"',
