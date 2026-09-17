@@ -23,3 +23,9 @@ models/*/*
 # macOS filesystem metadata
 ._*
 .DS_Store
+
+# Downloaded container images and cache
+*.sif
+*.sif.lock
+.apptainer-cache/
+.llama-server-*.sif-*/

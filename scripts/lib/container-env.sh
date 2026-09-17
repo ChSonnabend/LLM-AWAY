@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Re-exec bundled commands in the selected development/runtime image.
 llamacpp_enter_container() {
+  if [[ ${LLAMACPP_IN_CONTAINER:-0} == 1 ]]; then
+    # Upstream server images keep their shared libraries beside the binary.
+    # Resolve them independently of the project working directory, retaining
+    # Apptainer's injected GPU-driver library paths.
+    export LD_LIBRARY_PATH="/app${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    return 0
+  fi
   [[ -n ${LLAMACPP_CONTAINER:-} && ${LLAMACPP_IN_CONTAINER:-0} != 1 ]] || return 0
   local script=$1; shift
   local image=$LLAMACPP_CONTAINER backend=${LLAMACPP_BACKEND:-} flag name path
