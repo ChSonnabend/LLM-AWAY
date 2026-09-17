@@ -13,4 +13,6 @@ BACKEND=$(llamacpp_detect_backend)
 llamacpp_export_visible_devices "$BACKEND"
 
 LLAMA_CLI=$(llamacpp_binary cli "$BACKEND")
+# Native build directories may have moved since compilation.
+export LD_LIBRARY_PATH="$(dirname "${LLAMA_CLI}")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$LLAMA_CLI" --list-devices "$@"

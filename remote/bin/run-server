@@ -29,4 +29,6 @@ while IFS= read -r arg; do
   ARGS+=("$arg")
 done < <(llamacpp_common_run_args "$BACKEND" "$GPU_COUNT")
 
+# Native build directories may have moved since compilation.
+export LD_LIBRARY_PATH="$(dirname "${LLAMA_SERVER}")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$LLAMA_SERVER" "${ARGS[@]}" "$@"
