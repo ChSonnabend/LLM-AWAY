@@ -255,7 +255,7 @@ def submit():
         subprocess.check_call([
             sys.executable,
             os.path.join(payload["remote_workdir"], "scripts/remote/ensure-container.py"),
-            image, llama.get("container_source", ""),
+            image, llama.get("container_source", ""), llama.get("container_runtime", "apptainer"),
         ], stdout=sys.stderr)
     try:
         os.unlink(host_path)
@@ -276,6 +276,7 @@ echo "$(hostname -s)" > {host_q}
 cd {workdir_q}
 export LLAMACPP_BACKEND={backend_q}
 export LLAMACPP_CONTAINER={container_q}
+export LLAMACPP_CONTAINER_RUNTIME={container_runtime_q}
 {rocm_arch}
 export LLAMACPP_VISIBLE_DEVICES={devices_q}
 {allocated_devices}
@@ -295,6 +296,7 @@ exec {server_cmd}
         host_q=q(host_path),
         workdir_q=q(workdir),
         container_q=q(llama.get("container", "")),
+        container_runtime_q=q(llama.get("container_runtime", "apptainer")),
         backend_q=q(llama.get("backend", "rocm")),
         rocm_arch=rocm_arch_command(),
         devices_q=q(llama.get("visible_devices", "0,1,2,3,4,5,6,7")),

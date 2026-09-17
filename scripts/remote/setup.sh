@@ -45,7 +45,7 @@ for file in bin/run-server bin/run-cli scripts/lib/llamacpp-env.sh; do
         exit 1
     fi
 done
-for name in llm-away-slurm-run llm-away-serverctl ensure-container.py; do
+for name in llm-away-slurm-run llm-away-serverctl llm-away-k8sctl ensure-container.py; do
     if [[ ! -r "$SOURCE_DIR/$name" ]]; then
         echo "Missing bundled helper: $SOURCE_DIR/$name" >&2
         exit 1
@@ -82,7 +82,7 @@ install_helper() (
     echo "Installed: $dest"
 )
 
-for name in llm-away-slurm-run llm-away-serverctl ensure-container.py; do
+for name in llm-away-slurm-run llm-away-serverctl llm-away-k8sctl ensure-container.py; do
     install_helper "$name"
 done
 echo "Remote AWAY helpers are ready. Model files, GPU builds, and Slurm access must also be configured; see README."

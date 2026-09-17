@@ -23,8 +23,9 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --skip-model-selection) skip_selection=1; shift ;;
+        --restart) connection_args+=(--restart); shift ;;
         -h|--help)
-            echo "Usage: init-local.sh [--config PATH] [--ssh-alias NAME] [--remote-workdir PATH] [--model NAME] [--mtp auto|on|off] [--skip-model-selection]"
+            echo "Usage: init-local.sh [--restart] [--config PATH] [--ssh-alias NAME] [--remote-workdir PATH] [--model NAME] [--mtp auto|on|off] [--skip-model-selection]"
             exit 0
             ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
@@ -34,9 +35,8 @@ if [[ "$skip_selection" == 1 && ( ${#selection_args[@]} -gt 0 || ${#mtp_args[@]}
     echo "--model/--mtp and --skip-model-selection cannot be combined" >&2
     exit 2
 fi
-if [[ "$skip_selection" == 0 ]]; then
-    "$ROOT/bin/llm-away" select-model --config "$config" ${selection_args[@]+"${selection_args[@]}"} ${mtp_args[@]+"${mtp_args[@]}"}
-fi
+if [[ "$skip_selection" == 1 ]]; then connection_args+=(--skip-model-selection); fi
+"$ROOT/bin/llm-away" configure-local --config "$config" ${connection_args[@]+"${connection_args[@]}"} ${selection_args[@]+"${selection_args[@]}"} ${mtp_args[@]+"${mtp_args[@]}"}
 
 mkdir -p "$HOME/.local/bin"
 

@@ -77,6 +77,7 @@ setup = [
     f"export LLAMACPP_MTP={q(mtp)}",
     f"export LLAMACPP_BACKEND={q(llama.get('backend', 'rocm'))}",
     f"export LLAMACPP_CONTAINER={q(llama.get('container', ''))}",
+    f"export LLAMACPP_CONTAINER_RUNTIME={q(llama.get('container_runtime', 'apptainer'))}",
     rocm_arch_command(),
     'echo "llm-away: using ROCm arch $LLAMACPP_ROCM_ARCH" >&2',
     f"export LLAMACPP_VISIBLE_DEVICES={q(llama.get('visible_devices', '0,1,2,3,4,5,6,7'))}",
@@ -120,7 +121,7 @@ if image:
     subprocess.check_call([
         sys.executable,
         os.path.join(payload["remote_workdir"], "scripts/remote/ensure-container.py"),
-        image, llama.get("container_source", ""),
+        image, llama.get("container_source", ""), llama.get("container_runtime", "apptainer"),
     ], stdout=sys.stderr)
 
 srun = node_options()

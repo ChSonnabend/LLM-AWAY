@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, replace, asdict
 from pathlib import Path
 import ast
 
@@ -59,6 +59,7 @@ class HostConfig:
     state_dir: str = ""
     container: str = ""
     container_source: str = ""
+    container_runtime: str = "apptainer"
     backend: str = ""
     rocm_arch: str = ""
     visible_devices: str | None = None
@@ -120,6 +121,7 @@ class GatewayConfig:
 class LlamaCppConfig:
     container: str = ""
     container_source: str = ""
+    container_runtime: str = "apptainer"
     backend: str = "rocm"
     rocm_arch: str = "auto"
     visible_devices: str = "0,1,2,3,4,5,6,7"
@@ -161,6 +163,17 @@ class CodexConfig:
 
 
 @dataclass(frozen=True)
+class KubernetesConfig:
+    context: str = ""
+    namespace: str = "default"
+    image: str = ""
+    pvc: str = ""
+    gpu_resource: str = "nvidia.com/gpu"
+    cpu: str = "8"
+    memory: str = "64Gi"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -172,12 +185,17 @@ class AppConfig:
     codex: CodexConfig = field(default_factory=CodexConfig)
     backend_type: str = "slurm_server"
     hosts: dict[str, HostConfig] = field(default_factory=dict)
+    kubernetes: KubernetesConfig = field(default_factory=KubernetesConfig)
+    saved_hosts: dict = field(default_factory=dict)
+    active_host: str = ""
 
     def host_configs(self) -> list[HostConfig]:
         """Configured hosts first (in [hosts] order); the default host last."""
-        result = [host for host in self.hosts.values() if host.name or host.ssh_host]
+        result = [HostConfig(name=name, ssh_host=profile['ssh']['host'])
+                  for name, profile in self.saved_hosts.items()]
+        result.extend(host for name, host in self.hosts.items() if name not in self.saved_hosts)
         if not any(host.ssh_host == self.ssh.host for host in result):
-            result.append(HostConfig(name="default", ssh_host=self.ssh.host, ssh_user=self.ssh.user))
+            result.append(HostConfig(name=self.ssh.host, ssh_host=self.ssh.host, ssh_user=self.ssh.user))
         return result
 
     def host_config(self, name: str | None = None) -> HostConfig:
@@ -192,11 +210,20 @@ class AppConfig:
         """Return a copy whose top-level ssh/slurm settings come from one host."""
         if not (name or "").strip():
             return self
+        if name == "default":
+            name = self.ssh.host
+        if name in self.saved_hosts:
+            from .host_store import apply_profile
+            profile = self.saved_hosts[name]
+            return replace(apply_profile(self, profile), active_host='' if profile.get('_builtin') else name)
         host = self.host_config(name)
-        if host.name == "default" and host.ssh_host == self.ssh.host:
+        if host.name not in self.hosts and host.ssh_host == self.ssh.host:
             return self
         return replace(
             self,
+            backend_type="slurm_server",
+            active_host="",
+            kubernetes=KubernetesConfig(),
             ssh=replace(self.ssh, host=host.ssh_host, user=host.ssh_user),
             remote=replace(self.remote,
                 workdir=host.remote_workdir or self.remote.workdir,
@@ -206,6 +233,7 @@ class AppConfig:
             llamacpp=replace(self.llamacpp,
                 container=host.container,
                 container_source=host.container_source,
+                container_runtime=host.container_runtime,
                 backend=host.backend or self.llamacpp.backend,
                 rocm_arch=host.rocm_arch or self.llamacpp.rocm_arch,
                 visible_devices=self.llamacpp.visible_devices if host.visible_devices is None else host.visible_devices),
@@ -285,15 +313,25 @@ def load_config(path: str | Path) -> AppConfig:
             display = values.pop("name", name)
             values.pop("name", None)
             hosts[display] = HostConfig(**_merge(HostConfig(name=display).__dict__, values))
-    return AppConfig(
+    cfg = AppConfig(
         server=ServerConfig(**_merge(ServerConfig().__dict__, raw.get("server", {}))),
         model=ModelConfig(**_merge(ModelConfig().__dict__, raw.get("model", {}))),
         ssh=SshConfig(**_merge(SshConfig().__dict__, raw.get("ssh", {}))),
         remote=RemoteConfig(**_merge(RemoteConfig().__dict__, raw.get("remote", {}))),
         slurm=SlurmConfig(**_merge(SlurmConfig().__dict__, raw.get("slurm", {}))),
         hosts=hosts,
+        kubernetes=KubernetesConfig(**raw.get("kubernetes", {})),
         gateway=GatewayConfig(**_merge(GatewayConfig().__dict__, raw.get("gateway", {}))),
         llamacpp=LlamaCppConfig(**_merge(LlamaCppConfig().__dict__, raw.get("llamacpp", {}))),
         codex=CodexConfig(**_merge(CodexConfig().__dict__, raw.get("codex", {}))),
         backend_type=backend.get("type", "slurm_server"),
     )
+    from .host_store import read_store
+    store = read_store(path)
+    baseline = {key: asdict(getattr(cfg, key)) for key in
+                ('ssh', 'remote', 'slurm', 'llamacpp', 'model', 'kubernetes')}
+    baseline['backend_type'] = cfg.backend_type
+    baseline['_builtin'] = True
+    cfg = replace(cfg, saved_hosts={cfg.ssh.host: baseline, **store['hosts']},
+                  active_host=store.get('active', ''))
+    return cfg.with_host(cfg.active_host) if cfg.active_host else cfg

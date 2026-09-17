@@ -56,7 +56,7 @@ def codex_provider_display_name(configured_name: str = "") -> str:
 def choose_host(options: list[str], current: str) -> str | None:
     """Ask which remote host to run the models on; None means the user canceled."""
     from .prompt import choose_option, interactive_available
-    labels = [f"{name} (ssh: {name})" if name == "default" else f"{name}" for name in options]
+    labels = options
     if interactive_available():
         try:
             index = choose_option(labels, "remote host", 0)
@@ -66,12 +66,12 @@ def choose_host(options: list[str], current: str) -> str | None:
         print(f"llm-away: selected host {options[index]}", file=sys.stderr)
         return options[index]
     if not sys.stdin.isatty():
-        return "default" if "default" in options else options[0]
+        return current if current in options else options[0]
     # Non-interactive: fall back to the default host unless exactly one is configured.
     if len(options) == 1:
         return options[0]
     for index, name in enumerate(options, 1):
-        marker = " (current)" if name == "default" else ""
+        marker = " (current)" if name == current else ""
         print(f"  {index}. {name}{marker}")
     while True:
         try:
@@ -82,7 +82,7 @@ def choose_host(options: list[str], current: str) -> str | None:
         if answer.lower() == "q":
             return None
         if not answer:
-            return "default" if "default" in options else options[0]
+            return current if current in options else options[0]
         if answer.isdigit() and 1 <= int(answer) <= len(options):
             return options[int(answer) - 1]
         for name in options:
@@ -326,6 +326,8 @@ def resolve_host(cfg, host_arg: str | None, command: str):
     """Apply --host / REMOTE_HOST to cfg; ask interactively when several hosts exist.
     Returns None if the user canceled host selection."""
     host_name = host_arg or os.environ.get("REMOTE_HOST")
+    if not host_name and cfg.active_host:
+        return cfg
     if not host_name and command in ("serve", "list-models", "select-model", "server-status", "server-cancel", "infer"):
         available = [h.label for h in cfg.host_configs()]
         if len(available) > 1:
@@ -393,7 +395,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("codex-config", parents=[config_parent], help="Print a Codex config.toml snippet")
     setup_parser = sub.add_parser("configure-local", parents=[config_parent], help="Select your SSH alias and shared AWAY installation")
     setup_parser.add_argument("--ssh-alias", help="AWAY login-node Host alias from ~/.ssh/config")
-    setup_parser.add_argument("--remote-workdir", default="/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY-remote")
+    setup_parser.add_argument("--remote-workdir")
+    setup_parser.add_argument("--restart", action="store_true")
+    setup_parser.add_argument("--model")
+    setup_parser.add_argument("--mtp", choices=("auto", "on", "off"))
+    setup_parser.add_argument("--skip-model-selection", action="store_true")
     list_parser = sub.add_parser("list-models", parents=[config_parent], help="Query installed managed models on the SSH host")
     list_parser.add_argument("--json", action="store_true", help="Print model metadata as JSON")
     select_parser = sub.add_parser("select-model", parents=[config_parent], help="Query remote models and save a choice for AWAY")
@@ -415,8 +421,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "configure-local":
         from .onboarding import configure_local
         try:
-            configure_local(args.config, args.ssh_alias, args.remote_workdir)
-        except (ValueError, OSError) as exc:
+            configure_local(args.config, args.ssh_alias, args.remote_workdir,
+                            args.restart, args.model, args.mtp, args.skip_model_selection)
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
         except (KeyboardInterrupt, EOFError):

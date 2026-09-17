@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import atexit
 import json
 import shlex
@@ -68,6 +68,7 @@ class SlurmSshBackend(Backend):
                 "backend": cfg.llamacpp.backend,
                 "container": cfg.llamacpp.container,
                 "container_source": cfg.llamacpp.container_source,
+                "container_runtime": cfg.llamacpp.container_runtime,
                 "rocm_arch": cfg.llamacpp.rocm_arch,
                 "visible_devices": cfg.llamacpp.visible_devices,
                 "build_before_run": cfg.llamacpp.build_before_run,
@@ -219,6 +220,7 @@ class SlurmServerBackend(Backend):
             "model": model,
             "remote_workdir": cfg.remote.workdir,
             "state_dir": cfg.remote.state_dir,
+            "kubernetes": asdict(cfg.kubernetes),
             "partition": cfg.slurm.partition,
             "exclusive": cfg.slurm.exclusive,
             "node_class": cfg.slurm.node_class,
@@ -231,6 +233,7 @@ class SlurmServerBackend(Backend):
                 "backend": cfg.llamacpp.backend,
                 "container": cfg.llamacpp.container,
                 "container_source": cfg.llamacpp.container_source,
+                "container_runtime": cfg.llamacpp.container_runtime,
                 "rocm_arch": cfg.llamacpp.rocm_arch,
                 "visible_devices": cfg.llamacpp.visible_devices,
                 "build_before_run": cfg.llamacpp.build_before_run,
@@ -447,9 +450,33 @@ class SlurmServerBackend(Backend):
             return int(sock.getsockname()[1])
 
 
+class KubernetesBackend(SlurmServerBackend):
+    """Keep kubectl forwarding and the tunnel on the same SSH login host."""
+    def ensure_tunnel(self, host: str) -> None:
+        if self._tunnel and self._tunnel.poll() is None and self._tunnel_target == host:
+            return
+        if self._tunnel and self._tunnel.poll() is None:
+            self._tunnel.terminate()
+        k = self.config.kubernetes
+        cmd = ["kubectl"]
+        if k.context:
+            cmd.extend(["--context", k.context])
+        port = self.job_port or self.config.gateway.server_port
+        cmd.extend(["--namespace", k.namespace, "port-forward", "--address", "127.0.0.1",
+                    "pod/" + host, str(self.local_port) + ":" + str(port)])
+        self._tunnel = subprocess.Popen([
+            "ssh", *self.ssh_options(exit_on_forward_failure=True),
+            "-L", f"{self.local_port}:127.0.0.1:{self.local_port}",
+            self.config.ssh.destination, " ".join(shlex.quote(arg) for arg in cmd)],
+            stdout=subprocess.DEVNULL, stderr=None, text=True)
+        self._tunnel_target = host
+
+
 def make_backend(config: AppConfig) -> Backend:
     if config.backend_type == "slurm":
         return SubprocessSlurmSshBackend(config)
     if config.backend_type == "slurm_server":
         return SlurmServerBackend(config)
+    if config.backend_type == "kubernetes":
+        return KubernetesBackend(config)
     raise BackendError(f"unsupported backend type: {config.backend_type}")

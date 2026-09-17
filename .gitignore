@@ -11,3 +11,6 @@ config/*.toml.backup-*
 
 .DS_Store
 ._*
+
+# Machine-local initialization profiles
+config/*.hosts.json

@@ -132,6 +132,14 @@ def save_model(config_path: str, model: dict, mtp: str | None = None) -> None:
         # Validate the full proposed settings before writing a backup or config.
         replace(cfg.llamacpp, mtp=mtp)
         updates["llamacpp"]["mtp"] = mtp
+    if cfg.active_host:
+        from .host_store import read_store, write_store
+        store = read_store(config_path)
+        profile = store['hosts'][cfg.active_host]
+        for section, values in updates.items():
+            profile.setdefault(section, {}).update(values)
+        write_store(config_path, store)
+        return
     save_settings(config_path, updates, label="model choice")
 
 
