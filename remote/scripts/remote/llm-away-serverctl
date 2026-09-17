@@ -1,0 +1,362 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    echo "Usage: llm-away-serverctl ensure|status|cancel --json < payload.json" >&2
+}
+
+cmd="${1:-}"
+shift || true
+if [[ -z "$cmd" || "${1:-}" != "--json" ]]; then
+    usage
+    exit 2
+fi
+
+payload="$(cat)"
+
+python3 - "$cmd" "$payload" <<'PY'
+import json
+import fcntl
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+
+command = sys.argv[1]
+payload = json.loads(sys.argv[2])
+llama = payload["llamacpp"]
+mtp = llama.get("mtp", "auto")
+if mtp not in ("auto", "on", "off"):
+    sys.exit("invalid MTP mode; expected auto, on, or off")
+
+def q(value):
+    return shlex.quote(str(value))
+
+def sanitize(value):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+
+def expand_remote(path):
+    return os.path.expandvars(os.path.expanduser(path))
+
+state_dir = expand_remote(payload["state_dir"])
+os.makedirs(state_dir, exist_ok=True)
+model_name = sanitize(payload.get("model") or "default")
+state_path = os.path.join(state_dir, model_name + ".json")
+host_path = os.path.join(state_dir, model_name + ".host")
+log_path = os.path.join(state_dir, model_name + ".log")
+lock_path = os.path.join(state_dir, model_name + ".lock")
+
+def read_state():
+    try:
+        with open(state_path, "r") as handle:
+            return json.load(handle)
+    except Exception:
+        return {}
+
+def write_state(state):
+    tmp = state_path + ".tmp"
+    with open(tmp, "w") as handle:
+        json.dump(state, handle, sort_keys=True)
+    os.rename(tmp, state_path)
+
+def run_capture(args):
+    return subprocess.run(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+
+def job_status(job_id):
+    if not job_id:
+        return "", ""
+    completed = run_capture(["squeue", "-h", "-j", str(job_id), "-o", "%T|%R"])
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return "", ""
+    parts = completed.stdout.strip().splitlines()[0].split("|", 1)
+    return parts[0], parts[1] if len(parts) > 1 else ""
+
+def current_status():
+    state = read_state()
+    phase, reason = job_status(state.get("job_id"))
+    active = bool(phase)
+    state["slurm_state"] = phase
+    state["reason"] = reason
+    if phase in ("RUNNING", "COMPLETING") and os.path.exists(host_path):
+        with open(host_path, "r") as handle:
+            state["host"] = handle.read().strip()
+    elif "host" in state:
+        state.pop("host", None)
+    state["active"] = active
+    state["state_path"] = state_path
+    state["log_path"] = state.get("log_path") or log_path
+    return state
+
+def read_log_since(offset):
+    current_log = read_state().get("log_path") or log_path
+    try:
+        size = os.path.getsize(current_log)
+    except OSError:
+        return {"offset": offset, "data": ""}
+    if offset > size:
+        offset = 0
+    with open(current_log, "r", errors="replace") as handle:
+        handle.seek(offset)
+        data = handle.read()
+        offset = handle.tell()
+    return {"offset": offset, "data": data}
+
+def rocm_arch_command():
+    if llama.get("backend") == "cuda":
+        return "export LLAMACPP_ROCM_ARCH=unused"
+    arch = llama.get("rocm_arch", "auto")
+    if arch != "auto":
+        return "export LLAMACPP_ROCM_ARCH=" + q(arch)
+    return (
+        "case $(hostname -s) in\n"
+        "  epn[0-1][0-9][0-9]|epn2[0-6][0-9]|epn27[0-9]) export LLAMACPP_ROCM_ARCH=gfx906 ;;\n"
+        "  epn28[0-9]|epn29[0-9]|epn3[0-4][0-9]) export LLAMACPP_ROCM_ARCH=gfx908 ;;\n"
+        "  *) export LLAMACPP_ROCM_ARCH=$(rocminfo 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9][0-9]*' || echo gfx908) ;;\n"
+        "esac"
+    )
+
+def server_command():
+    custom = llama.get("server_command") or []
+    if custom:
+        return " ".join(q(arg) for arg in custom)
+
+    model_path = llama.get("model_path") or ""
+    server_cli = llama.get("server_cli", "bin/run-server")
+    if not model_path:
+        # Managed model presets may assign LLAMACPP_CTX_SIZE while sourcing model.env,
+        # so pass the local override after the wrapper's generated arguments as well.
+        args = [server_cli, "--ctx-size", str(llama.get("context_size", 8192))]
+        args.extend(llama.get("server_extra_args") or [])
+        return " ".join(q(arg) for arg in args)
+
+    args = [
+        server_cli,
+        "-m",
+        model_path,
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(payload["server_port"]),
+        "-c",
+        str(llama.get("context_size", 8192)),
+    ]
+    args.extend(llama.get("server_extra_args") or [])
+    return " ".join(q(arg) for arg in args)
+
+def sbatch_options():
+    nodes = max(1, int(payload.get("nodes") or 1))
+    gpus = max(0, int(payload.get("gpus") or 0))
+    opts = ["#SBATCH -p " + payload.get("partition", "prod")]
+    if gpus > 0:
+        opts.extend(["#SBATCH --gres=gpu:" + str(gpus), "#SBATCH --nodes=" + str(nodes), "#SBATCH --ntasks=1"])
+    if nodes > 1:
+        # Multi-node: request N full nodes. The remote wrapper must span the model
+        # across nodes (e.g. llama.cpp RPC/multi-node) for this to increase VRAM;
+        # otherwise Slurm schedules N nodes but the server still uses one.
+        opts.append("#SBATCH --nodes=" + str(nodes))
+        if payload.get("exclusive", True):
+            opts.append("#SBATCH --exclusive")
+        node_class = payload.get("node_class", "")
+        if node_class in ("mi50", "mi100"):
+            chosen = choose_node(node_class, count=nodes)
+            opts.append("#SBATCH -w " + ",".join(chosen))
+            if node_class == "mi100" and any(int(n[3:]) >= 280 for n in chosen):
+                opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=1")
+        return "\n".join(opts)
+    if payload.get("exclusive", True):
+        opts.append("#SBATCH --exclusive")
+    node_class = payload.get("node_class", "")
+    custom = payload.get("custom_options") or []
+    if custom:
+        i = 0
+        while i < len(custom):
+            item = str(custom[i])
+            if item.startswith("-") and i + 1 < len(custom) and not str(custom[i + 1]).startswith("-"):
+                opts.append("#SBATCH " + item + " " + str(custom[i + 1]))
+                i += 2
+            else:
+                opts.append("#SBATCH " + item)
+                i += 1
+    elif node_class == "mi50":
+        opts.append("#SBATCH -w " + choose_node("mi50"))
+    elif node_class == "mi100":
+        node = choose_node("mi100")
+        opts.append("#SBATCH -w " + node)
+        if int(node[3:]) >= 280:
+            opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=1")
+        else:
+            opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=0")
+    elif node_class:
+        opts.append("#SBATCH -w " + node_class)
+    return "\n".join(opts)
+
+def choose_node(node_class, count=1):
+    count = int(count)
+    ranges = {
+        "mi50": lambda n: 0 <= n <= 279,
+        "mi100": lambda n: 280 <= n <= 349,
+    }
+    partition = payload.get("partition", "prod")
+    completed = run_capture(["sinfo", "-N", "-h", "-p", partition, "-o", "%N %t"])
+    if completed.returncode != 0:
+        sys.exit("Cannot discover Slurm nodes: " + completed.stderr.strip())
+    idle, busy, fallback = set(), set(), set()
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        host, state = parts[:2]
+        match = re.fullmatch(r"epn(\d+)", host)
+        if not match:
+            continue
+        number = int(match.group(1))
+        if node_class == "mi100" and payload.get("mi50_fallback", False) and ranges["mi50"](number) and state == "idle":
+            fallback.add(host)
+        if not ranges[node_class](number):
+            continue
+        # Never invent a hostname or select down/draining/unresponsive nodes.
+        if state == "idle":
+            idle.add(host)
+        elif state in ("alloc", "mix", "comp"):
+            busy.add(host)
+    if not idle and fallback and llama.get("rocm_arch", "auto") != "auto":
+        sys.exit("MI50 fallback requires llamacpp.rocm_arch = auto")
+    candidates = sorted(idle or fallback or busy)
+    if not candidates:
+        sys.exit("No usable " + node_class + " nodes reported by Slurm in partition " + partition)
+    count = max(1, int(count))
+    if count == 1:
+        return candidates[int(time.time()) % len(candidates)]
+    # Multi-node: prefer distinct idle nodes (a multi-node allocation must use
+    # separate nodes); fall back to busy nodes if too few are idle.
+    if len(candidates) < count:
+        sys.exit("Requested " + str(count) + " nodes but only " + str(len(candidates))
+                 + " usable " + node_class + " nodes are reported by Slurm in partition " + partition)
+    start = int(time.time()) % len(candidates)
+    return [candidates[(start + i) % len(candidates)] for i in range(count)]
+
+def submit():
+    state = current_status()
+    if state.get("active") and not payload.get("force_new_job"):
+        if state.get("mtp", "auto") != mtp:
+            sys.exit("Running server has a different MTP setting; cancel it with llm-away server-cancel before restarting")
+        print(json.dumps(state))
+        return
+    image = llama.get("container", "")
+    if image:
+        subprocess.check_call([
+            sys.executable,
+            os.path.join(payload["remote_workdir"], "scripts/remote/ensure-container.py"),
+            image, llama.get("container_source", ""), llama.get("container_runtime", "apptainer"),
+        ], stdout=sys.stderr)
+    try:
+        os.unlink(host_path)
+    except OSError:
+        pass
+
+    workdir = payload["remote_workdir"]
+    job_log_template = os.path.join(state_dir, model_name + "-%j.log")
+    script = """#!/usr/bin/env bash
+{sbatch_opts}
+#SBATCH -J llm-away-{model_name}
+#SBATCH --chdir={workdir_q}
+#SBATCH -o {log_q}
+#SBATCH -e {log_q}
+
+set -euo pipefail
+echo "$(hostname -s)" > {host_q}
+cd {workdir_q}
+export LLAMACPP_BACKEND={backend_q}
+export LLAMACPP_CONTAINER={container_q}
+export LLAMACPP_CONTAINER_RUNTIME={container_runtime_q}
+{rocm_arch}
+export LLAMACPP_VISIBLE_DEVICES={devices_q}
+{allocated_devices}
+export MODEL_NAME={model_name_q}
+export LLAMACPP_HOST=0.0.0.0
+export LLAMACPP_PORT={server_port_q}
+export LLAMACPP_CTX_SIZE={context_size_q}
+export LLAMACPP_MTP={mtp_q}
+{mtp_check}
+echo "llm-away: server job on $(hostname -s), ROCm arch $LLAMACPP_ROCM_ARCH" >&2
+{build}
+exec {server_cmd}
+""".format(
+        sbatch_opts=sbatch_options(),
+        model_name=model_name,
+        log_q=q(job_log_template),
+        host_q=q(host_path),
+        workdir_q=q(workdir),
+        container_q=q(llama.get("container", "")),
+        container_runtime_q=q(llama.get("container_runtime", "apptainer")),
+        backend_q=q(llama.get("backend", "rocm")),
+        rocm_arch=rocm_arch_command(),
+        devices_q=q(llama.get("visible_devices", "0,1,2,3,4,5,6,7")),
+        allocated_devices=('export LLAMACPP_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"' if llama.get("backend") == "cuda" else 'export LLAMACPP_VISIBLE_DEVICES="${ROCR_VISIBLE_DEVICES:-${HIP_VISIBLE_DEVICES:-}}"') if payload.get("gpus") else ":",
+        model_name_q=q(llama.get("model_name") or payload.get("model") or "deepseek-v2.5-q4km"),
+        server_port_q=q(payload["server_port"]),
+        context_size_q=q(llama.get("context_size", 8192)),
+        mtp_q=q(mtp),
+        mtp_check=("source scripts/lib/llamacpp-env.sh\n"
+                   "declare -F llamacpp_apply_mtp_mode >/dev/null || "
+                   "{ echo 'Remote wrapper lacks LLAMACPP_MTP support' >&2; exit 2; }") if mtp != "auto" else ":",
+        build="bin/build-llama >&2" if llama.get("build_before_run") else ":",
+        server_cmd=server_command(),
+    )
+
+    fd, path = tempfile.mkstemp(prefix="llm-away-", suffix=".sbatch", dir=state_dir)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(script)
+    completed = run_capture(["sbatch", "--parsable", path])
+    if completed.returncode != 0:
+        sys.stderr.write(completed.stderr or completed.stdout)
+        sys.exit(completed.returncode)
+
+    job_id = completed.stdout.strip().split(";")[0]
+    state = {
+        "active": True,
+        "job_id": job_id,
+        "model": payload.get("model"),
+        "mtp": mtp,
+        "server_port": payload["server_port"],
+        "submitted_at": int(time.time()),
+        "state_path": state_path,
+        "log_path": job_log_template.replace("%j", job_id),
+    }
+    write_state(state)
+    print(json.dumps(current_status()))
+
+if command == "ensure":
+    with open(lock_path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        submit()
+elif command == "status":
+    print(json.dumps(current_status()))
+elif command == "cancel":
+    with open(lock_path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = read_state()
+        # Prefer an explicitly supplied job ID (e.g. a second --slurm-job allocation);
+        # otherwise cancel whatever job the default state file references.
+        job_id = str(payload.get("job_id") or state.get("job_id") or "")
+        if job_id:
+            subprocess.call(["scancel", job_id])
+        state["active"] = False
+        write_state(state)
+        print(json.dumps(current_status()))
+elif command == "log":
+    offset = int(payload.get("log_offset") or 0)
+    print(json.dumps(read_log_since(offset)))
+else:
+    usage = "unknown command: " + command + "\n"
+    sys.stderr.write(usage)
+    sys.exit(2)
+PY
