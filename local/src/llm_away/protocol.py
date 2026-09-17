@@ -116,7 +116,7 @@ def tools_to_prompt(tools) -> str:
         "Use only the tool names listed here. Emit tool calls as:",
         "<tool_call><function=tool_name><parameter=param_name>value</parameter></function></tool_call>",
         "Use short shell commands with literal shell quoting. Use raw text inside XML parameters (no JSON wrapper or backslash escaping); use JSON literals for numbers, booleans, arrays and objects. Stop after the tool call and wait for its result.",
-        "Do not invent tools such as read_file unless they are listed. For file reads, directory listing, and search, prefer the shell tool with commands like cat, sed, ls, and rg.",
+        "Do not invent tools such as read_file unless they are listed. Batch related reads into one call and use targeted rg/sed reads. Reuse prior results; do not repeat SSH probes or inventory commands without new evidence. Once enough information is available, make the requested edit. After two unsuccessful attempts change approach or report a concrete blocker.",
         "If the user asks to inspect, explain, diagnose, review, summarize, or tell what code does, use read-only commands and then answer; do not modify files.",
         "Only edit files when the user explicitly asks for a change. When editing, use apply_patch instead of shell heredocs or redirection.",
     ]
@@ -239,6 +239,15 @@ def parse_json_tool_call(body: str) -> dict | None:
 
 
 def parse_xml_tool_call(body: str) -> dict | None:
+    # GLM's native markup; accept only complete, uniquely named arguments.
+    glm = re.fullmatch(r"([A-Za-z_][\w.-]*)\s*((?:<arg_key>.*?</arg_value>\s*)+)", body, re.DOTALL)
+    if glm:
+        pattern = r"<arg_key>([A-Za-z_][\w.-]*)</arg_key>\s*<arg_value>(.*?)</arg_value>"
+        pairs = list(re.finditer(pattern, glm[2], re.DOTALL))
+        remainder = re.sub(pattern, "", glm[2], flags=re.DOTALL)
+        if pairs and not remainder.strip() and len({p[1] for p in pairs}) == len(pairs):
+            return {"name": glm[1], "arguments": {p[1]: html.unescape(p[2]) for p in pairs}}
+        return None
     nested = re.search(
         r"<function=(?P<name>[A-Za-z_][\w.-]*)>\s*(?P<body>.*?)</function>",
         body,

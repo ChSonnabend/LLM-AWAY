@@ -79,7 +79,7 @@ curl -s http://127.0.0.1:8765/v1/chat/completions \
 Configure Codex with:
 
 ```bash
-./bin/llm-away install-codex-config --config ./config/away.toml
+./bin/llm-away install-codex-config --config ./config/model.toml
 ```
 
 The init script runs this command for you. It updates the AWAY provider block in `$CODEX_HOME/config.toml` or `~/.codex/config.toml`, writes `away.config.toml`, and creates `model-catalogs/away.json` under the same Codex home. Initialization preserves your global model, provider, reasoning effort, and catalog settings, including when rerun. AWAY is selected through its profile. Only an explicit `install-codex-config --activate` replaces those global settings; `--no-activate` remains supported and is the default.
@@ -155,7 +155,7 @@ An explicit mode requires updated AWAY helpers and a remote wrapper with `llamac
 
 Avoid mixing the MTP selector with manual speculative type/draft-model arguments. In the pinned llama.cpp revision, repeated `--spec-type` flags accumulate, so appending `--spec-type none` is not a reliable off switch. For custom speculative setups, use `mtp = "auto"` and manage their arguments yourself. Draft length and other tuning stay in the remote preset.
 
-Finish rebuilding llama.cpp before starting an MTP-enabled server. If an allocation is still running, stop the provider and run `./bin/llm-away server-cancel --config config/away.toml`, then restart it. The controller refuses to reuse an active job with a different saved MTP mode; changing the setting does not cancel jobs automatically. Changing the remote preset while using `auto` also requires a fresh allocation.
+Finish rebuilding llama.cpp before starting an MTP-enabled server. If an allocation is still running, stop the provider and run `./bin/llm-away server-cancel --config config/model.toml`, then restart it. The controller refuses to reuse an active job with a different saved MTP mode; changing the setting does not cancel jobs automatically. Changing the remote preset while using `auto` also requires a fresh allocation.
 
 ## Important Limits
 
@@ -172,8 +172,8 @@ The default `llamacpp.extra_args = ["-n", "64"]` intentionally bounds first-run 
 Persistent server commands:
 
 ```bash
-./bin/llm-away server-status --config ./config/away.toml
-./bin/llm-away server-cancel --config ./config/away.toml
+./bin/llm-away server-status --config ./config/model.toml
+./bin/llm-away server-cancel --config ./config/model.toml
 ```
 
 With `gateway.cancel_on_exit = true`, a local gateway process cancels the Slurm job when the gateway exits. With `gateway.cancel_reused_on_exit = true`, this also cancels a pre-existing Slurm server that the gateway reused. With `gateway.stream_startup_log = true`, startup logs from a newly submitted remote `llama-server` job are streamed to the gateway terminal while the server is loading.
@@ -188,7 +188,7 @@ The generated Codex model instructions and the gateway prompt both treat inspect
 
 To use AWAY, select the `away` profile after starting the local gateway. The installer writes the provider to `~/.codex/config.toml` and profile overrides to `~/.codex/away.config.toml`. It also writes `~/.codex/model-catalogs/combined-with-away.json` as an export preserving existing non-AWAY entries; this file is not selected globally and does not fetch the normal Codex catalog. Explicit `--activate` selects the AWAY-only catalog and provider.
 
-The generated provider display name comes from `[codex].provider_display_name` in `config/away.toml`, currently `Christian Sonnabend`, so app chrome keeps showing your name instead of `AWAY Slurm llama.cpp`. The `[codex].account_email` value documents the intended ChatGPT/Codex account, but app account sign-in is still managed by the ChatGPT app. Set `LLM_REMOTE_CODEX_PROVIDER_NAME` before running `./scripts/init-local.sh` if you want a temporary label override.
+The generated provider display name comes from `[codex].provider_display_name` in `config/model.toml`, currently `Christian Sonnabend`, so app chrome keeps showing your name instead of `AWAY Slurm llama.cpp`. The `[codex].account_email` value documents the intended ChatGPT/Codex account, but app account sign-in is still managed by the ChatGPT app. Set `LLM_REMOTE_CODEX_PROVIDER_NAME` before running `./scripts/init-local.sh` if you want a temporary label override.
 
 For an AWAY-focused VS Code session, select the AWAY profile in the client, then launch:
 
@@ -209,7 +209,7 @@ Then reload the Codex sidebar if it was already open.
 If you only want the HTTP gateway without immediately starting the remote Slurm job, run:
 
 ```bash
-llm-away serve --config /path/to/LLM_AWAY/config/away.toml
+llm-away serve --config /path/to/LLM_AWAY/config/model.toml
 ```
 
 ## Remote Host Setup
@@ -249,14 +249,14 @@ When the bundle is stored elsewhere, pass `--workdir /path/to/runner`. Use `--bi
 
 ### Match the client configuration and verify
 
-Set `[ssh].host` and `[remote].workdir` in `config/away.toml` to your login host and runner project. Defaults for `[remote].serverctl` and `[remote].runner` are `$HOME/.local/bin/llm-away-serverctl` and `$HOME/.local/bin/llm-away-slurm-run`; update them if you chose another bin directory. Configure `[slurm].partition`, `node_class`/`custom_options`, and `[llamacpp]` for your cluster, model, GPU build, and context size. The built-in `mi50`/`mi100` node ranges are AWAY-specific.
+Set `[ssh].host` and `[remote].workdir` in `config/model.toml` to your login host and runner project. Defaults for `[remote].serverctl` and `[remote].runner` are `$HOME/.local/bin/llm-away-serverctl` and `$HOME/.local/bin/llm-away-slurm-run`; update them if you chose another bin directory. Configure `[slurm].partition`, `node_class`/`custom_options`, and `[llamacpp]` for your cluster, model, GPU build, and context size. The built-in `mi50`/`mi100` node ranges are AWAY-specific.
 
 From the client repository:
 
 ```bash
 ./bin/llm-away list-models                         # Verify SSH, wrapper, and model files
 ./scripts/init-local.sh                         # Select a model and configure this client
-./bin/llm-away server-status --config config/away.toml  # Verify helper and Slurm status path
+./bin/llm-away server-status --config config/model.toml  # Verify helper and Slurm status path
 away-agent                                      # Starts/reuses a job and verifies inference
 ```
 
@@ -264,7 +264,7 @@ Model discovery and server status do not submit a job; status may create the sta
 
 ## Files
 
-- `config/away.toml`: default local and remote settings.
+- `config/model.toml`: default local and remote settings.
 - `bin/llm-away`: executable wrapper.
 - `bin/away-agent`: foreground provider command for already-open VS Code windows.
 - `bin/codex-away`: Codex launcher that owns the local provider lifecycle.
@@ -347,7 +347,7 @@ This is the hook for scaling a single model across more GPUs/VRAM. It only actua
 
 ### AWAY agent efficiency and permissions
 
-The `[codex]` section in `config/away.toml` controls the generated AWAY profile and
+The `[codex]` section in `config/model.toml` controls the generated AWAY profile and
 initial model prompt. After changing it, run `./bin/llm-away install-codex-config
 --no-activate` and start a fresh `codex --profile away` session. Restart the local
 `away-agent` gateway after gateway/source or `[llamacpp]` changes.

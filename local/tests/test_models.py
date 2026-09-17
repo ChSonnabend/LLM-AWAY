@@ -17,7 +17,7 @@ class ModelTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.config = self.root / "away.toml"
+        self.config = self.root / "model.toml"
         self.config.write_text('# Keep this comment\n[model]\nname = "old"\n'
                                '[llamacpp]\nmodel_name = "old"\ncontext_size = 12345\n'
                                '[ssh]\nhost = "example"\n', encoding="utf-8")
@@ -35,7 +35,7 @@ class ModelTests(unittest.TestCase):
         saved = self.config.read_text()
         save_model(str(self.config), self.model)
         self.assertEqual(saved, self.config.read_text())
-        backups = list(self.root.glob("away.toml.backup-*"))
+        backups = list(self.root.glob("model.toml.backup-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), original)
 

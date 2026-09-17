@@ -36,9 +36,9 @@ def installed_models(workdir):
             ["bash", "-c", 'set -e; source "$1"; llamacpp_load_model_config "$2"; '
              'path=$(llamacpp_resolve_model); '
              'toggle=no; if declare -F llamacpp_apply_mtp_mode >/dev/null; then toggle=yes; fi; '
-             'printf "%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0%s" "$MODEL_ALIAS" "$path" '
+             'printf "%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0%s" "$MODEL_ALIAS" "$path" '
              '"${MODEL_DRAFT_GGUF:-}" "${LLAMACPP_SPEC_TYPE:-draft-mtp}" '
-             '"${LLAMACPP_SPEC_DRAFT_N_MAX:-8}" "$toggle" "${MODEL_CONTEXT_SIZE:-0}"',
+             '"${LLAMACPP_SPEC_DRAFT_N_MAX:-8}" "$toggle" "${MODEL_CONTEXT_SIZE:-0}" "${MODEL_MTP_EMBEDDED:-0}"',
              "discover-model", str(library), preset.parent.name],
             cwd=str(root), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True, timeout=15,
@@ -46,21 +46,22 @@ def installed_models(workdir):
         if result.returncode:
             continue
         parts = result.stdout.split("\0")
-        if len(parts) != 7:
+        if len(parts) != 8:
             continue
-        alias, path, draft, spec_type, draft_max, toggle, context_size = parts
+        alias, path, draft, spec_type, draft_max, toggle, context_size, embedded = parts
         model_path = Path(path)
         size = gguf_size(model_path)
         if not size:
             continue
         draft_path = (root / draft) if draft else None
         draft_size = gguf_size(draft_path) if draft_path else 0
-        configured = bool(draft) and spec_type == "draft-mtp"
+        configured = embedded == '1' or bool(draft) and spec_type == "draft-mtp"
         models.append({"name": preset.parent.name, "alias": alias, "path": path,
                        "size_bytes": size,
                        "context_size": int(context_size) if context_size.isdigit() else 0,
                        "mtp": {"configured": configured,
-                               "available": configured and draft_size > 0,
+                               "available": configured and (embedded == '1' or draft_size > 0),
+                               "embedded": embedded == '1',
                                "draft_path": str(draft_path) if draft_path else "",
                                "draft_size_bytes": draft_size,
                                "draft_n_max": draft_max,

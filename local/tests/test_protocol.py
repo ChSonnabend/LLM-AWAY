@@ -15,6 +15,15 @@ from llm_away.protocol import (
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_glm_native_tool_markup(self):
+        tools=[{'name':'exec_command','parameters':{'required':['cmd']}}]
+        result=response_object('model','<tool_call>exec_command\n<arg_key>cmd</arg_key><arg_value>printf "hello"</arg_value></tool_call>',tools=tools)
+        self.assertEqual(json.loads(result['output'][0]['arguments']),{'cmd':'printf "hello"'})
+
+    def test_glm_incomplete_arguments_rejected(self):
+        with self.assertRaises(ValueError):
+            response_object('model','<tool_call>exec_command<arg_key>cmd</arg_key><arg_value>pwd</tool_call>')
+
     def test_responses_messages_keep_question_separate_from_instructions(self):
         messages = responses_request_to_messages({
             "instructions": "Be concise.",
@@ -85,7 +94,7 @@ class ProtocolTests(unittest.TestCase):
         prompt = responses_request_to_prompt({"input": [{"role": "user", "content": "Inspect files"}]})
 
         self.assertIn("- exec_command: run a shell command. Parameters: cmd", prompt)
-        self.assertIn("prefer the shell tool", prompt)
+        self.assertIn("Batch related reads", prompt)
         self.assertIn("use read-only commands and then answer", prompt)
 
     def test_models_list(self):

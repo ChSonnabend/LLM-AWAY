@@ -88,3 +88,17 @@ and real model/GPU inference still require a user smoke check. Try allocating on
 starting a small model, exiting with “keep”, then running the same ID and releasing it.
 
 Hydra: [GLM-5.3-Flash Q4 on two H200s, 750k context](remote/docs/glm-5.3-flash.md).
+
+Configuration is now `local/config/model.toml`; `away.toml` remains a compatibility
+symlink. Existing host profiles are preserved. Use `res-alloc --restart` to configure
+a host afresh; `init-local.sh` is only needed for the legacy launcher workflow.
+Every allocation asks for additional Slurm options, or Kubernetes CPU, memory,
+node selector, tolerations, priority and time limit. Existing allocations are unchanged.
+
+`run` uses the generic model name `model`, provider `remote_resource`, and fallback
+agent metadata by default. Set `[codex] custom_metadata = true` to opt into the custom
+catalog for new allocations. Guidance now discourages repeated SSH/inventory calls;
+it cannot guarantee that a model will never loop. GLM's native tool syntax is accepted
+and validated. GLM Flash MTP uses embedded weights with two draft tokens:
+`run --session 2 --model glm-5.3-flash-q4 --mtp on`.
+Exit and rerun an existing agent to pick up bridge changes; keep its allocation.

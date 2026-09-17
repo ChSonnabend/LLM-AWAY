@@ -274,7 +274,7 @@ Use `--bin-dir /path/to/bin` to change the helper destination; relative bin
 paths are home-relative. To update, refresh all three files in scripts/remote/
 from the same LLM_EPN revision used by clients, then rerun setup here.
 
-In the client's LLM_EPN config/away.toml, set:
+In the client's LLM_EPN config/model.toml, set:
 
 - [ssh].host: this login host (currently epnh).
 - [remote].workdir: the absolute path to this runner project (currently
@@ -291,7 +291,7 @@ Then on the client, from its LLM_EPN repository:
 ```bash
 ./bin/llm-away list-models
 ./scripts/init-local.sh
-./bin/llm-away server-status --config config/away.toml
+./bin/llm-away server-status --config config/model.toml
 away-agent
 ```
 
@@ -325,7 +325,7 @@ setting (currently 3). An explicit on choice checks the draft's availability,
 not completed builds, GPU compatibility, or speedup.
 
 Finish the llama.cpp rebuild before launching a server. Stop the local provider,
-cancel any old allocation with `llm-away server-cancel --config config/away.toml`,
+cancel any old allocation with `llm-away server-cancel --config config/model.toml`,
 then restart. The controller refuses to reuse an active job with a different
 saved MTP mode; selection never cancels jobs automatically. Changes to the
 remote preset in auto mode also require a new allocation.

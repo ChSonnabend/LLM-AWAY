@@ -3,7 +3,7 @@
 
 Usage: download-away-model [keyword] [options passed through to find-model]
 
-The command resolves the active AWAY host from config/away.toml, checks that
+The command resolves the active AWAY host from config/model.toml, checks that
 bin/find-model exists there (uploading it when missing), and then starts
 find-model interactively. The model is downloaded into the remote project's
 models/ directory and registered as a preset the AWAY agent can discover.
@@ -26,7 +26,7 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False)
     parser.add_argument("keyword", nargs="?")
-    parser.add_argument("--config", default=str(root / "config/away.toml"))
+    parser.add_argument("--config", default=str(root / "config/model.toml"))
     parser.add_argument("-h", "--help", action="store_true")
     args, forwarded = parser.parse_known_args()
     if args.help:

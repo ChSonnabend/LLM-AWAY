@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_dir="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "${BASH_SOURCE[0]}")"
-config="${LLM_REMOTE_CONFIG:-$repo_dir/config/away.toml}"
+config="${LLM_REMOTE_CONFIG:-$repo_dir/config/model.toml}"
 host="${LLM_REMOTE_HOST:-127.0.0.1}"
 port="${LLM_REMOTE_PORT:-8765}"
 log_dir="${XDG_RUNTIME_DIR:-/tmp}"

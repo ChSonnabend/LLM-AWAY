@@ -7,7 +7,11 @@ import tempfile
 
 
 def store_path(config_path):
-    return Path(config_path).with_suffix('.hosts.json')
+    path = Path(config_path).with_suffix('.hosts.json')
+    legacy = path.with_name('away.hosts.json')
+    if path.name == 'model.hosts.json' and not path.exists() and legacy.exists():
+        return legacy
+    return path
 
 
 def read_store(config_path):

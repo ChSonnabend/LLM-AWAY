@@ -36,7 +36,8 @@ def status():
         raw=kubectl(['get','job',s['job_id'],'--ignore-not-found','-o','json'])
         if raw:
             job=json.loads(raw)
-            if job['metadata'].get('labels',{}).get('llm-away-resource')!=token: raise RuntimeError('Job ownership mismatch')
+            labels=job['metadata'].get('labels',{})
+            if labels.get('llm-remote-resource',labels.get('llm-away-resource'))!=token: raise RuntimeError('Job ownership mismatch')
             s.update(active=not any(x.get('status')=='True' and x.get('type') in ('Complete','Failed') for x in job.get('status',{}).get('conditions',[])),slurm_state='PENDING')
             pods=json.loads(kubectl(['get','pods','-l','job-name='+s['job_id'],'-o','json']))['items']
             if pods:
@@ -85,12 +86,17 @@ def reserve():
         script='#!/bin/bash\nexec '+' '.join(shlex.quote(x) for x in worker)+'\n'
         job=call(args+options,data=script).split(';')[0]
     elif kind=='kubernetes':
-        job='away-'+token[:20]
+        job='remote-'+token[:20]
         volume={'name':'project'}
         volume.update({'persistentVolumeClaim':{'claimName':k['pvc']}} if k['pvc'] else {'hostPath':{'path':str(root),'type':'Directory'}})
         limits={'cpu':k['cpu'],'memory':k['memory']}
         if sl['gpus']: limits[k['gpu_resource']]=sl['gpus']
-        manifest={'apiVersion':'batch/v1','kind':'Job','metadata':{'name':job,'labels':{'llm-away-resource':token}},'spec':{'backoffLimit':0,'template':{'spec':{'restartPolicy':'Never','automountServiceAccountToken':False,'securityContext':{'runAsUser':os.getuid(),'runAsGroup':os.getgid()},'containers':[{'name':'resource','image':k['image'],'command':worker,'workingDir':str(root),'resources':{'limits':limits},'volumeMounts':[{'name':'project','mountPath':str(root)}]}],'volumes':[volume]}}}}
+        manifest={'apiVersion':'batch/v1','kind':'Job','metadata':{'name':job,'labels':{'llm-remote-resource':token}},'spec':{'backoffLimit':0,'template':{'spec':{'restartPolicy':'Never','automountServiceAccountToken':False,'securityContext':{'runAsUser':os.getuid(),'runAsGroup':os.getgid()},'containers':[{'name':'resource','image':k['image'],'command':worker,'workingDir':str(root),'resources':{'limits':limits},'volumeMounts':[{'name':'project','mountPath':str(root)}]}],'volumes':[volume]}}}}
+        pod=manifest['spec']['template']['spec']
+        if k.get('node_selector'):pod['nodeSelector']=k['node_selector']
+        if k.get('tolerations'):pod['tolerations']=k['tolerations']
+        if k.get('priority_class'):pod['priorityClassName']=k['priority_class']
+        if k.get('time_limit_seconds',0)>0:manifest['spec']['activeDeadlineSeconds']=k['time_limit_seconds']
         kubectl(['create','-f','-'],json.dumps(manifest))
     else:
         with open(state/'allocation.log','a') as log:

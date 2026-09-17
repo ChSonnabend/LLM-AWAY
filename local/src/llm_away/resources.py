@@ -176,6 +176,10 @@ def daemon(path):
                                 llamacpp=replace(cfg.llamacpp,model_name=request['model']['name'],mtp=request['mtp']))
                             if request['model'].get('context_size',0)>0:
                                 cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=request['model']['context_size']))
+                            # A preset without a draft model cannot run MTP; enforce it locally too.
+                            if request['mtp']=='on' and not request['model'].get('mtp',{}).get('configured'):
+                                request=dict(request);request['mtp']='off'
+                                cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,mtp='off'))
                             state(config=asdict(cfg),model=cfg.model.name,provider_exit=None,client_pid=request.get('client_pid'),client_identity=identity(request.get('client_pid')))
                             child=subprocess.Popen([sys.executable,'-m','llm_away.resources','provider',str(path)],stdin=subprocess.DEVNULL)
                             state(provider_pid=child.pid,provider_identity=identity(child.pid))
@@ -211,6 +215,20 @@ def allocate(args):
         gpus=args.gpus if args.gpus is not None else int(ask('GPUs for this allocation',str(cfg.slurm.gpus or (0 if cfg.llamacpp.backend=='cpu' else 1))))
         if gpus<0 or (cfg.llamacpp.backend!='cpu' and gpus<1): raise ValueError('Invalid GPU count')
         cfg=replace(cfg,slurm=replace(cfg.slurm,gpus=gpus,nodes=1))
+        if cfg.backend_type=='slurm_server':
+            options=shlex.split(ask('Additional Slurm options for this allocation',shlex.join(cfg.slurm.custom_options)))
+            cfg=replace(cfg,slurm=replace(cfg.slurm,custom_options=options))
+        elif cfg.backend_type=='kubernetes':
+            k=cfg.kubernetes
+            selector=json.loads(ask('Kubernetes node selector (JSON)',json.dumps(k.node_selector)))
+            tolerations=json.loads(ask('Kubernetes tolerations (JSON)',json.dumps(k.tolerations)))
+            if not isinstance(selector,dict) or any(not isinstance(v,str) for v in selector.values()):raise ValueError('Node selector must map keys to strings')
+            if not isinstance(tolerations,list) or any(not isinstance(v,dict) for v in tolerations):raise ValueError('Tolerations must be a JSON array of objects')
+            cfg=replace(cfg,kubernetes=replace(k,node_selector=selector,tolerations=tolerations,
+                cpu=ask('Kubernetes CPUs',k.cpu),memory=ask('Kubernetes memory',k.memory),
+                priority_class=ask('Kubernetes priority class (blank for default)',k.priority_class),
+                time_limit_seconds=int(ask('Kubernetes time limit in seconds (0: unlimited)',str(k.time_limit_seconds)))))
+            if cfg.kubernetes.time_limit_seconds<0:raise ValueError('Time limit must not be negative')
         if cfg.backend_type=='direct' and gpus:
             devices=ask('GPU device IDs for this session',cfg.llamacpp.visible_devices or ','.join(map(str,range(gpus))))
             if len(devices.split(','))!=gpus or any(not n.isdigit() for n in devices.split(',')) or len(set(devices.split(',')))!=gpus:raise ValueError('Choose one distinct device ID per GPU')
@@ -253,6 +271,8 @@ def run_agent(args):
         try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise ValueError('Another run command owns this session')
         data=rpc(path,'status');cfg=config(data['config'])
+        settings=Path(os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
+        if settings.exists():cfg=replace(cfg,codex=load_config(settings).codex)
         model=choose_model(discover_models(cfg),cfg.llamacpp.model_name,args.model)
         # Explicit preset context also applies to allocations created before the preset.
         if model.get('context_size',0)>0:
@@ -282,13 +302,14 @@ def run_agent(args):
                 if time.time()>deadline:raise TimeoutError('Model startup timed out')
                 time.sleep(1)
             from .cli import remote_model_catalog
-            catalog=path/'models.json';write(catalog,remote_model_catalog(model['alias'],min(cfg.codex.context_window,cfg.llamacpp.context_size),cfg.codex))
+            catalog=path/'models.json';write(catalog,remote_model_catalog(model['alias'],min(cfg.codex.context_window,cfg.llamacpp.context_size),cfg.codex) if cfg.codex.custom_metadata else {'models':[]})
             # Per-process overrides keep simultaneous sessions out of global Codex settings.
-            command=['codex','--no-alt-screen','-c','model_provider="away_resource"','-c','model="away"',
-                     '-c','model_providers.away_resource.name="AWAY resource"',
-                     '-c',f'model_providers.away_resource.base_url="http://127.0.0.1:{cfg.server.port}/v1"',
-                     '-c','model_providers.away_resource.wire_api="responses"',
-                     '-c','model_providers.away_resource.requires_openai_auth=false',
+            command=['codex','--no-alt-screen','-c','model_provider="remote_resource"','-c','model="model"',
+                     '-c','model_providers.remote_resource.name="Remote resource"',
+                     '-c',f'model_providers.remote_resource.base_url="http://127.0.0.1:{cfg.server.port}/v1"',
+                     '-c','model_providers.remote_resource.wire_api="responses"',
+                     '-c','model_providers.remote_resource.requires_openai_auth=false',
+                     '-c','model_reasoning_effort='+json.dumps(cfg.codex.reasoning_effort),
                      '-c','model_catalog_json='+json.dumps(str(catalog)),
                      '-c','model_context_window='+str(min(cfg.codex.context_window,cfg.llamacpp.context_size)),
                      '-c','model_auto_compact_token_limit='+str(int(min(cfg.codex.context_window,cfg.llamacpp.context_size)*0.7))]
@@ -343,7 +364,7 @@ def monitor(args):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);sub=parser.add_subparsers(dest='command',required=True)
-    alloc=sub.add_parser('allocate');alloc.add_argument('--config',default=os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/away.toml')))
+    alloc=sub.add_parser('allocate');alloc.add_argument('--config',default=os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
     alloc.add_argument('--host');alloc.add_argument('--connection',choices=['ssh','local']);alloc.add_argument('--restart',action='store_true');alloc.add_argument('--gpus',type=int)
     run=sub.add_parser('run');run.add_argument('--session','-s',required=True,type=int);run.add_argument('--model');run.add_argument('--mtp',choices=['auto','on','off']);run.add_argument('agent_args',nargs=argparse.REMAINDER)
     mon=sub.add_parser('monitor');mon.add_argument('--list',action='store_true');mon.add_argument('--logs',type=int);mon.add_argument('--kill',type=int);mon.add_argument('--release',action='store_true')

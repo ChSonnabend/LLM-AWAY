@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "${BASH_SOURCE[0]}")"
 cd "$ROOT"
 
-config="${LLM_REMOTE_CONFIG:-$ROOT/config/away.toml}"
+config="${LLM_REMOTE_CONFIG:-$ROOT/config/model.toml}"
 selection_args=()
 mtp_args=()
 connection_args=()

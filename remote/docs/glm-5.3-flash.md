@@ -3,12 +3,12 @@
 Preset: `glm-5.3-flash-q4`, Unsloth `UD-Q4_K_XL` (~199.7 GB),
 750,000-token context, layer split across the allocated GPUs, reasoning enabled.
 The preset advertises its context to `run`, including allocations created earlier.
-MTP is disabled for this setup. Vision weights are not included.
+MTP uses the embedded prediction heads (2 draft tokens); no separate download is needed. Vision weights are not included.
 
 From the Mac, use the existing two-GPU allocation:
 
 ```sh
-run --session 2 --model glm-5.3-flash-q4 --mtp off
+run --session 2 --model glm-5.3-flash-q4 --mtp on
 res-mon --logs 2
 ```
 

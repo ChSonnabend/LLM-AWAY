@@ -410,6 +410,12 @@ class SlurmServerBackend(Backend):
         choices = data.get("choices") or []
         if choices:
             message = choices[0].get("message") or {}
+            if message.get("tool_calls"):
+                calls = []
+                for call in message["tool_calls"]:
+                    function = call.get("function", {})
+                    calls.append("<tool_call>" + json.dumps(function) + "</tool_call>")
+                return str(message.get("content") or "") + "\n".join(calls)
             return str(
                 message.get("content")
                 or message.get("reasoning_content")

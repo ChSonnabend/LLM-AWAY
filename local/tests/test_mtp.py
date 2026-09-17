@@ -47,9 +47,10 @@ class MtpTests(unittest.TestCase):
     def test_unavailable_draft_and_old_wrapper_reject_explicit_enabling(self):
         self.model["mtp"]["available"] = False
         self.assertIn("missing/incomplete", mtp_label(self.model))
-        for mode in ("auto", "on"):
-            with self.assertRaises(ValueError):
-                choose_mtp(self.model, requested=mode)
+        with self.assertRaises(ValueError):
+            choose_mtp(self.model, requested="auto")
+        # A preset without MTP can only run without MTP; "on" degrades to "auto".
+        self.assertEqual(choose_mtp(self.model, requested="on"), "auto")
         self.assertEqual(choose_mtp(self.model, requested="off"), "off")
         self.model["mtp"]["toggle_supported"] = False
         with self.assertRaisesRegex(ValueError, "wrapper"):
@@ -64,7 +65,7 @@ class MtpTests(unittest.TestCase):
         self.assertEqual(LlamaCppConfig().mtp, "auto")
 
     def test_selection_persists_mtp_without_changing_other_arguments(self):
-        config = self.root / "away.toml"
+        config = self.root / "model.toml"
         config.write_text('[llamacpp]\nmodel_name = "preset"\nserver_extra_args = ["--reasoning", "off"]\n')
         save_model(str(config), self.model, mtp="off")
         parsed = load_config(config)
@@ -72,7 +73,7 @@ class MtpTests(unittest.TestCase):
         self.assertEqual(parsed.llamacpp.server_extra_args, ["--reasoning", "off"])
 
     def test_switching_to_non_mtp_model_resets_sticky_on_and_cancel_writes_nothing(self):
-        config = self.root / "away.toml"
+        config = self.root / "model.toml"
         config.write_text('[llamacpp]\nmodel_name = "previous"\nmtp = "on"\n')
         plain = {key: value for key, value in self.model.items() if key != "mtp"}
         with patch("llm_away.cli.discover_models", return_value=[plain]), patch("llm_away.cli.install_codex_config"):

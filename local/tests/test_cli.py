@@ -91,7 +91,7 @@ followUpQueueMode = "steer"
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             codex_home = tmp / "codex"
-            config = tmp / "away.toml"
+            config = tmp / "model.toml"
             config.write_text(
                 """
 [server]
@@ -134,7 +134,7 @@ account_email = "sonnabendch@gmail.com"
             self.assertIn('base_url = "http://127.0.0.1:8765/v1"', active_config)
             self.assertIn('model_reasoning_effort = "low"', profile)
             self.assertTrue((codex_home / "model-catalogs" / "away.json").exists())
-            self.assertFalse((codex_home / "config-away.toml").exists())
+            self.assertFalse((codex_home / "config-model.toml").exists())
 
             combined_catalog = (codex_home / "model-catalogs" / "combined-with-away.json").read_text(
                 encoding="utf-8"
@@ -185,7 +185,7 @@ account_email = "sonnabendch@gmail.com"
             self.assertIn('model_provider = "away"', config)
             self.assertIn('model_reasoning_effort = "low"', config)
             self.assertIn('model_catalog_json = ', config)
-            self.assertEqual((home / "config-away.toml").read_text(encoding="utf-8"), config)
+            self.assertEqual((home / "config-model.toml").read_text(encoding="utf-8"), config)
 
 
 if __name__ == "__main__":

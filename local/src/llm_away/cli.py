@@ -17,7 +17,7 @@ from .models import choose_model, choose_mtp, discover_models, mtp_label, save_m
 
 
 def default_config_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "config" / "away.toml"
+    return Path(__file__).resolve().parents[2] / "config" / "model.toml"
 
 
 def print_codex_config(config_path: str) -> None:
@@ -25,16 +25,16 @@ def print_codex_config(config_path: str) -> None:
     base_url = f"http://{cfg.server.host}:{cfg.server.port}/v1"
     print(
         f'''# Add this provider block to ~/.codex/config.toml.
-[model_providers.away]
+[model_providers.remote]
 name = "{codex_provider_display_name(cfg.codex.provider_display_name)}"
 base_url = "{base_url}"
 wire_api = "responses"
 
-# Add this profile block to ~/.codex/away.config.toml.
-model_provider = "away"
-model = "away"
+# Add this profile block to ~/.codex/remote.config.toml.
+model_provider = "remote"
+model = "model"
 model_reasoning_effort = "low"
-model_catalog_json = "~/.codex/model-catalogs/away.json"
+model_catalog_json = "~/.codex/model-catalogs/model.json"
 '''
     )
 
@@ -100,10 +100,10 @@ def remote_model_catalog(model: str, context_window: int = 262000, settings: Cod
     return {
         "models": [
             {
-                "slug": "away",
-                "display_name": "AWAY",
-                "description": f"Use the selected remote AWAY model (currently {model}).",
-                "default_reasoning_level": "low",
+                "slug": "model",
+                "display_name": "REMOTE",
+                "description": f"Use the selected remote model (currently {model}).",
+                "default_reasoning_level": settings.reasoning_effort,
                 "supported_reasoning_levels": [
                     {"effort": "low", "description": "Fast responses"},
                     {"effort": "medium", "description": "Default"},
@@ -119,7 +119,7 @@ def remote_model_catalog(model: str, context_window: int = 262000, settings: Cod
                 "availability_nux": None,
                 "upgrade": None,
                 "support_verbosity": True,
-                "default_verbosity": "low",
+                "default_verbosity": settings.model_verbosity,
                 "truncation_policy": {
                     "mode": "tokens",
                     "limit": settings.tool_output_token_limit,
@@ -161,7 +161,7 @@ def remote_model_catalog(model: str, context_window: int = 262000, settings: Cod
                         "if none is available, report the exact blocker. Never print tool calls as a final answer."
                     )
                 },
-                "comp_hash": "local-away-preset",
+                "comp_hash": "local-model-preset",
             }
         ]
     }
@@ -170,8 +170,8 @@ def remote_model_catalog(model: str, context_window: int = 262000, settings: Cod
 def write_model_catalogs(home: Path, model: str, context_window: int = 262000, settings: CodexConfig | None = None) -> tuple[Path, Path]:
     catalog_dir = home / "model-catalogs"
     catalog_dir.mkdir(parents=True, exist_ok=True)
-    remote_path = catalog_dir / "away.json"
-    combined_path = catalog_dir / "combined-with-away.json"
+    remote_path = catalog_dir / "model.json"
+    combined_path = catalog_dir / "combined-with-model.json"
     remote_catalog = remote_model_catalog(model, context_window=context_window, settings=settings)
     remote_path.write_text(json.dumps(remote_catalog, indent=2) + "\n", encoding="utf-8")
 
@@ -204,7 +204,7 @@ def remove_toml_table(text: str, table: str) -> str:
             while result:
                 while result and not result[-1].strip():
                     result.pop()
-                if result and result[-1].strip() == "# LLM AWAY provider":
+                if result and result[-1].strip() == "# LLM remote provider":
                     result.pop()
                     continue
                 break
@@ -247,7 +247,7 @@ def install_codex_config(config_path: str, activate: bool = False) -> None:
     home = codex_home()
     home.mkdir(parents=True, exist_ok=True)
     config_file = home / "config.toml"
-    profile_file = home / "away.config.toml"
+    profile_file = home / "remote.config.toml"
 
     remote_catalog, combined_catalog = write_model_catalogs(
         home, cfg.model.name, context_window=min(cfg.codex.context_window, cfg.llamacpp.context_size), settings=cfg.codex
@@ -255,20 +255,20 @@ def install_codex_config(config_path: str, activate: bool = False) -> None:
     base_url = f"http://{cfg.server.host}:{cfg.server.port}/v1"
 
     existing = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
-    updated = remove_toml_table(existing, "model_providers.away")
+    updated = remove_toml_table(existing, "model_providers.remote")
     if activate:
         updated = set_root_keys(
             updated,
             {
-                "model": "away",
-                "model_provider": "away",
-                "model_reasoning_effort": "low",
+                "model": "model",
+                "model_provider": "remote",
+                "model_reasoning_effort": cfg.codex.reasoning_effort,
                 "model_catalog_json": str(remote_catalog),
             },
         )
     provider_block = f'''
-# LLM AWAY provider
-[model_providers.away]
+# LLM remote provider
+[model_providers.remote]
 name = "{codex_provider_display_name(cfg.codex.provider_display_name)}"
 base_url = "{base_url}"
 wire_api = "responses"
@@ -286,17 +286,17 @@ wire_api = "responses"
     profile_text = (
         "\n".join(
             [
-                'model_provider = "away"',
-                'model = "away"',
-                'model_reasoning_effort = "low"',
+                'model_provider = "remote"',
+                'model = "model"',
+                f"model_reasoning_effort = {quoted(cfg.codex.reasoning_effort)}",
                 f"model_catalog_json = {quoted(str(remote_catalog))}",
                 f"sandbox_mode = {quoted(cfg.codex.sandbox_mode)}",
                 f"approval_policy = {quoted(cfg.codex.approval_policy)}",
                 f"model_context_window = {min(cfg.codex.context_window, cfg.llamacpp.context_size)}",
                 f"model_auto_compact_token_limit = {min(cfg.codex.auto_compact_token_limit, int(min(cfg.codex.context_window, cfg.llamacpp.context_size) * 0.7))}",
                 f"tool_output_token_limit = {cfg.codex.tool_output_token_limit}",
-                'hide_agent_reasoning = true',
-                'model_verbosity = "low"',
+                f"hide_agent_reasoning = {str(cfg.codex.hide_agent_reasoning).lower()}",
+                f"model_verbosity = {quoted(cfg.codex.model_verbosity)}",
                 "",
             ]
         )
@@ -304,15 +304,15 @@ wire_api = "responses"
     if not profile_file.exists() or profile_file.read_text(encoding="utf-8") != profile_text:
         profile_file.write_text(profile_text, encoding="utf-8")
     if activate:
-        shutil.copy2(config_file, home / "config-away.toml")
+        shutil.copy2(config_file, home / "config-model.toml")
 
-    print(f"Installed AWAY Codex provider in {config_file}")
-    print(f"Installed AWAY profile in {profile_file}")
-    print(f"Installed AWAY model catalog in {remote_catalog}")
+    print(f"Installed remote Codex provider in {config_file}")
+    print(f"Installed remote profile in {profile_file}")
+    print(f"Installed remote model catalog in {remote_catalog}")
     if activate:
         print("AWAY is active for Codex clients that read the default config.")
     else:
-        print("Global Codex settings preserved. Use codex-away or --profile away to select AWAY.")
+        print("Global Codex settings preserved. Use codex-away or the resource run command to select a model.")
 
 
 def visible_devices_for_gpus(gpus: int) -> str:
@@ -346,7 +346,7 @@ def resolve_host(cfg, host_arg: str | None, command: str):
 
 def main(argv: list[str] | None = None) -> int:
     config_parent = argparse.ArgumentParser(add_help=False)
-    config_parent.add_argument("--config", default=str(default_config_path()), help="Path to away.toml")
+    config_parent.add_argument("--config", default=str(default_config_path()), help="Path to model.toml")
     config_parent.add_argument(
         "--port",
         type=int,
@@ -358,12 +358,12 @@ def main(argv: list[str] | None = None) -> int:
         "--host",
         default=None,
         metavar="NAME",
-        help="Remote host to use (a [hosts] name from away.toml or the default [ssh].host); "
+        help="Remote host to use (a [hosts] name from model.toml or the default [ssh].host); "
              "overrides REMOTE_HOST. Omit to ask interactively when several hosts are configured.",
     )
 
     parser = argparse.ArgumentParser(prog="llm-away")
-    parser.add_argument("--config", default=str(default_config_path()), help="Path to away.toml")
+    parser.add_argument("--config", default=str(default_config_path()), help="Path to model.toml")
     sub = parser.add_subparsers(dest="command", required=True)
 
     serve_parser = sub.add_parser("serve", parents=[config_parent], help="Run the local OpenAI-compatible provider (one per concurrent agent)")

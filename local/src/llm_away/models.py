@@ -23,6 +23,8 @@ def mtp_label(model: dict) -> str:
         return "MTP not configured"
     if not mtp.get("available"):
         return "MTP configured; draft files missing/incomplete"
+    if mtp.get('embedded'):
+        return f"MTP embedded; up to {mtp['draft_n_max']} draft tokens"
     return (f"MTP enabled by remote preset; +{mtp['draft_size_bytes'] / 1024**3:.1f} GiB draft, "
             f"up to {mtp['draft_n_max']} draft tokens")
 
@@ -51,10 +53,11 @@ def choose_mtp(model: dict, current: str = "auto", requested: str | None = None,
         mode = requested
     if mode not in ("auto", "on", "off"):
         raise ValueError("MTP mode must be auto, on, or off")
-    if mode == "on" and not mtp.get("available"):
-        raise ValueError("MTP needs a configured, readable draft model for this preset")
     if mode != "auto" and not mtp.get("toggle_supported"):
         raise ValueError("Remote wrapper needs LLAMACPP_MTP support for an explicit MTP choice; use --mtp auto or update it")
+    # A preset with no MTP draft can only run without MTP.
+    if not mtp.get("configured"):
+        mode = "auto"
     if mode == "auto" and mtp.get("configured") and not mtp.get("available"):
         raise ValueError("Remote preset enables MTP but draft files are missing/incomplete; install them or use --mtp off")
     return mode

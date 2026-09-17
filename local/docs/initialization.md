@@ -29,7 +29,7 @@ REMOTE_HOST=epnh away-agent
 
 The last initialized host/model is the default for away-agent. REMOTE_HOST and
 REMOTE_GPUS remain available. Model selection through llm-away select-model also
-updates the active saved profile. Existing config/away.toml customizations are
+updates the active saved profile. Existing config/model.toml customizations are
 not overwritten by the wizard.
 
 ## Kubernetes

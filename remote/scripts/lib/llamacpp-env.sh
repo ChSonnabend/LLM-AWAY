@@ -223,6 +223,7 @@ llamacpp_apply_mtp_mode() {
       fi
       ;;
     on)
+      [[ ${MODEL_MTP_EMBEDDED:-0} != 1 ]] || return 0
       [[ -n ${MODEL_DRAFT_GGUF:-} && ${LLAMACPP_SPEC_TYPE:-draft-mtp} == draft-mtp ]] ||
         llamacpp_die "MTP requested but this preset has no configured MTP draft model"
       local draft_path
@@ -341,7 +342,9 @@ llamacpp_common_run_args() {
   printf '%s\n' --ctx-size "${LLAMACPP_CTX_SIZE:-${CTX_SIZE:-4096}}"
   printf '%s\n' --threads "${LLAMACPP_THREADS:-${THREADS:-$(nproc)}}"
 
-  if [[ -n ${MODEL_DRAFT_GGUF:-} ]]; then
+  if [[ ${MODEL_MTP_EMBEDDED:-0} == 1 && ${LLAMACPP_MTP:-auto} != off ]]; then
+    printf '%s\n' --spec-type draft-mtp --spec-draft-n-max "${LLAMACPP_SPEC_DRAFT_N_MAX:-2}"
+  elif [[ -n ${MODEL_DRAFT_GGUF:-} ]]; then
     local draft_path
     draft_path=$(llamacpp_resolve_existing_path "$MODEL_DRAFT_GGUF" "draft model")
     printf '%s\n' --spec-draft-model "$draft_path"

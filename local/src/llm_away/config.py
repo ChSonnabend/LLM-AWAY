@@ -18,7 +18,7 @@ class ServerConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    name: str = "away-llamacpp"
+    name: str = "model"
 
 
 @dataclass(frozen=True)
@@ -160,6 +160,10 @@ class CodexConfig:
     instructions: str = ""
     sandbox_mode: str = "workspace-write"
     approval_policy: str = "on-request"
+    reasoning_effort: str = "high"
+    model_verbosity: str = "medium"
+    hide_agent_reasoning: bool = True
+    custom_metadata: bool = False
     context_window: int = 65536
     auto_compact_token_limit: int = 100000
     tool_output_token_limit: int = 2000
@@ -174,6 +178,10 @@ class KubernetesConfig:
     gpu_resource: str = "nvidia.com/gpu"
     cpu: str = "8"
     memory: str = "64Gi"
+    node_selector: dict[str, str] = field(default_factory=dict)
+    tolerations: list[dict] = field(default_factory=list)
+    priority_class: str = ""
+    time_limit_seconds: int = 0
 
 
 @dataclass(frozen=True)
