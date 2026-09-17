@@ -44,47 +44,38 @@ def main() -> int:
         print("bin/find-model is missing from this checkout.", file=sys.stderr)
         return 1
 
-    remote_script = cfg.remote.workdir + "/bin/find-model"
-    command = [sys.executable, remote_script, "--root", cfg.remote.workdir]
+    # Run the downloader with the remote's interpreter: the local Python may not
+    # exist on the host (e.g. Homebrew paths), and the remote Python 3.9 is fine
+    # because find-model is 3.9-compatible.
+    remote_python = "python3"
+    command = [remote_python, "-", cfg.remote.workdir]
     if args.keyword:
         command.append(args.keyword)
     command.extend(forwarded)
 
     if cfg.ssh.connection == "local":
         print("Model destination: this machine — " + cfg.remote.workdir, flush=True)
-        if not Path(cfg.remote.workdir, "bin/find-model").is_file():
-            print(f"{remote_script} is missing; run the remote setup or push it first.",
-                  file=sys.stderr)
+        if not script_path.is_file():
+            print("bin/find-model is missing from this checkout.", file=sys.stderr)
             return 1
         try:
-            return subprocess.call(command)
+            return subprocess.run(command, input=script_path.read_text(encoding="utf-8"),
+                                  text=True, cwd=str(root)).returncode
         except (OSError, subprocess.SubprocessError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
 
     print("Model destination: " + cfg.ssh.destination + " — " + cfg.remote.workdir, flush=True)
-    check = (f"import os,sys; os.path.isfile({shlex.quote(remote_script)})"
-             " or sys.exit(1)")
-    probe = subprocess.run(
-        ["ssh", "-o", f"ConnectTimeout={cfg.ssh.connect_timeout_seconds}",
-         cfg.ssh.destination, "python3 -c", shlex.quote(check)],
-        capture_output=True, text=True)
-    if probe.returncode:
-        print("Uploading bin/find-model to the host ...", flush=True)
-        push = subprocess.run(
-            ["scp", "-q", "-o", f"ConnectTimeout={cfg.ssh.connect_timeout_seconds}",
-             str(script_path), f"{cfg.ssh.destination}:{remote_script}"],
-            capture_output=True, text=True)
-        if push.returncode:
-            print("Could not upload find-model: " + push.stderr.strip(), file=sys.stderr)
-            return 1
-
+    # Ship the script over SSH stdin so it does not depend on the local Python
+    # being installed on the remote (sys.executable may be a local-only path)
+    # and never leaves a stale copy on the shared host.
     remote_command = " ".join(shlex.quote(part) for part in command)
     try:
-        return subprocess.call([
-            "ssh", "-t",
-            "-o", f"ConnectTimeout={cfg.ssh.connect_timeout_seconds}",
-            cfg.ssh.destination, remote_command])
+        completed = subprocess.run(
+            ["ssh", "-o", f"ConnectTimeout={cfg.ssh.connect_timeout_seconds}",
+             cfg.ssh.destination, remote_command],
+            input=script_path.read_text(encoding="utf-8"), text=True)
+        return completed.returncode
     except (OSError, subprocess.SubprocessError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

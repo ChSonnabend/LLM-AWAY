@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Search Hugging Face for GGUF models, list quantizations and MTP drafts,
+"""find-model: search Hugging Face for GGUF models, list quantizations and MTP drafts,
 download the chosen files, and register a preset for the AWAY model catalog.
 
 Interactive mode (default):
@@ -7,6 +7,11 @@ Interactive mode (default):
 Non-interactive (for scripts):
     find-model --repo ggml-org/Some-Model-GGUF --quant Q4_K_M [--mtp]
               [--alias my-preset] [--no-preset] [--dry-run]
+
+Runs on the AWAY host. `download-away-model` ships this script over SSH stdin as
+`python3 - <remote workdir> [keyword] [options]`, so the remote only needs
+Python 3.9 (the `from __future__ import annotations` import keeps the PEP 604
+annotations above from being evaluated at runtime).
 """
 from __future__ import annotations
 
@@ -270,6 +275,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("keyword", nargs="?", help="search keyword (e.g. 'qwen3 gguf')")
+    parser.add_argument("workdir", nargs="?",
+                        help="remote project root (positional form used by download-away-model over SSH stdin; "
+                             "equivalent to --root)")
     parser.add_argument("--root",
                         default=os.environ.get("AWAY_ROOT") or str(Path(__file__).resolve().parents[1]),
                         help="remote project root (default: auto-detected)")
@@ -283,6 +291,12 @@ def main() -> int:
                         help="download only, do not create a preset")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    # download-away-model ships `python3 - <workdir> [keyword] [options]` over SSH stdin:
+    # with two positionals, the second is the project root, not a search keyword.
+    if args.keyword is not None and args.workdir is not None:
+        args.root, args.keyword = args.workdir, None
+    if args.root == parser.get_default("root") and args.workdir:
+        args.root = args.workdir
 
     root = Path(os.path.expandvars(args.root)).expanduser().resolve()
     if not (root / "scripts" / "lib" / "llamacpp-env.sh").is_file():
