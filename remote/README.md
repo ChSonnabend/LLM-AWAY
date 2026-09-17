@@ -71,7 +71,7 @@ LLAMACPP_BACKEND=rocm LLAMACPP_ROCM_ARCH=gfx908 bin/build-llama  # MI100
 For a fresh rebuild of the current stable checkout on both AWAY GPU classes:
 
 ```bash
-cd /scratch/csonnabe/cern-fellowship/misc/LLM-AWAY/remote
+cd /scratch/csonnabe/LLM-AWAY/remote
 LLAMACPP_BACKEND=rocm LLAMACPP_ROCM_ARCH=gfx906 LLAMACPP_CXX_STANDARD=20 bin/build-llama
 LLAMACPP_BACKEND=rocm LLAMACPP_ROCM_ARCH=gfx908 LLAMACPP_CXX_STANDARD=20 bin/build-llama
 ```
@@ -278,7 +278,7 @@ In the client's LLM_EPN config/away.toml, set:
 
 - [ssh].host: this login host (currently epnh).
 - [remote].workdir: the absolute path to this runner project (currently
-  /scratch/csonnabe/cern-fellowship/misc/LLM-AWAY/remote).
+  /scratch/csonnabe/LLM-AWAY/remote).
 - [remote].serverctl and runner: $HOME/.local/bin/llm-away-serverctl and
   $HOME/.local/bin/llm-away-slurm-run, or your chosen installation paths.
 - [remote].state_dir: a shared writable directory; default $HOME/.cache/llm-away
@@ -376,7 +376,7 @@ provider. Send a small prompt through `codex-away` to check end-to-end inference
 
 ## Hydra container toolchain
 
-Hydra uses the Lustre checkout at `/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY/remote`.
+Hydra uses the Lustre checkout at `/lustre/alice/users/csonnab/LLM-AWAY/remote`.
 Use `bin/hydra-build rocm` or `bin/hydra-build cuda` in the remote project; do not load host modules inside containers.
 The CUDA Torch image lacks compilers. The H200 profile now uses the upstream prebuilt `llama-server-cuda.sif`; pull it as documented below.
 A source-build alternative is provided in `containers/cuda-devel.def`.

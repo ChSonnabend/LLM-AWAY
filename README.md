@@ -18,12 +18,12 @@ Models, containers, builds and saved host profiles remain ignored by Git.
 ## Existing installations
 
 - Mac: `/Users/jarvis/alice/misc/LLM-AWAY/local`
-- epnh: `/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY/remote`
-- Hydra: `/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY/remote`
+- epnh: `/scratch/csonnabe/LLM-AWAY/remote`
+- Hydra: `/lustre/alice/users/csonnab/LLM-AWAY/remote`
 
-The former `LLM-AWAY-local` and `LLM-AWAY-remote` filesystem paths are compatibility
-symlinks. Keep them while existing environments, build caches or running sessions
-reference those paths. The old `lamacpp-llm` alias on epnh remains valid too.
+The remote installations have been moved as full directories, without compatibility
+symlinks. On macOS, `LLM-AWAY-local` remains a compatibility symlink to
+`LLM-AWAY/local` for the installed command launchers.
 Both original Git histories are preserved through subtree merge commits. The
 original GitHub repositories remain available as historical copies; new changes
 belong here. Each installation's former Git metadata is preserved inside

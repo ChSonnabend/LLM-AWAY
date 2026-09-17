@@ -215,7 +215,7 @@ Remote setup belongs to the Slurm login host. The old client-side `scripts/init-
 
 - SSH from the client to the login host, including any required jump host. `[ssh].host` defaults to `epnh`. The login host must allow TCP forwarding to allocated compute nodes.
 - Bash, Python 3.6+, GNU coreutils (including `timeout`), and Slurm commands `sbatch`, `squeue`, `scancel`, `sinfo`, and `srun` available to noninteractive login shells. The account needs access to the configured partition and GPU nodes.
-- A remote llama.cpp wrapper project containing `bin/run-server`, `bin/run-cli`, and `scripts/lib/llamacpp-env.sh`. This is the `remote/` subfolder of this repository. On the current host it is `/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY/remote`.
+- A remote llama.cpp wrapper project containing `bin/run-server`, `bin/run-cli`, and `scripts/lib/llamacpp-env.sh`. This is the `remote/` subfolder of this repository. On the current host it is `/scratch/csonnabe/LLM-AWAY/remote`.
 - Readable model presets in `models/PRESET/model.env` and their downloaded GGUF files, including all shards. Use the runner project's `bin/download-model PRESET` to download a configured preset.
 - A compatible llama.cpp build and the site's ROCm/CUDA environment on the compute nodes. Follow the remote project's README and run `bin/build-llama` inside an appropriate GPU allocation if a build is missing. AWAY MI50 requires `gfx906`, MI100 `gfx908`; the selected model must support the GPU and fit its available memory/context.
 - The runner project, models, and `remote.state_dir` must be accessible from both the login host and compute nodes. The default state location is `$HOME/.cache/llm-away`; the controller creates it when used.
@@ -225,15 +225,15 @@ Remote setup belongs to the Slurm login host. The old client-side `scripts/init-
 Place the contents of this repository's `scripts/remote/` directory in the remote runner project's `scripts/remote/` directory. For example, from the client repository (adjust the host and path for your account):
 
 ```bash
-ssh epnh 'mkdir -p /scratch/csonnabe/cern-fellowship/misc/LLM-AWAY/remote/scripts/remote'
+ssh epnh 'mkdir -p /scratch/csonnabe/LLM-AWAY/remote/scripts/remote'
 scp scripts/remote/setup.sh scripts/remote/llm-away-serverctl scripts/remote/llm-away-slurm-run \
-  epnh:/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY/remote/scripts/remote/
+  epnh:/scratch/csonnabe/LLM-AWAY/remote/scripts/remote/
 ```
 
 Then **on the remote login host**:
 
 ```bash
-cd /scratch/csonnabe/cern-fellowship/misc/LLM-AWAY/remote
+cd /scratch/csonnabe/LLM-AWAY/remote
 bash scripts/remote/setup.sh
 bash scripts/remote/setup.sh --check
 ```
@@ -304,7 +304,7 @@ For noninteractive setup, use:
 ./scripts/init-local.sh --ssh-alias my-away --model qwen3.8-27b-q4km --mtp on
 ```
 
-All users run against `/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY/remote`, including its existing `models/`, GPU builds, and `scripts/remote/` helpers. They do **not** download models, copy the remote project, rebuild llama.cpp, or install remote helpers separately. Setup disables per-run builds. The shared installation's owner maintains models, builds, and helper scripts. An alternative shared installation can be selected with `--remote-workdir /absolute/path`.
+All users run against `/scratch/csonnabe/LLM-AWAY/remote`, including its existing `models/`, GPU builds, and `scripts/remote/` helpers. They do **not** download models, copy the remote project, rebuild llama.cpp, or install remote helpers separately. Setup disables per-run builds. The shared installation's owner maintains models, builds, and helper scripts. An alternative shared installation can be selected with `--remote-workdir /absolute/path`.
 
 Each distinct remote Unix account gets its own Slurm allocations and `$HOME/.cache/llm-away` state/logs. Users sharing the same remote account also share that state. Other users need read/traverse access to the shared model directories and read/execute access to the runtime; setup reports access failures before saving. Model selection lists the presets already installed there. No permissions are broadened by local setup.
 
@@ -432,7 +432,7 @@ provider. Send a small prompt through `codex-away` to check end-to-end inference
 
 ## Hydra container toolchain
 
-Hydra uses the Lustre checkout at `/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY/remote`.
+Hydra uses the Lustre checkout at `/lustre/alice/users/csonnab/LLM-AWAY/remote`.
 Use `bin/hydra-build rocm` or `bin/hydra-build cuda` in the remote project; do not load host modules inside containers.
 The CUDA Torch image lacks compilers. The H200 profile now uses the upstream prebuilt `llama-server-cuda.sif`; pull it as documented below.
 A source-build alternative is provided in `containers/cuda-devel.def`.
@@ -442,7 +442,7 @@ See the remote repository’s `docs/hydra-containers.md` for the commands.
 
 Both Hydra profiles now use prebuilt llama.cpp server images. On agent startup,
 missing SIF images are downloaded on the login host before GPUs are allocated,
-then cached in `/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY/remote/containers` as
+then cached in `/lustre/alice/users/csonnab/LLM-AWAY/remote/containers` as
 `llama-server-cuda.sif` and `llama-server-rocm.sif`. Existing nonempty images are
 reused, never silently refreshed. Downloads are locked and published atomically.
 To change storage or pin an image version, edit the host profile's `container`

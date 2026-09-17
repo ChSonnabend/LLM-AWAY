@@ -98,12 +98,12 @@ class ProtocolTests(unittest.TestCase):
         call = parse_tool_call(
             "I'll inspect it.\n"
             "<tool_call> function=exec <parameter=command> "
-            "ls -la /home/chris/alice/misc/LLM_EPN "
+            "ls -la /home/chris/LLM-AWAY/local "
             "</parameter> </function>"
         )
 
         self.assertEqual(call["name"], "exec")
-        self.assertEqual(call["arguments"]["command"], "ls -la /home/chris/alice/misc/LLM_EPN")
+        self.assertEqual(call["arguments"]["command"], "ls -la /home/chris/LLM-AWAY/local")
 
     def test_parse_nested_qwen_tool_calls(self):
         calls = parse_tool_calls(

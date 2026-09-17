@@ -80,7 +80,7 @@ class HostConfig:
 class RemoteConfig:
     runner: str = "$HOME/.local/bin/llm-away-slurm-run"
     serverctl: str = "$HOME/.local/bin/llm-away-serverctl"
-    workdir: str = "/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY/remote"
+    workdir: str = "/scratch/csonnabe/LLM-AWAY/remote"
     state_dir: str = "$HOME/.cache/llm-away"
 
 

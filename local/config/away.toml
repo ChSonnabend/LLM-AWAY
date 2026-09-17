@@ -33,9 +33,9 @@ retries = 2
 retry_delay_seconds = 2
 
 [remote]
-runner = "/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY/remote/scripts/remote/llm-away-slurm-run"
-serverctl = "/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY/remote/scripts/remote/llm-away-serverctl"
-workdir = "/scratch/csonnabe/cern-fellowship/misc/LLM-AWAY/remote"
+runner = "/scratch/csonnabe/LLM-AWAY/remote/scripts/remote/llm-away-slurm-run"
+serverctl = "/scratch/csonnabe/LLM-AWAY/remote/scripts/remote/llm-away-serverctl"
+workdir = "/scratch/csonnabe/LLM-AWAY/remote"
 state_dir = "$HOME/.cache/llm-away"
 
 [slurm]
@@ -66,14 +66,14 @@ mi50_fallback = false
 nodes = 1
 gpus = 4
 backend = "cuda"
-container = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY/remote/containers/llama-server-cuda.sif"
+container = "/lustre/alice/users/csonnab/LLM-AWAY/remote/containers/llama-server-cuda.sif"
 container_source = "docker://ghcr.io/ggml-org/llama.cpp:server-cuda"
 rocm_arch = "auto"
 # Keep the GPU mask assigned by Slurm.
 visible_devices = ""
-remote_workdir = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY/remote"
-runner = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY/remote/scripts/remote/llm-away-slurm-run"
-serverctl = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY/remote/scripts/remote/llm-away-serverctl"
+remote_workdir = "/lustre/alice/users/csonnab/LLM-AWAY/remote"
+runner = "/lustre/alice/users/csonnab/LLM-AWAY/remote/scripts/remote/llm-away-slurm-run"
+serverctl = "/lustre/alice/users/csonnab/LLM-AWAY/remote/scripts/remote/llm-away-serverctl"
 # Login-host /u home paths are unavailable on Hydra GPU nodes.
 state_dir = "/lustre/alice/users/csonnab/.cache/llm-away/hydra-h200"
 custom_options = ["--cpus-per-task=16", "--mem=64G", "--time=02:00:00"]
@@ -87,14 +87,14 @@ mi50_fallback = false
 nodes = 1
 gpus = 8
 backend = "rocm"
-container = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY/remote/containers/llama-server-rocm.sif"
+container = "/lustre/alice/users/csonnab/LLM-AWAY/remote/containers/llama-server-rocm.sif"
 container_source = "docker://ghcr.io/ggml-org/llama.cpp:server-rocm"
 rocm_arch = "gfx908"
 # Keep the GPU mask assigned by Slurm.
 visible_devices = ""
-remote_workdir = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY/remote"
-runner = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY/remote/scripts/remote/llm-away-slurm-run"
-serverctl = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY/remote/scripts/remote/llm-away-serverctl"
+remote_workdir = "/lustre/alice/users/csonnab/LLM-AWAY/remote"
+runner = "/lustre/alice/users/csonnab/LLM-AWAY/remote/scripts/remote/llm-away-slurm-run"
+serverctl = "/lustre/alice/users/csonnab/LLM-AWAY/remote/scripts/remote/llm-away-serverctl"
 state_dir = "/lustre/alice/users/csonnab/.cache/llm-away/hydra-mi100"
 custom_options = ["--cpus-per-task=16", "--mem=64G", "--time=02:00:00"]
 
