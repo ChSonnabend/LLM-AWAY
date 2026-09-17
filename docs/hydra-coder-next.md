@@ -13,7 +13,6 @@ The local gateway overrides the preset context: set the selected host's `llamacp
 
 Context management should happen between requests: retain instructions and recent turns, summarize older messages, then send the shorter history. Existing gateway character truncation is lossy deletion, not a token-aware summary. These hybrid-model presets disable runtime context shifting; do not assume shifting the live KV cache is supported. Summarization requires another inference request but does not require restarting the server.
 
-The existing `qwen3.8-flash-next-125b-ultralite-37g` preset requires its publisher's patched llama.cpp; stock images cannot read its custom tensor layout. See https://huggingface.co/0xKitkat/Qwen3.8-Flash-Next-125B-UltraLite-37GiB-GGUF .
 
 ## MTP
 

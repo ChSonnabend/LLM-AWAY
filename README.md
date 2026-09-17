@@ -224,13 +224,13 @@ For DeepSeek-V2.5, keep `LLAMACPP_SPLIT_MODE=layer`. Current llama.cpp tensor
 parallel mode does not support the `DeepSeek2` architecture, so layer splitting
 is the compatible multi-GPU mode for that model.
 
-The old DeepSeek-specific scripts still exist as compatibility wrappers:
+Use the generic commands instead of the removed legacy wrappers:
 
 ```bash
-./download-deepseek-v25-q4km.sh
-./build-llama-rocm-gfx906.sh
-./run-deepseek-v25-cli.sh
-./run-deepseek-v25-server.sh
+MODEL_NAME=deepseek-v2.5-q4km bin/download-model
+LLAMACPP_BACKEND=rocm LLAMACPP_ROCM_ARCH=gfx906 bin/build-llama
+MODEL_NAME=deepseek-v2.5-q4km bin/run-cli
+MODEL_NAME=deepseek-v2.5-q4km bin/run-server
 ```
 
 <!-- BEGIN AWAY SETUP -->
