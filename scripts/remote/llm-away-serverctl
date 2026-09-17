@@ -267,6 +267,7 @@ def submit():
     script = """#!/usr/bin/env bash
 {sbatch_opts}
 #SBATCH -J llm-away-{model_name}
+#SBATCH --chdir={workdir_q}
 #SBATCH -o {log_q}
 #SBATCH -e {log_q}
 
