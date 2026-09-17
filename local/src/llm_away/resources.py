@@ -302,7 +302,13 @@ def run_agent(args):
                 if time.time()>deadline:raise TimeoutError('Model startup timed out')
                 time.sleep(1)
             from .cli import remote_model_catalog
-            catalog=path/'models.json';write(catalog,remote_model_catalog(model['alias'],min(cfg.codex.context_window,cfg.llamacpp.context_size),cfg.codex) if cfg.codex.custom_metadata else {'models':[]})
+            catalog_data=remote_model_catalog(model['alias'],min(cfg.codex.context_window,cfg.llamacpp.context_size),cfg.codex)
+            if not cfg.codex.custom_metadata:
+                # Codex requires a nonempty catalog. An unmatched, hidden entry
+                # preserves its fallback metadata for the requested "model".
+                catalog_data['models'][0]['slug']='remote-catalog-placeholder'
+                catalog_data['models'][0]['visibility']='hide'
+            catalog=path/'models.json';write(catalog,catalog_data)
             # Per-process overrides keep simultaneous sessions out of global Codex settings.
             command=['codex','--no-alt-screen','-c','model_provider="remote_resource"','-c','model="model"',
                      '-c','model_providers.remote_resource.name="Remote resource"',
