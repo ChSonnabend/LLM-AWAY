@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Persistent Kubernetes Job controller, using the gateway's JSON protocol."""
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import time
+import uuid
+
+command = sys.argv[1] if len(sys.argv) > 1 else ''
+if len(sys.argv) != 3 or sys.argv[2] != '--json':
+    sys.exit('Usage: llm-away-k8sctl ensure|status|cancel|log --json')
+p = json.load(sys.stdin)
+k = p['kubernetes']
+llama = p['llamacpp']
+state_dir = Path(os.path.expandvars(p['state_dir'])).expanduser()
+state_dir.mkdir(parents=True, exist_ok=True)
+key = hashlib.sha256((p.get('model','')+'|'+k.get('context','')+'|'+k['namespace']).encode()).hexdigest()[:24]
+state_file = state_dir / (key+'.json')
+base = ['kubectl']
+if k.get('context'):
+    base += ['--context', k['context']]
+base += ['--namespace', k['namespace']]
+
+def run(args, data=None):
+    result = subprocess.run(base+args, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            universal_newlines=True, timeout=60)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+    return result.stdout
+
+def read():
+    return json.loads(state_file.read_text()) if state_file.exists() else {}
+
+def write(state):
+    temp = state_file.with_suffix('.tmp')
+    temp.write_text(json.dumps(state))
+    os.replace(str(temp), str(state_file))
+
+def owned_job(name):
+    data = run(['get','job',name,'--ignore-not-found','-o','json'])
+    if not data.strip():
+        return None
+    job = json.loads(data)
+    if job['metadata'].get('labels',{}).get('llm-away-owner') != key:
+        raise RuntimeError('Refusing to modify an unrelated Kubernetes Job')
+    return job
+
+def status():
+    state = read()
+    state.update(active=False, slurm_state='', reason='')
+    state.pop('host', None)
+    if not state.get('job_id'):
+        return state
+    job = owned_job(state['job_id'])
+    if not job:
+        return state
+    state['active'] = True
+    pods = json.loads(run(['get','pods','-l','job-name='+state['job_id'],'-o','json']))['items']
+    state['slurm_state'] = 'PENDING'
+    if pods:
+        pod = sorted(pods,key=lambda x:x['metadata'].get('creationTimestamp',''))[-1]
+        phase = pod.get('status',{}).get('phase','Pending')
+        state['host'] = pod['metadata']['name'] if phase == 'Running' else ''
+        state['slurm_state'] = {'Running':'RUNNING','Pending':'PENDING'}.get(phase,phase.upper())
+        state['reason'] = pod.get('status',{}).get('message','')
+        for item in pod.get('status',{}).get('containerStatuses',[]):
+            waiting = item.get('state',{}).get('waiting',{})
+            if waiting:
+                state['reason'] = waiting.get('reason','')+': '+waiting.get('message','')
+        if not state['reason']:
+            state['reason'] = '; '.join(c.get('message','') for c in pod.get('status',{}).get('conditions',[]) if c.get('status') == 'False')
+        if phase in ('Failed','Succeeded'):
+            state['active'] = False
+    if any(c.get('type') in ('Failed','Complete') and c.get('status') == 'True' for c in job.get('status',{}).get('conditions',[])):
+        state['active'] = False
+    state['log_path'] = 'kubectl logs job/'+state['job_id']
+    return state
+
+def ensure():
+    current = status()
+    fingerprint = hashlib.sha256(json.dumps({'llama':llama,'k':k,'gpus':p.get('gpus'),'port':p['server_port']},sort_keys=True).encode()).hexdigest()
+    if current.get('active') and not p.get('force_new_job'):
+        if current.get('fingerprint') != fingerprint:
+            raise RuntimeError('Running job has different settings; cancel it before restarting')
+        return current
+    if int(p.get('nodes',1)) != 1:
+        raise ValueError('Kubernetes backend runs one model on one GPU node; nodes must be 1')
+    image = k.get('image','')
+    if not image or image.startswith('/') or image.endswith('.sif'):
+        raise ValueError('Kubernetes requires a registry OCI image, not a local container file')
+    root = p['remote_workdir']
+    if not os.path.isabs(root):
+        raise ValueError('Remote workdir must be absolute')
+    model = re.sub('[^a-z0-9-]','-',p.get('model','model').lower())[:30].strip('-') or 'model'
+    name = 'llm-away-'+model+'-'+uuid.uuid4().hex[:10]
+    env = {'MODEL_NAME':llama.get('model_name') or p['model'], 'LLAMACPP_BACKEND':llama['backend'],
+           'LLAMACPP_ROCM_ARCH':llama.get('rocm_arch','auto'), 'LLAMACPP_HOST':'0.0.0.0',
+           'LLAMACPP_PORT':str(p['server_port']), 'LLAMACPP_CTX_SIZE':str(llama.get('context_size',8192)),
+           'LLAMACPP_MTP':llama.get('mtp','auto'), 'LLAMACPP_IN_CONTAINER':'1'}
+    # The pod uses the bundled model recipes and container-native server binary.
+    args = [llama.get('server_cli','bin/run-server'),'--ctx-size',str(llama.get('context_size',8192))]
+    args += llama.get('server_extra_args',[])
+    if llama.get('server_command') or llama.get('model_path'):
+        raise ValueError('Kubernetes currently requires a managed model preset')
+    volume = {'name':'project'}
+    if k.get('pvc'):
+        volume['persistentVolumeClaim'] = {'claimName':k['pvc'], 'readOnly':True}
+    else:
+        volume['hostPath'] = {'path':root,'type':'Directory'}
+    limits = {'cpu':k.get('cpu','8'),'memory':k.get('memory','64Gi')}
+    if int(p.get('gpus',0)):
+        limits[k.get('gpu_resource','nvidia.com/gpu')] = int(p['gpus'])
+    manifest = {'apiVersion':'batch/v1','kind':'Job','metadata':{'name':name,'labels':{'llm-away-owner':key}},
+        'spec':{'backoffLimit':0,'template':{'metadata':{'labels':{'llm-away-owner':key}},'spec':{
+          'restartPolicy':'Never','automountServiceAccountToken':False,
+          'containers':[{'name':'server','image':image,'workingDir':root,
+            'command':['/bin/bash','--noprofile','--norc','-c','exec '+' '.join(shlex.quote(x) for x in args)],
+            'env':[{'name':a,'value':b} for a,b in env.items()],
+            'resources':{'limits':limits},'volumeMounts':[{'name':'project','mountPath':root,'readOnly':True}]}],
+          'volumes':[volume]}}}}
+    run(['create','-f','-'],json.dumps(manifest))
+    write({'job_id':name,'model':p['model'],'server_port':p['server_port'],'fingerprint':fingerprint,'submitted_at':int(time.time())})
+    return status()
+
+try:
+    with open(str(state_file)+'.lock','a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        if command == 'ensure':
+            result = ensure()
+        elif command == 'status':
+            result = status()
+        elif command == 'cancel':
+            state = read()
+            name = p.get('job_id') or state.get('job_id')
+            if name and owned_job(name):
+                run(['delete','job',name,'--wait=false'])
+            if name == state.get('job_id'):
+                write({})
+            result = status()
+        elif command == 'log':
+            state = read()
+            data = run(['logs','job/'+state['job_id'],'--all-containers=true']) if state.get('job_id') else ''
+            offset = int(p.get('log_offset',0))
+            if offset > len(data): offset = 0
+            result = {'offset':len(data),'data':data[offset:]}
+        else:
+            raise ValueError('Unknown command: '+command)
+        print(json.dumps(result))
+except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+    sys.exit(str(exc))

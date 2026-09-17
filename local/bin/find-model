@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""find-model: search Hugging Face for GGUF models, list quantizations and MTP drafts,
+download the chosen files, and register a preset for the AWAY model catalog.
+
+Interactive mode (default):
+    find-model qwen3            # keyword search, then guided download
+Non-interactive (for scripts):
+    find-model --repo ggml-org/Some-Model-GGUF --quant Q4_K_M [--mtp]
+              [--alias my-preset] [--no-preset] [--dry-run]
+
+Runs on the AWAY host. `download-away-model` ships this script over SSH stdin as
+`python3 - <remote workdir> [keyword] [options]`, so the remote only needs
+Python 3.9 (the `from __future__ import annotations` import keeps the PEP 604
+annotations above from being evaluated at runtime).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+HF_API = "https://huggingface.co/api"
+QUANT_SUFFIX = re.compile(
+    r"-(F16|BF16|F32|Q2_K|Q3_K_S|Q3_K_M|Q3_K_L|Q4_0|Q4_1|Q4_K_S|Q4_K_M|Q5_0|Q5_1|"
+    r"Q5_K_M|Q6_K|Q8_0|IQ1_S|IQ2_XXS|IQ2_XS|IQ3_XXS|IQ3_XS|IQ4_XS|IQ4_NL|IQ1_M|"
+    r"MQ1|MQ2|MQ3|MQ4)(?=[-._\s]|$)")
+MTP_HINT = re.compile(r"(^|/|-|_)(mtp|draft|spec|eagle|nextn|predictor|decoder)\b", re.I)
+EXTRA_PREFIX = re.compile(r"^mmproj-|^clip-|^bert-|^tts-", re.I)
+
+
+# ------------------------------------------------------------------ HTTP
+
+
+def http_json(url: str):
+    request = urllib.request.Request(url, headers={"User-Agent": "llm-away-find-model/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError) as exc:
+        raise SystemExit(f"Network request failed ({url}): {exc}") from exc
+
+
+def http_stream(url: str, destination: Path) -> None:
+    request = urllib.request.Request(url, headers={"User-Agent": "llm-away-find-model/1.0"})
+    try:
+        response = urllib.request.urlopen(request, timeout=120)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+        raise SystemExit(f"Download failed ({url}): {exc}") from exc
+    total = int(response.headers.get("Content-Length") or 0)
+    with response, open(destination, "wb") as handle:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            handle.write(chunk)
+            if total:
+                print(f"\r  {destination.name}: {handle.tell() / total * 100:5.1f} %",
+                      end="", flush=True)
+    print()
+
+
+# ------------------------------------------------------------- listings
+
+
+def search_repos(keyword: str) -> list[dict]:
+    url = f"{HF_API}/models?search={urllib.parse.quote(keyword)}&limit=40"
+    results = []
+    for repo in http_json(url):
+        if not isinstance(repo, dict) or not repo.get("id"):
+            continue
+        results.append({"id": repo["id"],
+                        "downloads": int(repo.get("downloads") or 0),
+                        "likes": int(repo.get("likes") or 0)})
+    results.sort(key=lambda repo: (repo["downloads"], repo["likes"]), reverse=True)
+    return results
+
+
+def repo_siblings(repo_id: str) -> list[str]:
+    url = f"{HF_API}/models/{urllib.parse.quote(repo_id, safe='/')}"
+    data = http_json(url)
+    return [node["rfilename"] for node in data.get("siblings", [])
+            if node.get("rfilename")]
+
+
+def repo_files(repo_id: str) -> list[dict]:
+    return [{"path": name} for name in repo_siblings(repo_id)
+            if name.lower().endswith(".gguf")
+            and not EXTRA_PREFIX.search(name)
+            and not MTP_HINT.search(name)]
+
+
+def file_sizes(repo_id: str, paths: list[str]) -> dict[str, int]:
+    sizes = {}
+    for path in paths:
+        url = (f"{HF_API}/models/{urllib.parse.quote(repo_id, safe='/')}"
+               f"/resolve/main/{urllib.parse.quote(path)}")
+        request = urllib.request.Request(url, method="HEAD",
+                                         headers={"User-Agent": "llm-away-find-model/1.0"})
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                sizes[path] = int(response.headers.get("Content-Length") or 0)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+            sizes[path] = 0
+    return sizes
+
+
+def quant_label(path: str) -> str | None:
+    match = QUANT_SUFFIX.search(Path(path).name)
+    return match.group(1) if match else None
+
+
+def group_by_quant(files: list[dict]) -> dict[str, list[dict]]:
+    groups: dict[str, list[dict]] = {}
+    for file in files:
+        groups.setdefault(quant_label(file["path"]) or "other", []).append(file)
+    return groups
+
+
+def mtp_candidates(repo_id: str) -> list[dict]:
+    return [{"path": name} for name in repo_siblings(repo_id)
+            if name.lower().endswith(".gguf")
+            and MTP_HINT.search(name)
+            and not EXTRA_PREFIX.search(name)]
+
+
+def human_size(n: int) -> str:
+    return f"{n / 1024 ** 3:.1f} GiB" if n else "unknown"
+
+
+# ---------------------------------------------------------- selection
+
+
+def choose_repo(keyword: str | None) -> str:
+    if not keyword:
+        return input("Hugging Face repository (owner/name): ").strip()
+    results = search_repos(keyword)
+    if not results:
+        print(f"No repositories matched '{keyword}'.")
+        keyword = input("New keyword (blank for manual name): ").strip() or None
+        return choose_repo(keyword)
+    print(f"Repositories matching '{keyword}' (most used first):")
+    for index, repo in enumerate(results, 1):
+        print(f"  {index}. {repo['id']}  ({repo['downloads']} downloads, {repo['likes']} likes)")
+    print("  0. type another keyword / manual name")
+    while True:
+        value = input("Choose a repository [1]: ").strip()
+        if value == "0":
+            return choose_repo(input("New keyword (blank for manual name): ").strip() or None)
+        if value.isdigit() and 1 <= int(value) <= len(results):
+            return results[int(value) - 1]["id"]
+        if re.fullmatch(r"[\w.-]+/[\w.-]+", value):
+            return value
+        print("Choose a listed number, 0, or a manual owner/name.")
+
+
+def choose_quant(groups: dict[str, list[dict]]) -> str:
+    options = sorted(groups, key=lambda q: -sum(1 for _ in groups[q]))
+    print("Available quantizations:")
+    for index, q in enumerate(options, 1):
+        print(f"  {index}. {q}  ({len(groups[q])} file(s))")
+    while True:
+        value = input("Choose quantization [1]: ").strip() or "1"
+        if value.isdigit() and 1 <= int(value) <= len(options):
+            return options[int(value) - 1]
+        print("Choose a listed number.")
+
+
+def choose_mtp(mtp_files: list[dict]) -> dict | None:
+    print("MTP/draft candidate(s) found:")
+    for index, file in enumerate(mtp_files, 1):
+        print(f"  {index}. {file['path']}")
+    value = input("Download an MTP draft? [0]: ").strip() or "0"
+    if value.isdigit() and 1 <= int(value) <= len(mtp_files):
+        return mtp_files[int(value) - 1]
+    return None
+
+
+# ---------------------------------------------------------- download
+
+
+def hf_local_dir(root: Path, repo_id: str) -> Path:
+    return root / "models" / (Path(repo_id).name + "-GGUF")
+
+
+def hf_include(paths: list[str]) -> str:
+    """Build HF_INCLUDE: a directory glob when all files share one directory."""
+    if len(paths) == 1:
+        return paths[0]
+    dirs = {Path(path).parent.name for path in paths}
+    if len(dirs) == 1:
+        return dirs.pop() + "/*"
+    return " ".join(paths)
+
+
+def download_files(repo_id: str, files: list[dict], root: Path) -> None:
+    destination_dir = hf_local_dir(root, repo_id)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    sizes = file_sizes(repo_id, [file["path"] for file in files])
+    cli = shutil.which("hf") or shutil.which("huggingface-cli")
+    for file in files:
+        size = sizes.get(file["path"], 0)
+        target = destination_dir / Path(file["path"]).name
+        if target.exists() and (not size or target.stat().st_size >= size):
+            print(f"  already present: {target.name} ({human_size(target.stat().st_size)})")
+            continue
+        print(f"  downloading {file['path']} ({human_size(size)})")
+        if cli:
+                result = subprocess.run(
+                    [cli, "download", repo_id, file["path"],
+                     "--local-dir", str(destination_dir)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    text=True)
+                if result.returncode:
+                    raise SystemExit(f"{cli} download failed: {result.stderr.strip()}")
+        else:
+            url = (f"https://huggingface.co/{urllib.parse.quote(repo_id, safe='/')}"
+                   f"/resolve/main/{urllib.parse.quote(file['path'])}")
+            http_stream(url, target)
+
+
+# ------------------------------------------------------------ preset
+
+
+def default_alias(repo_id: str, quant: str, mtp: bool) -> str:
+    base = re.sub(r"[-_]?gguf$", "", Path(repo_id).name, flags=re.I).lower()
+    base = re.sub(r"[\s.]+", "-", base).strip("-")
+    if quant and quant.lower() != "other":
+        return f"{base}-{quant.lower()}"
+    return base + ("_mtp" if mtp else "")
+
+
+def write_preset(root: Path, alias: str, repo_id: str, quant_files: list[dict],
+                 mtp_file: dict | None) -> Path:
+    preset_dir = root / "models" / alias
+    preset_dir.mkdir(parents=True, exist_ok=True)
+    gguf_dir = "models/" + (Path(repo_id).name + "-GGUF")
+    first = sorted(quant_files, key=lambda f: f["path"])[0]["path"]
+    first_name = Path(first).name
+    lines = [
+        f"MODEL_ALIAS={alias}",
+        f"MODEL_GGUF={gguf_dir}/{first_name}",
+        f"MODEL_GGUF_SOURCE={gguf_dir}/{first_name}",
+        "",
+        f"HF_REPO={repo_id}",
+        f"HF_INCLUDE={json.dumps(hf_include([f['path'] for f in quant_files] + ([mtp_file['path']] if mtp_file else [])))}",
+        f"HF_LOCAL_DIR={gguf_dir}",
+        "",
+        "LLAMACPP_SPLIT_MODE=layer",
+    ]
+    if mtp_file:
+        lines += [f"MODEL_DRAFT_GGUF={gguf_dir}/{Path(mtp_file['path']).name}",
+                  "LLAMACPP_SPEC_TYPE=draft-mtp",
+                  "LLAMACPP_SPEC_DRAFT_N_MAX=4"]
+    preset = preset_dir / "model.env"
+    if preset.exists():
+        shutil.move(str(preset), str(preset) + ".bak-" + time.strftime("%Y%m%d-%H%M%S"))
+    preset.write_text("\n".join(lines) + "\n")
+    print(f"\nPreset written to {preset}")
+    return preset
+
+
+# ---------------------------------------------------------- main
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("keyword", nargs="?", help="search keyword (e.g. 'qwen3 gguf')")
+    parser.add_argument("workdir", nargs="?",
+                        help="remote project root (positional form used by download-away-model over SSH stdin; "
+                             "equivalent to --root)")
+    parser.add_argument("--root",
+                        default=os.environ.get("AWAY_ROOT") or str(Path(__file__).resolve().parents[1]),
+                        help="remote project root (default: auto-detected)")
+    parser.add_argument("--repo", help="skip search; use this owner/name directly")
+    parser.add_argument("--quant", help="quantization label, e.g. Q4_K_M (skip prompt)")
+    parser.add_argument("--mtp", action="store_true",
+                        help="download the first MTP draft found (skip prompt)")
+    parser.add_argument("--no-mtp", action="store_true", help="never download an MTP draft")
+    parser.add_argument("--alias", help="preset directory name (default: derived)")
+    parser.add_argument("--no-preset", action="store_true",
+                        help="download only, do not create a preset")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    # download-away-model ships `python3 - <workdir> [keyword] [options]` over SSH stdin:
+    # with two positionals, the second is the project root, not a search keyword.
+    if args.keyword is not None and args.workdir is not None:
+        args.root, args.keyword = args.workdir, None
+    if args.root == parser.get_default("root") and args.workdir:
+        args.root = args.workdir
+
+    root = Path(os.path.expandvars(args.root)).expanduser().resolve()
+    if not (root / "scripts" / "lib" / "llamacpp-env.sh").is_file():
+        raise SystemExit(f"Not an LLM-AWAY-remote installation: {root}")
+
+    if args.repo:
+        repo_id = args.repo.strip()
+    elif args.keyword:
+        repo_id = choose_repo(args.keyword)
+    else:
+        keyword = input("Keyword to search for GGUF models (blank skips search): ").strip() or None
+        repo_id = choose_repo(keyword)
+
+    print(f"\nListing .gguf files in {repo_id} ...")
+    files = repo_files(repo_id)
+    if not files:
+        raise SystemExit(f"No .gguf files found in {repo_id}")
+    groups = group_by_quant(files)
+    mtp_files = mtp_candidates(repo_id)
+
+    if args.quant:
+        lowered = args.quant.lower()
+        quant = next((q for q in groups if q == args.quant or lowered in q.lower()), None)
+        if quant is None:
+            raise SystemExit("Quantization %s not in %s; available: %s"
+                             % (args.quant, repo_id, ", ".join(sorted(groups))))
+    elif args.keyword is not None or not sys.stdin.isatty():
+        quant = next(iter(groups)) if len(groups) == 1 else None
+        if quant is None:
+            print("Available quantizations: " + ", ".join(sorted(groups)))
+            raise SystemExit("Provide --quant to choose one")
+    else:
+        quant = choose_quant(groups)
+    quant_files = sorted(groups[quant], key=lambda f: f["path"])
+    print(f"\nSelected {quant}: {len(quant_files)} file(s)")
+    for file in quant_files:
+        print(f"  {file['path']}")
+
+    mtp_file = None
+    if not args.no_mtp and mtp_files and (args.mtp or sys.stdin.isatty()):
+        mtp_file = mtp_files[0] if args.mtp else choose_mtp(mtp_files)
+    if mtp_file:
+        print(f"MTP draft: {mtp_file['path']}")
+
+    if args.dry_run:
+        print(f"\nWould download {len(quant_files) + (1 if mtp_file else 0)} file(s) to "
+              f"{hf_local_dir(root, repo_id)}")
+        if not args.no_preset:
+            alias = args.alias or default_alias(repo_id, quant, bool(mtp_file))
+            print(f"Would create preset: models/{alias}/model.env")
+        return 0
+
+    download_files(repo_id, quant_files + ([mtp_file] if mtp_file else []), root)
+
+    if args.no_preset:
+        print("\nDownload complete (--no-preset: no preset created).")
+        return 0
+    alias = args.alias or default_alias(repo_id, quant, bool(mtp_file))
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", alias):
+        raise SystemExit(f"Invalid preset alias: {alias}")
+    write_preset(root, alias, repo_id, quant_files, mtp_file)
+    print("\nDone. The AWAY agent will list this preset on next model discovery.")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\nCanceled.", file=sys.stderr)
+        sys.exit(130)

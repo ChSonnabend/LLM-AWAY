@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Run the interactive GGUF downloader on the currently selected compute host.
+
+Usage: download-away-model [keyword] [options passed through to find-model]
+
+The command resolves the active AWAY host from config/away.toml, checks that
+bin/find-model exists there (uploading it when missing), and then starts
+find-model interactively. The model is downloaded into the remote project's
+models/ directory and registered as a preset the AWAY agent can discover.
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(root / "src"))
+from llm_away.config import load_config  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False)
+    parser.add_argument("keyword", nargs="?")
+    parser.add_argument("--config", default=str(root / "config/away.toml"))
+    parser.add_argument("-h", "--help", action="store_true")
+    args, forwarded = parser.parse_known_args()
+    if args.help:
+        parser.print_help()
+        return 0
+
+    try:
+        cfg = load_config(args.config)
+    except (ValueError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    script_path = root / "bin/find-model"
+    if not script_path.is_file():
+        print("bin/find-model is missing from this checkout.", file=sys.stderr)
+        return 1
+
+    # Run the downloader with the remote's interpreter: the local Python may not
+    # exist on the host (e.g. Homebrew paths), and the remote Python 3.9 is fine
+    # because find-model is 3.9-compatible.
+    remote_python = "python3"
+    command = [remote_python, "-", cfg.remote.workdir]
+    if args.keyword:
+        command.append(args.keyword)
+    command.extend(forwarded)
+
+    if cfg.ssh.connection == "local":
+        print("Model destination: this machine — " + cfg.remote.workdir, flush=True)
+        if not script_path.is_file():
+            print("bin/find-model is missing from this checkout.", file=sys.stderr)
+            return 1
+        try:
+            return subprocess.run(command, input=script_path.read_text(encoding="utf-8"),
+                                  text=True, cwd=str(root)).returncode
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+    print("Model destination: " + cfg.ssh.destination + " — " + cfg.remote.workdir, flush=True)
+    # Ship the script over SSH stdin so it does not depend on the local Python
+    # being installed on the remote (sys.executable may be a local-only path)
+    # and never leaves a stale copy on the shared host.
+    remote_command = " ".join(shlex.quote(part) for part in command)
+    try:
+        completed = subprocess.run(
+            ["ssh", "-o", f"ConnectTimeout={cfg.ssh.connect_timeout_seconds}",
+             cfg.ssh.destination, remote_command],
+            input=script_path.read_text(encoding="utf-8"), text=True)
+        return completed.returncode
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
