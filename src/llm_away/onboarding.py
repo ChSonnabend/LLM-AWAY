@@ -12,10 +12,33 @@ from .config import load_config, LlamaCppConfig, SlurmConfig, RemoteConfig, Kube
 from .host_store import apply_profile, read_store, write_store, store_path
 from .models import discover_models, choose_model, choose_mtp
 
+# AWAY compute node classes; used to interpret `epn???`-style SSH Host patterns.
+NODE_CLASSES = {'mi50': (0, 279), 'mi100': (280, 349)}
+
+
+def parse_node_alias(alias):
+    """Return (node_class, number) for concrete AWAY node aliases such as epn000."""
+    if not isinstance(alias, str):
+        return None
+    match = re.fullmatch(r'epn(\d+)', alias)
+    if not match:
+        return None
+    number = int(match.group(1))
+    for node_class, (low, high) in NODE_CLASSES.items():
+        if low <= number <= high:
+            return node_class, number
+    return None
+
+
+def pattern_matches(pattern, requested):
+    """True when a `?`-masked SSH Host pattern matches requested (e.g. epn??? / epn000)."""
+    return len(pattern) == len(requested) and all(
+        p == '?' or p == r for p, r in zip(pattern, requested))
+
 
 def ssh_hosts(path=None):
-    """Enumerate concrete Host aliases, including Include files; skip patterns."""
-    aliases, visited = [], set()
+    """Enumerate concrete Host aliases and usable patterns, including Include files."""
+    aliases, patterns, visited = [], [], set()
     def read(file):
         file = Path(file).expanduser().resolve()
         if file in visited or not file.is_file():
@@ -43,10 +66,17 @@ def ssh_hosts(path=None):
                         read(match)
             elif key.lower() == 'host':
                 for name in parts:
-                    if not any(c in name for c in '*?![') and name not in aliases:
+                    if name in aliases or name in patterns:
+                        continue
+                    # Skip bracket expressions and ?, but keep ?-masked patterns (epn???).
+                    if any(c in name for c in '*!['):
+                        continue
+                    if '?' in name:
+                        patterns.append(name)
+                    else:
                         aliases.append(name)
     read(path or Path.home() / '.ssh/config')
-    return aliases
+    return aliases, patterns
 
 
 def ask(label, default='', options=None):
@@ -59,21 +89,54 @@ def ask(label, default='', options=None):
         print('Choose ' + ', '.join(options))
 
 
-def select_host(aliases, current, requested=None):
+def select_host(aliases, current, requested=None, patterns=None):
+    patterns = patterns or []
     if not aliases:
         raise ValueError('No concrete SSH Host aliases found in ~/.ssh/config (including Include files)')
     if requested:
-        if requested not in aliases:
-            raise ValueError('SSH alias is not configured: ' + requested)
-        return requested
+        if requested in aliases:
+            return requested
+        matched_patterns = [pattern for pattern in patterns if pattern_matches(pattern, requested)]
+        if matched_patterns:
+            return choose_pattern_node(requested, matched_patterns)
+        raise ValueError('SSH alias is not configured: ' + requested)
     for i, alias in enumerate(aliases, 1):
         print(f'  {i}. {alias}')
+    if patterns:
+        print('  ' + ', '.join(patterns) + ' (AWAY node patterns)')
     while True:
         value = ask('SSH host (name or number)', current if current in aliases else aliases[0])
         if value.isdigit() and 1 <= int(value) <= len(aliases):
             return aliases[int(value)-1]
         if value in aliases:
             return value
+        matched = [pattern for pattern in patterns if pattern_matches(pattern, value)]
+        if matched:
+            return choose_pattern_node(value, matched)
+    return value
+
+
+def choose_pattern_node(requested, matched_patterns):
+    """Resolve a concrete node (e.g. epn000) entered for a pattern such as epn??? by
+    asking which node class it represents."""
+    if len(matched_patterns) > 1:
+        print('Matching SSH Host patterns: ' + ', '.join(matched_patterns))
+    node_info = parse_node_alias(requested)
+    if node_info is None:
+        # Not a recognized AWAY node name (epnNNN); accept it as-is.
+        return requested
+    node_class, number = node_info
+    low, high = NODE_CLASSES[node_class]
+    default = node_class
+    if number in (low, high):
+        # The node sits at a class boundary (e.g. epn279/epn280); confirm.
+        default = ''
+    chosen = ask(
+        'Host ' + requested + ' matches ' + ', '.join(matched_patterns)
+        + ' - which node class is it? (mi50=epn000-epn279, mi100=epn280-epn349)',
+        default, ('mi50', 'mi100'))
+    print('Using ' + requested + ' as a ' + chosen + ' node.')
+    return requested
 
 
 def remote_json(alias, script, *args, connection='ssh'):
@@ -110,7 +173,8 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
     cfg = load_config(config_path)
     store = read_store(config_path)
     connection = connection or ask('Connection: ssh or local', 'ssh' if alias else cfg.ssh.connection, ('ssh','local'))
-    alias = '@local' if connection == 'local' else select_host(ssh_hosts(), store.get('active') or cfg.ssh.host, alias)
+    aliases, patterns = ssh_hosts()
+    alias = '@local' if connection == 'local' else select_host(aliases, store.get('active') or cfg.ssh.host, alias, patterns)
     def inspect_host(script, *args):
         return remote_json(alias, script, *args, connection=connection)
     old = store['hosts'].get(alias)
