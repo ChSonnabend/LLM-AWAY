@@ -32,10 +32,10 @@ llamacpp_enter_container() {
     image_id=$(python3 "$ROOT_DIR/scripts/remote/ensure-container.py" "$image" "" docker) || exit $?
     local -a docker_args=(run --rm --init --user "$(id -u):$(id -g)" --workdir "$ROOT_DIR" --volume "$ROOT_DIR:$ROOT_DIR")
     if [[ -n ${LLAMACPP_PORT:-} ]]; then
-      docker_args+=(--publish "$LLAMACPP_PORT:$LLAMACPP_PORT")
+      docker_args+=(--publish "${LLAMACPP_PUBLISH_ADDRESS:+$LLAMACPP_PUBLISH_ADDRESS:}$LLAMACPP_PORT:$LLAMACPP_PORT")
     fi
     if [[ $backend == cuda ]]; then
-      [[ -n ${CUDA_VISIBLE_DEVICES:-} ]] || { echo "Docker CUDA requires a Slurm-assigned GPU mask" >&2; exit 2; }
+      [[ -n ${CUDA_VISIBLE_DEVICES:-} ]] || { echo "Docker CUDA requires explicit or scheduler-assigned GPU device IDs" >&2; exit 2; }
       docker_args+=(--gpus "\"device=$CUDA_VISIBLE_DEVICES\"")
       preserved+=(CUDA_VISIBLE_DEVICES= LLAMACPP_VISIBLE_DEVICES=)
     elif [[ $backend == rocm ]]; then

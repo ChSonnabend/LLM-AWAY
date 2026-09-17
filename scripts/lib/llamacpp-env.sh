@@ -79,7 +79,7 @@ llamacpp_ensure_hf_cli() {
 
   mkdir -p "$root/venvs"
   "$python" -m venv "$root/venvs/hf-download"
-  "$root/venvs/hf-download/bin/python" -m pip install -U pip huggingface_hub hf_xet
+  "$root/venvs/hf-download/bin/python" -m pip install -U pip huggingface_hub hf_xet >&2
 
   echo "$root/venvs/hf-download/bin/hf"
 }

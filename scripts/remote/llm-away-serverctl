@@ -171,7 +171,7 @@ def sbatch_options():
             if node_class == "mi100" and any(int(n[3:]) >= 280 for n in chosen):
                 opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=1")
         return "\n".join(opts)
-    if not gpus and payload.get("exclusive", True):
+    if payload.get("exclusive", True):
         opts.append("#SBATCH --exclusive")
     node_class = payload.get("node_class", "")
     custom = payload.get("custom_options") or []
