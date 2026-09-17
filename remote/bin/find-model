@@ -286,7 +286,7 @@ def main() -> int:
 
     root = Path(os.path.expandvars(args.root)).expanduser().resolve()
     if not (root / "scripts" / "lib" / "llamacpp-env.sh").is_file():
-        raise SystemExit(f"Not an LLM-AWAY-remote installation: {root}")
+        raise SystemExit(f"Not an LLM-AWAY/remote installation: {root}")
 
     if args.repo:
         repo_id = args.repo.strip()

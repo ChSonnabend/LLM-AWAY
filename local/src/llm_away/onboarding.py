@@ -124,7 +124,7 @@ def absolute(value):
 PROBE = '''import json, os, shutil, subprocess, sys
 root=sys.argv[1]
 if not all(os.path.isfile(root+'/'+p) for p in ['bin/run-server','scripts/lib/llamacpp-env.sh']):
-    sys.exit('Not an LLM-AWAY-remote installation: '+root)
+    sys.exit('Not an LLM-AWAY/remote installation: '+root)
 tools={n: bool(shutil.which(n)) for n in ['apptainer','docker','sbatch','kubectl','nvidia-smi','rocminfo']}
 parts=[]
 if tools['sbatch']:
@@ -152,7 +152,7 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
             defaults = cfg.with_host(alias)
         except ValueError:
             defaults = None
-        root = absolute(workdir or ask('Full path to LLM-AWAY-remote',
+        root = absolute(workdir or ask('Full path to LLM-AWAY/remote',
                         old['remote']['workdir'] if old else (defaults.remote.workdir if defaults else '')))
         info = inspect_host(PROBE, root)
         use_container = ask('Container required? yes/no', 'yes' if (old and old['llamacpp']['container']) or (defaults and defaults.llamacpp.container) else 'no', ('yes','no')) == 'yes'
