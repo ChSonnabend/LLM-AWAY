@@ -14,3 +14,16 @@ The local gateway overrides the preset context: set the selected host's `llamacp
 Context management should happen between requests: retain instructions and recent turns, summarize older messages, then send the shorter history. Existing gateway character truncation is lossy deletion, not a token-aware summary. These hybrid-model presets disable runtime context shifting; do not assume shifting the live KV cache is supported. Summarization requires another inference request but does not require restarting the server.
 
 The existing `qwen3.8-flash-next-125b-ultralite-37g` preset requires its publisher's patched llama.cpp; stock images cannot read its custom tensor layout. See https://huggingface.co/0xKitkat/Qwen3.8-Flash-Next-125B-UltraLite-37GiB-GGUF .
+
+## MTP
+
+The published Qwen3-Coder-Next checkpoint has no MTP/NextN tensors in its
+[weight index](https://huggingface.co/Qwen/Qwen3-Coder-Next/blob/main/model.safetensors.index.json).
+No compatible draft artifact was found in the Qwen, ggml-org or Unsloth GGUF
+repositories (checked 2026-09-17), so these presets deliberately leave MTP
+unconfigured. Qwen3-Next architecture support in llama.cpp alone does not supply
+missing trained weights. Do not substitute an unrelated model's MTP head.
+
+For supported presets, the default maximum draft length is now 8 tokens, including
+Qwen3.8-27B. This is a maximum proposal length, not a guarantee of eight accepted
+tokens or improved speed. Restart an existing server to apply it.

@@ -341,7 +341,7 @@ llamacpp_common_run_args() {
     draft_path=$(llamacpp_resolve_existing_path "$MODEL_DRAFT_GGUF" "draft model")
     printf '%s\n' --spec-draft-model "$draft_path"
     printf '%s\n' --spec-type "${LLAMACPP_SPEC_TYPE:-draft-mtp}"
-    printf '%s\n' --spec-draft-n-max "${LLAMACPP_SPEC_DRAFT_N_MAX:-3}"
+    printf '%s\n' --spec-draft-n-max "${LLAMACPP_SPEC_DRAFT_N_MAX:-8}"
     if [[ -n ${LLAMACPP_SPEC_DRAFT_N_MIN:-} ]]; then
       printf '%s\n' --spec-draft-n-min "$LLAMACPP_SPEC_DRAFT_N_MIN"
     fi

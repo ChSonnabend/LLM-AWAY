@@ -43,7 +43,7 @@ echo "split_mode=${LLAMACPP_SPLIT_MODE:-layer}"
 echo "tensor_split=${LLAMACPP_TENSOR_SPLIT:-auto}"
 if [[ -n $DRAFT_MODEL_PATH ]]; then
   echo "spec_type=${LLAMACPP_SPEC_TYPE:-draft-mtp}"
-  echo "spec_draft_n_max=${LLAMACPP_SPEC_DRAFT_N_MAX:-3}"
+  echo "spec_draft_n_max=${LLAMACPP_SPEC_DRAFT_N_MAX:-8}"
 fi
 
 if LLAMA_CLI=$(llamacpp_binary cli "$BACKEND" 2> /dev/null); then
