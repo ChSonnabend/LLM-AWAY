@@ -1,84 +1,94 @@
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
-import subprocess
+import io
 import tempfile
 import unittest
 from unittest.mock import patch
+
 from llm_away.config import load_config
+from llm_away.host_store import read_store, store_path
 from llm_away.onboarding import configure_local, select_host, pattern_matches
 
 
 class SelectHostTests(unittest.TestCase):
-    def test_question_mark_pattern_is_recognized(self):
-        self.assertTrue(pattern_matches('epn???', 'epn000'))
-        self.assertTrue(pattern_matches('epn???', 'epn280'))
+    def test_wildcards_and_stanza_exclusions(self):
+        self.assertTrue(pattern_matches('epn???', 'epn137'))
         self.assertFalse(pattern_matches('epn???', 'epnh'))
+        self.assertTrue(pattern_matches('gpu-* !gpu-admin', 'gpu-12'))
+        self.assertFalse(pattern_matches('gpu-* !gpu-admin', 'gpu-admin'))
 
-    def test_requested_node_under_pattern_is_accepted(self):
-        with patch('llm_away.onboarding.sys.stdin.isatty', return_value=True), \
-             patch('builtins.input', return_value='mi50'):
-            self.assertEqual(select_host(['epnh'], '', requested='epn000', patterns=['epn???']), 'epn000')
+    def test_requested_nodes_have_no_special_class_questions(self):
+        with patch('llm_away.onboarding.ask') as ask:
+            for alias in ('epn000', 'epn137', 'epn279', 'epn280', 'epn349'):
+                self.assertEqual(select_host([], '', requested=alias, patterns=['epn???']), alias)
+            ask.assert_not_called()
 
-    def test_node_matching_pattern_is_accepted_interactively(self):
-        with patch('llm_away.onboarding.sys.stdin.isatty', return_value=True), \
-             patch('builtins.input', side_effect=['epn000', 'mi50']):
-            self.assertEqual(select_host(['epnh'], 'epnh', patterns=['epn???']), 'epn000')
+    def test_pattern_selection_asks_for_concrete_hostname(self):
+        with patch('llm_away.onboarding.choose_option', return_value=1), \
+             patch('llm_away.onboarding.ask', return_value='epn137'):
+            self.assertEqual(select_host(['epnh'], 'epnh', patterns=['epn???']), 'epn137')
 
-    def test_unknown_alias_still_rejected(self):
-        with self.assertRaisesRegex(ValueError, 'not configured'):
-            select_host(['epnh'], '', requested='nope123', patterns=['epn???'])
-
-    def test_node_class_question_is_asked(self):
-        with patch('llm_away.onboarding.sys.stdin.isatty', return_value=True), \
-             patch('builtins.input', side_effect=['mi50']) as prompt:
-            select_host(['epnh'], '', requested='epn000', patterns=['epn???'])
-        self.assertIn('which node class', prompt.call_args.args[0])
-        self.assertIn('epn000', prompt.call_args.args[0])
-
-    def test_boundary_node_has_no_default(self):
-        with patch('llm_away.onboarding.sys.stdin.isatty', return_value=True), \
-             patch('builtins.input', side_effect=['mi100']) as prompt:
-            select_host(['epnh'], '', requested='epn280', patterns=['epn???'])
-        self.assertNotIn('[mi50]', prompt.call_args.args[0])
-        self.assertNotIn('[mi100]', prompt.call_args.args[0])
-
-    def test_non_away_name_under_pattern_is_accepted_without_question(self):
-        with patch('llm_away.onboarding.sys.stdin.isatty', return_value=True), \
-             patch('builtins.input', return_value='epnxyz') as prompt:
-            self.assertEqual(select_host(['epnh'], '', requested='epnxyz', patterns=['epn???']), 'epnxyz')
-        self.assertEqual(prompt.call_count, 0)
+    def test_unknown_or_excluded_alias_is_rejected(self):
+        for alias in ('other123', 'gpu-admin'):
+            with self.assertRaisesRegex(ValueError, 'not configured'):
+                select_host([], '', requested=alias, patterns=['gpu-* !gpu-admin'])
 
 
 class OnboardingTests(unittest.TestCase):
-    def test_alias_uses_own_account_and_shared_models(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path=Path(tmp)/'config.toml'
-            path.write_text('[ssh]\nhost="old"\nuser="previous-user"\n[model]\nname="keep-me"\n')
-            with patch('llm_away.onboarding.subprocess.run', return_value=subprocess.CompletedProcess([],0,'','')) as run:
-                configure_local(str(path), 'my-away')
-            cfg=load_config(path)
-            self.assertEqual(cfg.ssh.host,'my-away')
-            self.assertEqual(cfg.ssh.user,'')
-            self.assertEqual(cfg.remote.workdir,SHARED_WORKDIR)
-            self.assertEqual(cfg.remote.state_dir,'$HOME/.cache/llm-away')
-            self.assertEqual(cfg.remote.serverctl,SHARED_WORKDIR+'/scripts/remote/llm-away-serverctl')
-            self.assertEqual(cfg.model.name,'keep-me')
-            self.assertFalse(cfg.llamacpp.build_before_run)
-            self.assertIn('my-away',run.call_args.args[0])
-            self.assertTrue(list(Path(tmp).glob('*.backup-*')))
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / 'config.toml'
+        self.path.write_text('[ssh]\nhost="epnh"\nuser="previous-user"\n')
+        self.probe = {'tools': dict.fromkeys(
+            ('apptainer', 'docker', 'sbatch', 'kubectl', 'nvidia-smi', 'rocminfo'), False),
+            'partitions': []}
+        self.model = {'name': 'm', 'alias': 'm', 'path': '/p/m.gguf', 'size_bytes': 1}
 
-    def test_inaccessible_shared_installation_does_not_save(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path=Path(tmp)/'config.toml';path.write_text('[ssh]\nhost="old"\n')
-            before=path.read_bytes()
-            with patch('llm_away.onboarding.subprocess.run',return_value=subprocess.CompletedProcess([],1,'','Permission denied')):
-                with self.assertRaisesRegex(ValueError,'Cannot access'):
-                    configure_local(str(path),'my-away')
-            self.assertEqual(path.read_bytes(),before)
+    def mocks(self, stack, answers):
+        stack.enter_context(patch('llm_away.onboarding.ask', side_effect=answers))
+        stack.enter_context(patch('llm_away.onboarding.ssh_hosts', return_value=([], ['epn???'])))
+        remote = stack.enter_context(patch('llm_away.onboarding.remote_json', return_value=self.probe))
+        stack.enter_context(patch('llm_away.onboarding.discover_models', return_value=[self.model]))
+        stack.enter_context(patch('llm_away.onboarding.choose_model', return_value=self.model))
+        stack.enter_context(patch('llm_away.onboarding.choose_mtp', return_value='auto'))
+        return remote
 
-    def test_interactive_alias_prompt(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path=Path(tmp)/'config.toml';path.write_text('[ssh]\nhost="epnh"\n')
-            with patch('llm_away.onboarding.sys.stdin.isatty',return_value=True), patch('builtins.input',return_value='alice-away') as prompt, patch('llm_away.onboarding.subprocess.run',return_value=subprocess.CompletedProcess([],0,'','')):
-                configure_local(str(path))
-            self.assertIn('~/.ssh/config',prompt.call_args.args[0])
-            self.assertEqual(load_config(path).ssh.host,'alice-away')
+    def configure_direct(self):
+        with ExitStack() as stack:
+            self.mocks(stack, ['/scratch/x/remote', 'no', 'direct', 'rocm', 'gfx906', '8', '0,1,2,3,4,5,6,7'])
+            configure_local(str(self.path), alias='epn137', connection='ssh')
+
+    def test_direct_profile_is_saved_without_changing_base_config(self):
+        original = self.path.read_bytes()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.configure_direct()
+        cfg = load_config(self.path)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(cfg.ssh.host, 'epn137')
+        self.assertEqual(cfg.ssh.user, '')
+        self.assertEqual(cfg.backend_type, 'direct')
+        self.assertEqual(cfg.remote.serverctl, '/scratch/x/remote/scripts/remote/llm-away-directctl')
+        self.assertEqual(cfg.model.name, 'm')
+        self.assertIn('no Slurm job will be submitted', output.getvalue())
+        self.assertIn('epn137', output.getvalue())
+
+    def test_failed_inspection_does_not_save(self):
+        original = self.path.read_bytes()
+        with ExitStack() as stack:
+            remote = self.mocks(stack, ['/scratch/x/remote'])
+            remote.side_effect = ValueError('Remote inspection failed: Permission denied')
+            with self.assertRaisesRegex(ValueError, 'Permission denied'):
+                configure_local(str(self.path), alias='epn137', connection='ssh')
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertFalse(store_path(self.path).exists())
+
+    def test_known_host_reuses_settings_without_setup_questions(self):
+        self.configure_direct()
+        previous = read_store(self.path)['hosts']['epn137']
+        with ExitStack() as stack:
+            remote = self.mocks(stack, [])
+            configure_local(str(self.path), alias='epn137', connection='ssh')
+            remote.assert_not_called()
+        self.assertEqual(read_store(self.path)['hosts']['epn137'], previous)

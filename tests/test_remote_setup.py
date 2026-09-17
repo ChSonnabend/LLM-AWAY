@@ -6,7 +6,7 @@ import unittest
 
 
 SETUP = Path(__file__).resolve().parents[1] / "scripts/remote/setup.sh"
-HELPERS = ("llm-away-slurm-run", "llm-away-serverctl")
+HELPERS = ("llm-away-slurm-run", "llm-away-serverctl", "llm-away-directctl", "llm-away-k8sctl", "ensure-container.py")
 
 
 class RemoteSetupTests(unittest.TestCase):

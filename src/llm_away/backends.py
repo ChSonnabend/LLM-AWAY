@@ -125,6 +125,10 @@ class SubprocessSlurmSshBackend(SlurmSshBackend):
 class SlurmServerBackend(Backend):
     def __init__(self, config: AppConfig):
         self.config = config
+        # Direct mode runs the server on the connected host itself: it never submits a
+        # Slurm allocation, so there is no scheduler job to name; the remote helper
+        # reports the local server process PID in "job_id" instead.
+        self.direct_mode = config.backend_type == "direct"
         self.local_port = config.gateway.local_port or self.find_free_port()
         self.job_port: int | None = None
         self.slurm_nodes: int | None = None
@@ -178,14 +182,21 @@ class SlurmServerBackend(Backend):
                 self._reused_job = False
                 self._log_offset = 0
                 if self._owned_job_id:
-                    print(f"llm-away: submitted new Slurm job {self._owned_job_id} (remote port {self.job_port})", file=sys.stderr)
+                    if self.direct_mode:
+                        print(f"llm-away: direct server process {self._owned_job_id} on remote port {self.job_port} (no Slurm job submitted)", file=sys.stderr)
+                    else:
+                        print(f"llm-away: submitted new Slurm job {self._owned_job_id} (remote port {self.job_port})", file=sys.stderr)
             else:
                 state = self.serverctl("ensure", model)
                 self._reused_job = bool(before.get("active") and state.get("active"))
                 if not before.get("active") and state.get("active") and state.get("job_id"):
                     self._owned_job_id = str(state["job_id"])
                     self._log_offset = 0
-                    print(f"llm-away: submitted Slurm job {self._owned_job_id}", file=sys.stderr)
+                    if self.direct_mode:
+                        print(f"llm-away: direct access to {self.config.ssh.destination}; no Slurm job is allocated "
+                              f"(server process {self._owned_job_id} started directly on the host)", file=sys.stderr)
+                    else:
+                        print(f"llm-away: submitted Slurm job {self._owned_job_id}", file=sys.stderr)
             deadline = time.time() + self.config.gateway.startup_timeout_seconds
 
             last_phase = None
@@ -194,7 +205,11 @@ class SlurmServerBackend(Backend):
                 phase = state.get("slurm_state")
                 progress = (phase, state.get("reason"))
                 if phase and progress != last_phase:
-                    print(f"llm-away: Slurm job {state.get('job_id')}: {phase} ({state.get('reason') or 'no reason reported'})", file=sys.stderr)
+                    job_id = state.get("job_id")
+                    if self.direct_mode:
+                        print(f"llm-away: direct server process {job_id}: {phase} ({state.get('reason') or 'no reason reported'})", file=sys.stderr)
+                    else:
+                        print(f"llm-away: Slurm job {job_id}: {phase} ({state.get('reason') or 'no reason reported'})", file=sys.stderr)
                     last_phase = progress
                 if self._owned_job_id and phase not in ("PENDING", "CONFIGURING"):
                     self.stream_log(model)
@@ -441,11 +456,17 @@ class SlurmServerBackend(Backend):
             if should_cancel:
                 try:
                     job_label = self._owned_job_id or "reused server"
-                    print(f"llm-away: canceling Slurm job for {job_label}", file=sys.stderr)
+                    if self.direct_mode:
+                        print(f"llm-away: stopping direct server process {job_label} (no Slurm job to cancel)", file=sys.stderr)
+                    else:
+                        print(f"llm-away: canceling Slurm job for {job_label}", file=sys.stderr)
                     extra = {"job_id": self._owned_job_id} if self._owned_job_id else None
                     self.serverctl("cancel", self.config.model.name, extra)
                 except Exception as exc:
-                    print(f"llm-away: failed to cancel Slurm job: {exc}", file=sys.stderr)
+                    if self.direct_mode:
+                        print(f"llm-away: failed to stop direct server: {exc}", file=sys.stderr)
+                    else:
+                        print(f"llm-away: failed to cancel Slurm job: {exc}", file=sys.stderr)
                     return  # Keep the job reference so atexit can retry.
                 self._owned_job_id = None
                 self._ready_model = None

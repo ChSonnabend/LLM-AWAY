@@ -78,5 +78,31 @@ class StartupLogTests(unittest.TestCase):
         self.assertIn('PENDING (Resources)', output.getvalue())
         self.assertEqual(backend.streamed, 1)
 
+    def test_direct_mode_names_the_server_process_not_a_slurm_job(self):
+        class Backend(SlurmServerBackend):
+            def __init__(self):
+                super().__init__(AppConfig(backend_type='direct', gateway=GatewayConfig(local_port=9999, poll_interval_seconds=0, cancel_on_exit=False)))
+                self.states = iter([{'active': False},
+                                    {'active': True, 'job_id': '1234', 'direct': True, 'slurm_state': 'RUNNING', 'host': '127.0.0.1'},
+                                    {'active': True, 'job_id': '1234', 'direct': True, 'slurm_state': 'RUNNING', 'host': '127.0.0.1'}])
+            def serverctl(self, *args, **kwargs):
+                return next(self.states)
+            def stream_log(self, model):
+                pass
+            def ensure_tunnel(self, host):
+                pass
+            def http_ready(self, model):
+                return True
+        backend = Backend()
+        self.assertTrue(backend.direct_mode)
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            backend.ensure_ready('preset')
+        text = output.getvalue()
+        self.assertIn('direct access to epnh', text)
+        self.assertIn('no Slurm job is allocated', text)
+        self.assertIn('server process 1234', text)
+        self.assertNotIn('submitted Slurm job', text)
+
 if __name__ == '__main__':
     unittest.main()
