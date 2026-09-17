@@ -135,7 +135,7 @@ print(json.dumps({'tools':tools,'partitions':parts}))
 
 
 def configure_local(config_path, alias=None, workdir=None, restart=False,
-                    model=None, mtp=None, skip_model_selection=False, connection=None):
+                    model=None, mtp=None, skip_model_selection=False, connection=None, resources_only=False):
     cfg = load_config(config_path)
     store = read_store(config_path)
     connection = connection or ask('Connection: ssh or local', 'ssh' if alias else cfg.ssh.connection, ('ssh','local'))
@@ -225,12 +225,12 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
         required = 'scripts/remote/'+controller
         inspect_host("import json,os,sys; assert os.path.isfile(sys.argv[1]), 'Update the remote project: '+sys.argv[1]; print(json.dumps(True))", root+'/'+required)
     selected_cfg = apply_profile(cfg, profile)
-    if not skip_model_selection:
+    if not skip_model_selection and not resources_only:
         chosen = choose_model(discover_models(selected_cfg), selected_cfg.llamacpp.model_name, model)
         mode = choose_mtp(chosen, 'auto', mtp, interactive=sys.stdin.isatty())
         profile = {**profile, 'model': {'name':chosen['alias']},
                    'llamacpp': {**profile['llamacpp'], 'model_name':chosen['name'], 'mtp':mode}}
-    elif not old:
+    elif not old and not resources_only:
         raise ValueError('A new host needs a model selection; omit --skip-model-selection')
     store['hosts'][alias] = profile
     store['active'] = alias

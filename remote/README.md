@@ -397,3 +397,10 @@ Start locally with `REMOTE_HOST=hydra-h200 away-agent` or
 llama.cpp source/build tree is needed for these server profiles. Keep model
 files, recipes, bin/ and scripts/. Source compilation and llama-cli diagnostics
 still require their own source/build or CLI-capable container.
+
+## Persistent resource sessions
+
+`bin/resource-control` and `bin/resource-worker` keep Slurm/Kubernetes/direct
+allocations separate from model execution. They are controlled by the local
+`res-alloc`, `run`, and `res-mon` commands; see the [root README](../README.md#multiple-independent-resource-sessions).
+No manual worker invocation or extra installation step is needed after pulling.

@@ -1,3 +1,8 @@
+> **Recommended workflow:** use `res-alloc`, `run --session N`, and `res-mon` for
+> independent background allocations and concurrent agents. Install once with
+> `./scripts/install-resource-tools.sh`. See [session usage](../README.md#multiple-independent-resource-sessions).
+> The `init-local.sh` / `away-agent` commands below are retained for compatibility.
+
 # LLM AWAY
 
 Run Codex against a local HTTP model provider that starts and reuses AWAY Slurm-hosted llama.cpp servers through `epnh`.

@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Persistent resource reservations, independent of the model process (Python 3.6+)."""
+import fcntl, json, os, re, shlex, subprocess, sys, time, uuid
+from pathlib import Path
+
+p=json.load(sys.stdin)
+action=sys.argv[1]
+c=p['config']; token=p['token']
+if not re.fullmatch('[a-f0-9]{32}',token): raise ValueError('Invalid resource token')
+root=Path(c['remote']['workdir']).resolve()
+state=root/'.state'/'resources'/token
+state.mkdir(parents=True,exist_ok=True,mode=0o700)
+kind=c['backend_type']; k=c['kubernetes']; sl=c['slurm']
+meta=state/'allocation.json'
+
+def write(path,value):
+    temp=Path(str(path)+'.tmp'); temp.write_text(value); os.replace(str(temp),str(path))
+def call(args, data=None):
+    r=subprocess.run(args,input=data,stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True,timeout=60)
+    if r.returncode: raise RuntimeError(r.stderr.strip() or r.stdout.strip())
+    return r.stdout.strip()
+def kubectl(args,data=None):
+    base=['kubectl']+(['--context',k['context']] if k['context'] else [])+['--namespace',k['namespace']]
+    return call(base+args,data)
+def status():
+    s=json.loads(meta.read_text()) if meta.exists() else {}
+    s.update(active=False,slurm_state='STOPPED',host='',model_state='IDLE')
+    if not s.get('job_id'): return s
+    if kind=='slurm_server':
+        out=call(['squeue','-h','-j',s['job_id'],'-o','%T|%N|%r'])
+        if out:
+            phase,host,reason=out.splitlines()[0].split('|',2)
+            s.update(active=phase in ('PENDING','RUNNING','CONFIGURING','COMPLETING'),slurm_state=phase,reason=reason)
+            if phase=='RUNNING': s['host']=host
+    elif kind=='kubernetes':
+        raw=kubectl(['get','job',s['job_id'],'--ignore-not-found','-o','json'])
+        if raw:
+            job=json.loads(raw)
+            if job['metadata'].get('labels',{}).get('llm-away-resource')!=token: raise RuntimeError('Job ownership mismatch')
+            s.update(active=not any(x.get('status')=='True' and x.get('type') in ('Complete','Failed') for x in job.get('status',{}).get('conditions',[])),slurm_state='PENDING')
+            pods=json.loads(kubectl(['get','pods','-l','job-name='+s['job_id'],'-o','json']))['items']
+            if pods:
+                pod=pods[-1]; phase=pod.get('status',{}).get('phase','Pending')
+                s['slurm_state']=phase.upper()
+                if phase=='Running': s['host']=pod['metadata']['name']
+                if phase in ('Failed','Succeeded'): s['active']=False
+    else:
+        heartbeat=state/'heartbeat'
+        active=time.time()-(heartbeat.stat().st_mtime if heartbeat.exists() else s['created'])<20
+        s.update(active=active,slurm_state='RUNNING' if active else 'STOPPED',host='127.0.0.1')
+    wf=state/'worker.state'
+    if wf.exists():
+        fields=wf.read_text().split()
+        if len(fields)==3: s.update(generation=fields[0],model_state=fields[1])
+        if len(fields)==2: s['model_state']=fields[0] # initial IDLE before first request
+    if kind=='direct' and s.get('model_state')=='STOPPED': s.update(active=False,slurm_state='STOPPED')
+    s['log_path']=str(state/'model.log')
+    return s
+
+def reserve():
+    if meta.exists(): return status() # Never resubmit an expired allocation silently.
+    if int(sl['nodes'])!=1: raise ValueError('Resource sessions support exactly one node')
+    if kind not in ('direct','slurm_server','kubernetes'): raise ValueError('Unsupported resource backend')
+    if c['llamacpp']['container'] and kind!='kubernetes':
+        call([sys.executable,str(root/'scripts/remote/ensure-container.py'),c['llamacpp']['container'],c['llamacpp']['container_source'],c['llamacpp']['container_runtime']])
+    worker=['bash',str(root/'bin/resource-worker'),str(state)]
+    if kind=='slurm_server':
+        args=['sbatch','--parsable','--nodes=1','--ntasks=1','--job-name=away-'+token[:10],
+              '--chdir='+str(root),'--output='+str(state/'allocation.log')]
+        if sl['partition']: args+=['--partition='+sl['partition']]
+        if sl['gpus']: args+=['--gres=gpu:'+str(sl['gpus'])]
+        if sl['exclusive']: args+=['--exclusive']
+        node=sl['node_class']
+        if node in ('mi50','mi100'):
+            lines=call(['sinfo','-N','-h','-p',sl['partition'],'-o','%N|%t']).splitlines()
+            low,high=(0,279) if node=='mi50' else (280,349)
+            candidates=[v.split('|')[0] for v in lines if re.fullmatch('epn[0-9]+\\|(?:idle|mix|alloc)',v) and low<=int(v.split('|')[0][3:])<=high]
+            if not candidates: raise ValueError('No usable '+node+' nodes')
+            node=candidates[0]
+        if node: args+=['--nodelist='+node]
+        options=sl['custom_options']
+        blocked=('--nodes','--ntasks','--wrap','--output','--error','--chdir','--gres','--gpus','--export','--get-user-env')
+        if any(x.startswith(blocked) or x.startswith(('-N','-n','-o','-e','-D')) or '\n' in x for x in options):
+            raise ValueError('Additional Slurm options must not override session ownership, GPU count, node count or command')
+        script='#!/bin/bash\nexec '+' '.join(shlex.quote(x) for x in worker)+'\n'
+        job=call(args+options,data=script).split(';')[0]
+    elif kind=='kubernetes':
+        job='away-'+token[:20]
+        volume={'name':'project'}
+        volume.update({'persistentVolumeClaim':{'claimName':k['pvc']}} if k['pvc'] else {'hostPath':{'path':str(root),'type':'Directory'}})
+        limits={'cpu':k['cpu'],'memory':k['memory']}
+        if sl['gpus']: limits[k['gpu_resource']]=sl['gpus']
+        manifest={'apiVersion':'batch/v1','kind':'Job','metadata':{'name':job,'labels':{'llm-away-resource':token}},'spec':{'backoffLimit':0,'template':{'spec':{'restartPolicy':'Never','automountServiceAccountToken':False,'securityContext':{'runAsUser':os.getuid(),'runAsGroup':os.getgid()},'containers':[{'name':'resource','image':k['image'],'command':worker,'workingDir':str(root),'resources':{'limits':limits},'volumeMounts':[{'name':'project','mountPath':str(root)}]}],'volumes':[volume]}}}}
+        kubectl(['create','-f','-'],json.dumps(manifest))
+    else:
+        with open(state/'allocation.log','a') as log:
+            child=subprocess.Popen(worker,cwd=str(root),stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
+        job=str(child.pid)
+    write(meta,json.dumps({'job_id':job,'created':time.time(),'server_port':p['port']}))
+    return status()
+
+def start():
+    s=status()
+    if not s['active']: raise ValueError('Allocation ended; create a new resource session')
+    if s.get('model_state')=='LOADING': return s
+    l=c['llamacpp']
+    if l['model_path'] or l['server_command']: raise ValueError('Resource sessions require managed model presets')
+    env={'MODEL_NAME':l['model_name'] or c['model']['name'],'LLAMACPP_BACKEND':l['backend'],
+         'LLAMACPP_ROCM_ARCH':l['rocm_arch'],'LLAMACPP_CONTAINER':l['container'],'LLAMACPP_CONTAINER_RUNTIME':l['container_runtime'],
+         'LLAMACPP_HOST':'127.0.0.1' if kind=='direct' else '0.0.0.0','LLAMACPP_PORT':str(p['port']),
+         'LLAMACPP_CTX_SIZE':str(l['context_size']),'LLAMACPP_MTP':l['mtp'],'LLAMACPP_GPU_COUNT':str(sl['gpus'])}
+    if kind=='kubernetes': env.update(LLAMACPP_IN_CONTAINER='1',LLAMACPP_CONTAINER='')
+    if kind=='direct':
+        env['LLAMACPP_VISIBLE_DEVICES']=l['visible_devices']
+        if l['visible_devices']: env['CUDA_VISIBLE_DEVICES' if l['backend']=='cuda' else 'ROCR_VISIBLE_DEVICES']=l['visible_devices']
+        if l['container'] and l['container_runtime']=='docker': env.update(LLAMACPP_HOST='0.0.0.0',LLAMACPP_PUBLISH_ADDRESS='127.0.0.1')
+    args=[str(root/l['server_cli']),'--ctx-size',str(l['context_size'])]+l['server_extra_args']
+    script='#!/bin/bash\nset -e\ncd '+shlex.quote(str(root))+'\n'
+    script+='unset MODEL_DRAFT_GGUF LLAMACPP_SPEC_TYPE LLAMACPP_EXTRA_ARGS LLAMACPP_VISIBLE_DEVICES\n'
+    script+='\n'.join('export '+a+'='+shlex.quote(b) for a,b in env.items())+'\n'
+    if kind=='slurm_server': script+='export LLAMACPP_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-${HIP_VISIBLE_DEVICES:-}}}"\n'
+    script+='if (echo > /dev/tcp/127.0.0.1/'+str(p['port'])+') 2>/dev/null; then echo "Port already in use" >&2; exit 1; fi\n'
+    script+='exec '+' '.join(shlex.quote(str(x)) for x in args)+'\n'
+    generation=uuid.uuid4().hex
+    write(state/(generation+'.sh'),script);write(state/'desired',generation)
+    return status()
+
+with open(state/'lock','a') as lock:
+    fcntl.flock(lock,fcntl.LOCK_EX)
+    if action=='reserve': result=reserve()
+    elif action=='status': result=status()
+    elif action=='start': result=start()
+    elif action=='stop':
+        write(state/'desired',uuid.uuid4().hex);result=status()
+    elif action=='release':
+        s=status(); (state/'release').touch()
+        if s.get('active'):
+            if kind=='slurm_server': call(['scancel',s['job_id']])
+            elif kind=='kubernetes': kubectl(['delete','job',s['job_id'],'--wait=false'])
+        result={'released':True}
+    elif action=='log':
+        path=state/'model.log'; offset=int(p.get('offset',0))
+        data=b''
+        if path.exists():
+            with path.open('rb') as f:
+                f.seek(min(offset,path.stat().st_size)); data=f.read(65536); offset=f.tell()
+        result={'data':data.decode('utf-8','replace'),'offset':offset}
+    else: raise ValueError('Unknown action')
+print(json.dumps(result))

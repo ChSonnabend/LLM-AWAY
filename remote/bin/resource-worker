@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# One persistent allocation; commands are atomically published by resource-control.
+set -uo pipefail
+state=$1
+child=''
+seen=''
+stop_model() {
+    if [[ -n "$child" ]]; then
+        kill "$child" 2>/dev/null || true
+        for ((i=0;i<50;i++)); do
+            kill -0 "$child" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -KILL "$child" 2>/dev/null || true
+        wait "$child" 2>/dev/null || true
+        child=''
+    fi
+}
+report() {
+    printf '%s %s %s\n' "$seen" "$1" "$(hostname)" > "$state/worker.tmp"
+    mv "$state/worker.tmp" "$state/worker.state"
+}
+cleanup() { stop_model; report STOPPED; }
+trap cleanup EXIT
+trap 'exit 0' TERM INT HUP
+report IDLE
+while [[ ! -f "$state/release" ]]; do
+    touch "$state/heartbeat"
+    desired=$(cat "$state/desired" 2>/dev/null || true)
+    if [[ -n "$desired" && "$desired" != "$seen" ]]; then
+        stop_model
+        seen=$desired
+        if [[ -f "$state/$seen.sh" ]]; then
+            bash "$state/$seen.sh" >> "$state/model.log" 2>&1 &
+            child=$!
+            report LOADING
+        else
+            report IDLE
+        fi
+    fi
+    if [[ -n "$child" ]] && ! kill -0 "$child" 2>/dev/null; then
+        wait "$child"; code=$?
+        echo "Model process exited ($code)" >> "$state/model.log"
+        child=''
+        report EXITED
+    fi
+    sleep 1
+done

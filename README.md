@@ -8,7 +8,9 @@ One repository for the local agent gateway and remote llama.cpp runners.
 ```bash
 git clone git@github.com:ChSonnabend/LLM-AWAY.git
 cd LLM-AWAY/local
-./scripts/init-local.sh
+./scripts/install-resource-tools.sh
+res-alloc
+run --session 1
 ```
 
 When setup asks for the remote folder, select the full path ending in
@@ -31,3 +33,56 @@ belong here. Each installation's former Git metadata is preserved inside
 
 Run `git pull --ff-only` from the repository root to update both components.
 No model downloads or GPU jobs are required for migration.
+
+## Multiple independent resource sessions
+
+Install the commands once with `local/scripts/install-resource-tools.sh` and ensure
+`~/.local/bin` is on PATH. `init-local.sh` and `away-agent` remain legacy entry
+points; neither is needed for this workflow.
+
+```bash
+res-alloc                         # Choose connection/host/resources; returns an ID
+res-alloc --host hydra --gpus 2    # Another independent allocation
+res-mon --list                    # IDs, hosts, GPU counts, scheduler jobs, models
+run --session 1                   # Choose model, load it, open Codex in this directory
+run --session 2                   # In another terminal: independent agent/host
+res-mon --logs 1                  # Follow allocation/model/provider telemetry; Ctrl+C detaches
+res-mon                          # Arrow-key/number menu to stop or release a session
+res-mon --kill 1                  # Ask: stop model only, or also release resources?
+res-mon --kill 1 --release        # Explicitly release; also works without a terminal
+```
+
+`resource-allocator` / `res-alloc` and `resource-monitor` / `res-mon` are equivalent.
+`run -s 1 --model PRESET --mtp off -- "Explain this repository"` skips model/MTP
+selection and passes the final arguments to Codex. Agent work happens in the shell's
+current directory; model inference happens on the allocated host.
+
+Allocation runs in a detached local background process. It reserves one Slurm node
+(with the requested GPU count), holds one Kubernetes Job, or starts a direct-host
+worker. It does **not** load a model until `run`. Known host settings are remembered;
+use `res-alloc --restart` to ask all setup questions again. Allocations snapshot their
+configuration, so editing another host does not change existing sessions.
+
+Each session has separate gateway/tunnel/model ports, remote control state, a log,
+and per-process Codex configuration. Concurrent agents do not edit the global Codex
+provider. Only one `run` client may own a session at a time. On agent exit, choose
+whether to unload the model and keep the allocation, or free resources and end the
+background process. Stopping from `res-mon` also terminates that foreground agent.
+A retained allocation still consumes resources and remains subject to scheduler
+walltime. A later `run` can select a different model on the same allocation.
+
+Direct mode cannot reserve hardware against unrelated users/processes. The allocator
+rejects GPU overlap with its own unreleased sessions on the same host alias. Choose
+explicit device IDs. Slurm/Kubernetes provide actual scheduler reservations.
+Kubernetes requires a writable project volume shared with the submitting machine
+(hostPath or PVC), plus bash in the image. CPU-only direct mode is supported.
+
+Session records/logs live in ignored `local/run/resources/ID/`; remote control files
+live in `remote/.state/resources/TOKEN/`. `res-mon --kill ID --release` can recover an
+allocation whose local background daemon has died. Closing a terminal does not free
+a reservation; use the monitor. Release sessions before moving the checkout or
+rebooting the Mac. Existing allocations are not automatically resumed after reboot.
+
+Verification: one temporary CPU-only two-session lifecycle check; Slurm/Kubernetes
+and real model/GPU inference still require a user smoke check. Try allocating one GPU,
+starting a small model, exiting with “keep”, then running the same ID and releasing it.
