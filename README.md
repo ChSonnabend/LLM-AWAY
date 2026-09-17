@@ -95,10 +95,21 @@ a host afresh; `init-local.sh` is only needed for the legacy launcher workflow.
 Every allocation asks for additional Slurm options, or Kubernetes CPU, memory,
 node selector, tolerations, priority and time limit. Existing allocations are unchanged.
 
-`run` uses the generic model name `model`, provider `remote_resource`, and fallback
-agent metadata by default. Set `[codex] custom_metadata = true` to opt into the custom
-catalog for new allocations. Guidance now discourages repeated SSH/inventory calls;
+`run` uses the generic model name `model`, provider `remote_resource`, and a compact,
+model-specific catalog enabled by `[codex] custom_metadata = true` in `model.toml`.
+Set it to false to restore fallback metadata. Agent settings refresh on each `run`.
+The configured compaction threshold is honored, capped at 70% of the active context;
+the default project threshold is 180k tokens. Guidance discourages repeated SSH/inventory calls;
 it cannot guarantee that a model will never loop. GLM's native tool syntax is accepted
 and validated. GLM Flash MTP uses embedded weights with two draft tokens:
 `run --session 2 --model glm-5.3-flash-q4 --mtp on`.
 Exit and rerun an existing agent to pick up bridge changes; keep its allocation.
+
+Server-backed sessions send native tool schemas and structured tool history to
+llama.cpp. Custom patch tools are represented by a required string `input` parameter.
+Rejected calls get one corrective retry and never execute. Exact rejected outputs
+are saved locally with owner-only permissions in `local/run/resources/ID/tool-errors/`;
+the error reports their paths. These files are ignored by Git and may contain code
+or command arguments. Tool mistakes remain possible; no prompt guarantees their absence.
+Reasoning effort is forwarded to the server; for GLM, `medium` maps to `high` and
+`xhigh` to `max`. Output verbosity is guided by the concise instructions.

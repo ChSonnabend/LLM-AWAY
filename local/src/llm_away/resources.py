@@ -106,6 +106,9 @@ class ResourceBackend(SlurmServerBackend):
 def provider(path):
     from .server import serve
     data=json.loads((path/'session.json').read_text());cfg=config(data['config'])
+    settings=Path(os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
+    if settings.exists():cfg=replace(cfg,codex=load_config(settings).codex)
+    os.environ['LLM_TOOL_ERROR_DIR']=str(path/'tool-errors')
     backend=ResourceBackend(cfg,data['token'],data['remote_port'])
     def stop(sig,frame):
         backend.close();raise SystemExit(0)
@@ -318,7 +321,8 @@ def run_agent(args):
                      '-c','model_reasoning_effort='+json.dumps(cfg.codex.reasoning_effort),
                      '-c','model_catalog_json='+json.dumps(str(catalog)),
                      '-c','model_context_window='+str(min(cfg.codex.context_window,cfg.llamacpp.context_size)),
-                     '-c','model_auto_compact_token_limit='+str(int(min(cfg.codex.context_window,cfg.llamacpp.context_size)*0.7))]
+                     '-c','model_auto_compact_token_limit='+str(min(cfg.codex.auto_compact_token_limit,int(min(cfg.codex.context_window,cfg.llamacpp.context_size)*0.7))),
+                     '-c','tool_output_token_limit='+str(cfg.codex.tool_output_token_limit)]
             agent=subprocess.Popen(command+args.agent_args)
             agent.wait()
         except KeyboardInterrupt:pass

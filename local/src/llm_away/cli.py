@@ -101,7 +101,7 @@ def remote_model_catalog(model: str, context_window: int = 262000, settings: Cod
         "models": [
             {
                 "slug": "model",
-                "display_name": "REMOTE",
+                "display_name": "GLM-5.3-Flash Q4" if model == "glm-5.3-flash-q4" else model,
                 "description": f"Use the selected remote model (currently {model}).",
                 "default_reasoning_level": settings.reasoning_effort,
                 "supported_reasoning_levels": [
@@ -118,7 +118,7 @@ def remote_model_catalog(model: str, context_window: int = 262000, settings: Cod
                 "default_service_tier": None,
                 "availability_nux": None,
                 "upgrade": None,
-                "support_verbosity": True,
+                "support_verbosity": False,
                 "default_verbosity": settings.model_verbosity,
                 "truncation_policy": {
                     "mode": "tokens",
@@ -134,7 +134,7 @@ def remote_model_catalog(model: str, context_window: int = 262000, settings: Cod
                 "experimental_supported_tools": [],
                 "web_search_tool_type": "text_and_image",
                 "apply_patch_tool_type": "freeform",
-                "node_repl_disabled": False,
+                "node_repl_disabled": True,
                 "node_repl_auto_review_required": False,
                 "include_apps_usage_instructions": False,
                 "include_plugin_usage_instructions": False,
@@ -144,22 +144,7 @@ def remote_model_catalog(model: str, context_window: int = 262000, settings: Cod
                 "multi_agent_reasoning_effort": "high",
                 "multi_agent_version": "v2",
                 "model_messages": {
-                    "instructions_template": settings.instructions or (
-                        "You are a coding agent. You and the user share one workspace. "
-                        f"The configured model is {model}, served by llama.cpp through the AWAY gateway. "
-                        "Answer the latest user question directly. For greetings and model identity questions, answer without tools. "
-                        "Help with coding, debugging, editing files, and explaining technical work. "
-                        "Be concise, inspect the repository before changing code, and preserve user work. "
-                        "When the user asks to inspect, explain, diagnose, review, summarize, or tell what code does, "
-                        "use read-only commands and then answer; do not modify files. "
-                        "Only edit files when the user explicitly asks for a change. "
-                        "When editing, use apply_patch instead of shell heredocs or redirection. "
-                        "Read only relevant files, batch related reads, and run one focused check after editing. "
-                        "After two failed attempts change approach. Keep tool output short, retain errors, and avoid dumping files. "
-                        "When a requested step needs a tool, issue the actual tool call in the same response. Do not end a turn with only an announcement such as Let me check or I will run. Continue authorized steps until complete, blocked, or genuinely missing user information; do not wait for go ahead. "
-                        "Complete authorized work without asking again. If permission is denied, use the available approval tool; "
-                        "if none is available, report the exact blocker. Never print tool calls as a final answer."
-                    )
+                    "instructions_template": settings.instructions or 'Complete requested edits with the smallest correct change. Batch related reads and SSH commands. Reuse established facts; do not repeat successful inspections without a reason. Once sufficient evidence is available, edit rather than continuing discovery. Preserve unrelated changes and follow repository instructions. After two failed attempts, change approach or report a concrete blocker. Use the provided tools and exact argument schemas; never invent commands or claim execution without tool evidence. Prefer patches for edits. Run focused checks appropriate to the change. Report the result, verification and remaining uncertainty briefly.'
                 },
                 "comp_hash": "local-model-preset",
             }

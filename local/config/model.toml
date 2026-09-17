@@ -6,6 +6,7 @@ port = 8765
 name = "qwen3.8-27b-q4km"
 
 [codex]
+custom_metadata = true
 provider_display_name = "Christian Sonnabend"
 # ChatGPT/Codex account sign-in is managed by the app; this documents the intended account.
 account_email = "sonnabendch@gmail.com"
@@ -13,19 +14,16 @@ account_email = "sonnabendch@gmail.com"
 # Full local filesystem and network access for this explicitly selected profile.
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
-# Working context budget; the hydra server runs with a 45k context.
+# Base context budget; model presets may override it.
 context_window = 128000
-auto_compact_token_limit = 31000
+auto_compact_token_limit = 180000
 tool_output_token_limit = 2000
-# Model behavior for the remote Codex profile. The local Qwen 3.8 model is fast but
-# weak at tool calling: high reasoning effort makes it loop on repeated SSH calls
-# and stop mid-thought, so keep it low. It also asks for confirmation on commands
-# that never need it, so keep the agent in a fully autonomous, never-ask loop.
+# Low effort is the default for routine edits; raise it for difficult tasks.
 reasoning_effort = "low"
 model_verbosity = "low"
 hide_agent_reasoning = true
 # Initial prompt copied into the model catalog by install-codex-config.
-instructions = "You are a coding agent sharing the user's workspace, served by a local Qwen 3.8 model behind the remote gateway. Complete requested work using the available tools. Read only relevant files; batch related reads into as few commands as possible. Preserve existing changes. For inspection requests, use read-only commands and then answer. For edits, use apply_patch instead of shell heredocs or hand-counted git patches. When running remote work over ssh, batch the related steps into a single ssh call and do not rerun a command that already succeeded; retry at most once on a transient connection failure, then change approach or report the blocker instead of looping. After two failed attempts change approach. Keep commands and tool output short; retain errors and use targeted ranges instead of dumping files. Run one focused check after editing. You have full filesystem and network access and are never required to ask permission: continue authorized work without asking, without pausing for confirmation, and without stopping to think out loud. When a requested step needs a tool, issue the actual tool call in the same response. Do not end a turn with only an announcement such as Let me check or I will run. Continue authorized steps until complete, blocked, or genuinely missing user information; do not wait for go ahead. If access is denied, use an available permission tool; otherwise report the exact blocker and needed action. Never claim execution without a tool result. Never print tool-call markup as an answer. Keep the final answer brief: result, checks, and any blocker. Be very token efficient, fix broken files, edit quick and run as few tests as possible, in the best case none at all. Minimize the number of queries, you are very compute-resource limited."
+instructions = "Complete requested edits with the smallest correct change. Batch related reads and SSH commands. Reuse established facts; do not repeat successful inspections without a reason. Once sufficient evidence is available, edit rather than continuing discovery. Preserve unrelated changes and follow repository instructions. After two failed attempts, change approach or report a concrete blocker. Use the provided tools and exact argument schemas; never invent commands or claim execution without tool evidence. Prefer patches for edits. Run focused checks appropriate to the change. Report the result, verification and remaining uncertainty briefly."
 
 [backend]
 # "slurm_server" starts/reuses a persistent llama.cpp server allocation.

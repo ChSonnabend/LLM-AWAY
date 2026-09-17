@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
+from pathlib import Path
 import signal
 import sys
 import threading
@@ -19,6 +21,7 @@ from .protocol import (
     response_object,
     responses_request_to_prompt,
     responses_request_to_messages,
+    tool_name,
 )
 
 
@@ -31,7 +34,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
             self.write_json({"status": "ok", "model": self.config.model.name})
             return
         if self.path == "/v1/models":
-            self.write_json(models_list("away"))
+            self.write_json(models_list("model"))
             return
         self.write_json({"error": "not found"}, status=404)
 
@@ -73,11 +76,12 @@ class ProviderHandler(BaseHTTPRequestHandler):
         model = payload.get("model") or self.config.model.name
         raw_prompt = responses_request_to_prompt(payload)
         prompt = self.compact_prompt(raw_prompt)
-        messages = self.compact_messages(responses_request_to_messages(payload))
+        messages = self.compact_messages(responses_request_to_messages(payload, native=getattr(self.backend,'native_tools',False)))
+        effort=(payload.get('reasoning') or {}).get('effort')
         if payload.get("stream"):
-            self.handle_responses_stream(model, prompt, len(raw_prompt), payload.get("tools", []), messages)
+            self.handle_responses_stream(model, prompt, len(raw_prompt), payload.get("tools", []), messages, effort)
             return
-        response = self.infer_response(model, prompt, len(raw_prompt), payload.get("tools", []), messages)
+        response = self.infer_response(model, prompt, len(raw_prompt), payload.get("tools", []), messages, reasoning_effort=effort)
         self.write_json(response)
 
     def read_json(self) -> dict:
@@ -163,18 +167,30 @@ class ProviderHandler(BaseHTTPRequestHandler):
         self.write_sse("message", chat_completion_chunk(model, "", finish=True))
         self.write_sse("message", "[DONE]")
 
-    def infer_response(self, model, prompt, raw_prompt_chars=None, tools=None, messages=None, response_id=None):
+    def infer_response(self, model, prompt, raw_prompt_chars=None, tools=None, messages=None, response_id=None, reasoning_effort=None):
         """Allow one format correction; never execute or guess malformed commands."""
-        request = InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=raw_prompt_chars, messages=messages)
+        native=getattr(self.backend,'native_tools',False)
+        request = InferenceRequest(prompt=prompt, model=model, raw_prompt_chars=raw_prompt_chars, messages=messages,tools=tools if native else None,reasoning_effort=reasoning_effort)
         for attempt in range(2):
             text = self.backend.infer(request)
             try:
                 return response_object(model, text, response_id=response_id, tools=tools)
             except ValueError as exc:
+                diagnostic=''
+                try:
+                    directory=Path(os.environ.get('LLM_TOOL_ERROR_DIR',str(Path(__file__).resolve().parents[2]/'run/tool-errors')))
+                    directory.mkdir(parents=True,exist_ok=True,mode=0o700)
+                    path=directory/(uuid.uuid4().hex+'.json')
+                    with os.fdopen(os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'w') as output:
+                        json.dump({'time':time.time(),'model':model,'attempt':attempt+1,'error':str(exc),'tools':[tool_name(t) for t in tools or []],'output':text},output,indent=2)
+                    diagnostic=' Rejected payload saved locally: '+str(path)
+                    print(diagnostic,flush=True)
+                except OSError as error:
+                    print('Could not save rejected tool payload: '+str(error),file=sys.stderr)
                 if attempt:
                     return response_object(
                         model, "The model produced an invalid tool call twice. No tool from these attempts was executed. "
-                        + str(exc).rstrip(".") + ".", response_id=response_id,
+                        + str(exc).rstrip(".") + "." + diagnostic, response_id=response_id,
                     )
                 correction = (
                     "Your previous tool call was rejected before execution: " + str(exc) + "\n"
@@ -183,6 +199,8 @@ class ProviderHandler(BaseHTTPRequestHandler):
                     "Put shell commands or patches directly in XML parameter text: no JSON string wrapper, "
                     "no extra escaping of quotes. Keep shell commands short. Close all tags, then stop."
                 )
+                if native:
+                    correction='Your previous call was rejected before execution: '+str(exc)+'. Emit one native tool call using a provided function name and valid JSON arguments matching its schema. Do not write XML or invent parameters.'
                 previous = text[:6000] + ("\n[invalid output truncated]" if len(text) > 6000 else "")
                 retry_messages = None if messages is None else [
                     *messages, {"role": "assistant", "content": previous},
@@ -190,11 +208,11 @@ class ProviderHandler(BaseHTTPRequestHandler):
                 ]
                 request = InferenceRequest(
                     prompt=prompt + "\nassistant: " + previous + "\nuser: " + correction + "\nassistant:",
-                    model=model, raw_prompt_chars=raw_prompt_chars, messages=retry_messages,
+                    model=model, raw_prompt_chars=raw_prompt_chars, messages=retry_messages,tools=tools if native else None,reasoning_effort=reasoning_effort,
                 )
 
     def handle_responses_stream(
-        self, model: str, prompt: str, raw_prompt_chars: int | None = None, tools=None, messages=None
+        self, model: str, prompt: str, raw_prompt_chars: int | None = None, tools=None, messages=None, reasoning_effort=None
     ) -> None:
         response_id = f"resp_{uuid.uuid4().hex}"
         created = {
@@ -214,7 +232,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
             {"type": "response.created", "sequence_number": 0, "response": created},
         )
         try:
-            response = self.infer_response(model, prompt, raw_prompt_chars, tools, messages, response_id)
+            response = self.infer_response(model, prompt, raw_prompt_chars, tools, messages, response_id, reasoning_effort)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             raise
         except Exception as exc:

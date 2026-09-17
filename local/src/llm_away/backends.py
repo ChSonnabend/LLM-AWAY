@@ -13,7 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import AppConfig
-from .protocol import normalize_chat_messages
+from .protocol import normalize_chat_messages, native_tool_definitions
 
 
 class BackendError(RuntimeError):
@@ -31,6 +31,8 @@ class InferenceRequest:
     model: str
     raw_prompt_chars: int | None = None
     messages: list[dict] | None = None
+    tools: list[dict] | None = None
+    reasoning_effort: str | None = None
 
 
 class Backend:
@@ -123,6 +125,7 @@ class SubprocessSlurmSshBackend(SlurmSshBackend):
 
 
 class SlurmServerBackend(Backend):
+    native_tools = True
     def __init__(self, config: AppConfig):
         self.config = config
         # Direct mode runs the server on the connected host itself: it never submits a
@@ -146,7 +149,7 @@ class SlurmServerBackend(Backend):
         started = time.time()
         self.ensure_ready(self.config.model.name)
         ready_at = time.time()
-        text = self.completion(request.prompt, messages=request.messages)
+        text = self.completion(request.prompt, messages=request.messages, tools=request.tools, reasoning_effort=request.reasoning_effort)
         completed_at = time.time()
         print(
             "llm-away: request timing "
@@ -368,20 +371,26 @@ class SlurmServerBackend(Backend):
                 return True
         return False
 
-    def completion_payload(self, prompt: str, max_tokens: int | None = None, messages: list[dict] | None = None) -> bytes:
+    def completion_payload(self, prompt: str, max_tokens: int | None = None, messages: list[dict] | None = None, tools=None, reasoning_effort=None) -> bytes:
         if max_tokens is None:
             max_tokens = self.config.llamacpp.max_tokens
-        payload = json.dumps(
-            {
+        data = {
                 "model": self.config.model.name,
                 "messages": normalize_chat_messages(messages) if messages is not None else [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
             }
-        ).encode("utf-8")
-        return payload
+        effort=reasoning_effort or self.config.codex.reasoning_effort
+        if self.config.model.name.lower().startswith('glm'):
+            effort={'medium':'high','xhigh':'max','minimal':'low','none':'low'}.get(effort,effort)
+            if effort not in ('low','high','max'):raise BackendError('Unsupported GLM reasoning effort: '+str(effort))
+            data['chat_template_kwargs']={'reasoning_effort':effort}
+        data['reasoning_effort']=effort
+        if tools:
+            data.update(tools=native_tool_definitions(tools),tool_choice='auto',parallel_tool_calls=False)
+        return json.dumps(data).encode('utf-8')
 
-    def completion(self, prompt: str, max_tokens: int | None = None, messages: list[dict] | None = None) -> str:
-        payload = self.completion_payload(prompt, max_tokens=max_tokens, messages=messages)
+    def completion(self, prompt: str, max_tokens: int | None = None, messages: list[dict] | None = None, tools=None, reasoning_effort=None) -> str:
+        payload = self.completion_payload(prompt, max_tokens=max_tokens, messages=messages, tools=tools, reasoning_effort=reasoning_effort)
         request = Request(
             self.local_url("/v1/chat/completions"),
             data=payload,

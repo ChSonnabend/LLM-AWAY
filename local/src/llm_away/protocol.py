@@ -158,7 +158,20 @@ def responses_request_to_prompt(payload: dict) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
-def responses_request_to_messages(payload: dict) -> list[dict]:
+def native_tool_definitions(tools) -> list[dict]:
+    result=[]
+    for tool in tools or []:
+        name=tool_name(tool)
+        if not name: continue
+        definition=tool.get('function',tool)
+        schema=definition.get('parameters',{'type':'object','properties':{}})
+        if tool.get('type')=='custom':
+            schema={'type':'object','properties':{'input':{'type':'string'}},'required':['input'],'additionalProperties':False}
+        result.append({'type':'function','function':{'name':name,'description':definition.get('description',''),'parameters':schema}})
+    return result
+
+
+def responses_request_to_messages(payload: dict, native: bool = False) -> list[dict]:
     """Keep conversation roles for llama.cpp's chat template.
 
     Tool calls remain textual because this bridge parses Qwen tool markup rather
@@ -166,7 +179,7 @@ def responses_request_to_messages(payload: dict) -> list[dict]:
     """
     instructions = content_to_text(payload.get("instructions") or "")
     messages = [{"role": "system", "content": "\n\n".join(
-        part for part in (instructions, tools_to_prompt(payload.get("tools", []))) if part
+        part for part in (instructions, 'Use the provided tools and their exact argument schemas. Batch related reads; reuse prior results and proceed to the requested edit once enough evidence is available.' if native else tools_to_prompt(payload.get("tools", []))) if part
     )}]
     items = payload.get("input", "")
     if isinstance(items, str):
@@ -184,8 +197,14 @@ def responses_request_to_messages(payload: dict) -> list[dict]:
             role = "assistant"
             arguments = ({"input": item.get("input", "")} if kind == "custom_tool_call"
                          else normalize_tool_arguments(item.get("arguments", {})))
+            if native:
+                messages.append({'role':'assistant','content':'','tool_calls':[{'id':item.get('call_id',item.get('id','call_unknown')),'type':'function','function':{'name':item.get('name',''),'arguments':json.dumps(arguments)}}]})
+                continue
             content = render_tool_call(item.get("name", ""), arguments)
         elif kind in {"function_call_output", "custom_tool_call_output"}:
+            if native:
+                messages.append({'role':'tool','tool_call_id':item.get('call_id',''),'content':content_to_text(item.get('output',''))})
+                continue
             role = "user"
             content = f"<tool_response call_id={json.dumps(item.get('call_id', ''))}>\n{content_to_text(item.get('output', ''))}\n</tool_response>"
         else:
