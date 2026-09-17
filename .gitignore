@@ -29,3 +29,7 @@ models/*/*
 *.sif.lock
 .apptainer-cache/
 .llama-server-*.sif-*/
+
+.state/
+*.docker.json
+*.tar.lock

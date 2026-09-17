@@ -12,8 +12,7 @@ llamacpp_enter_container() {
   local script=$1; shift
   local image=$LLAMACPP_CONTAINER backend=${LLAMACPP_BACKEND:-} flag name path
   [[ -r $image ]] || { echo "Container not found: $image (see docs/hydra-containers.md)" >&2; exit 2; }
-  command -v apptainer >/dev/null || { echo "apptainer is required" >&2; exit 2; }
-  case "$backend" in cuda) flag=--nv ;; rocm) flag=--rocm ;; *) echo "Set LLAMACPP_BACKEND=cuda or rocm" >&2; exit 2 ;; esac
+  case "$backend" in cuda) flag=--nv ;; rocm) flag=--rocm ;; cpu) flag='' ;; *) echo "Set LLAMACPP_BACKEND=cuda, rocm or cpu" >&2; exit 2 ;; esac
   local -a binds=(--bind "$ROOT_DIR") preserved=()
   for path in /lustre /scratch /cvmfs; do
     [[ ! -d $path ]] || binds+=(--bind "$path")
@@ -28,6 +27,28 @@ llamacpp_enter_container() {
   local build_id=$backend
   [[ $backend != rocm ]] || build_id="rocm-${LLAMACPP_ROCM_ARCH:-auto}"
   preserved+=("LLAMACPP_BUILD_DIR=${LLAMACPP_BUILD_DIR:-$ROOT_DIR/builds/$build_id-container}")
-  exec apptainer exec --cleanenv "$flag" "${binds[@]}" --pwd "$ROOT_DIR" "$image" \
+  if [[ ${LLAMACPP_CONTAINER_RUNTIME:-apptainer} == docker ]]; then
+    local image_id
+    image_id=$(python3 "$ROOT_DIR/scripts/remote/ensure-container.py" "$image" "" docker) || exit $?
+    local -a docker_args=(run --rm --init --user "$(id -u):$(id -g)" --workdir "$ROOT_DIR" --volume "$ROOT_DIR:$ROOT_DIR")
+    if [[ -n ${LLAMACPP_PORT:-} ]]; then
+      docker_args+=(--publish "$LLAMACPP_PORT:$LLAMACPP_PORT")
+    fi
+    if [[ $backend == cuda ]]; then
+      [[ -n ${CUDA_VISIBLE_DEVICES:-} ]] || { echo "Docker CUDA requires a Slurm-assigned GPU mask" >&2; exit 2; }
+      docker_args+=(--gpus "\"device=$CUDA_VISIBLE_DEVICES\"")
+      preserved+=(CUDA_VISIBLE_DEVICES= LLAMACPP_VISIBLE_DEVICES=)
+    elif [[ $backend == rocm ]]; then
+      # ROCm Docker device mapping is not implemented.
+      echo "Use Apptainer for ROCm, or Kubernetes with the AMD GPU plugin" >&2
+      exit 2
+    fi
+    exec docker "${docker_args[@]}" --entrypoint /usr/bin/env "$image_id" \
+      "${preserved[@]}" LLAMACPP_IN_CONTAINER=1 /bin/bash --noprofile --norc "$script" "$@"
+  fi
+  command -v apptainer >/dev/null || { echo "apptainer is required" >&2; exit 2; }
+  local -a gpu_flags=()
+  [[ -z $flag ]] || gpu_flags+=("$flag")
+  exec apptainer exec --cleanenv "${gpu_flags[@]}" "${binds[@]}" --pwd "$ROOT_DIR" "$image" \
     env "${preserved[@]}" LLAMACPP_IN_CONTAINER=1 /bin/bash --noprofile --norc "$script" "$@"
 }
