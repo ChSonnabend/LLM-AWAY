@@ -177,7 +177,7 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
         backend = ask('GPU backend', defaults.llamacpp.backend if defaults else 'cuda', ('cuda','rocm','cpu'))
         if scheduler != 'kubernetes' and use_container and runtime == 'docker' and backend == 'rocm':
             raise ValueError('ROCm Docker device mapping is not supported; use an Apptainer SIF or Kubernetes')
-        arch = ask('ROCm architecture', 'gfx908') if backend == 'rocm' else 'auto'
+        arch = ask('ROCm architecture', defaults.llamacpp.rocm_arch if defaults and defaults.llamacpp.rocm_arch else 'auto') if backend == 'rocm' else 'auto'
         gpus = int(ask('GPUs per job (0 for CPU)', '0' if backend == 'cpu' else '1'))
         if gpus < 0 or (backend != 'cpu' and gpus < 1):
             raise ValueError('GPU jobs require a positive GPU count')
