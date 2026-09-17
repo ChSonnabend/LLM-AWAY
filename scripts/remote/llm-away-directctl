@@ -92,7 +92,9 @@ try:
                 birth = identity(child.pid)
                 if not birth:
                     raise RuntimeError('Server exited immediately; inspect '+str(log_file))
-                s = {'pid':child.pid,'identity':birth,'job_id':str(child.pid),'model':p['model'],
+                # Direct mode never submits a Slurm job: record the local server
+                # process PID in 'job_id' so the gateway reports the actual process.
+                s = {'pid':child.pid,'identity':birth,'job_id':str(child.pid),'direct':True,'model':p['model'],
                      'server_port':p['server_port'],'fingerprint':fingerprint,'submitted_at':int(time.time())}
                 write(s)
             result = status()

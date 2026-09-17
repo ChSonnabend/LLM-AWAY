@@ -11,29 +11,17 @@ import sys
 from .config import load_config, LlamaCppConfig, SlurmConfig, RemoteConfig, KubernetesConfig
 from .host_store import apply_profile, read_store, write_store, store_path
 from .models import discover_models, choose_model, choose_mtp
-
-# AWAY compute node classes; used to interpret `epn???`-style SSH Host patterns.
-NODE_CLASSES = {'mi50': (0, 279), 'mi100': (280, 349)}
-
-
-def parse_node_alias(alias):
-    """Return (node_class, number) for concrete AWAY node aliases such as epn000."""
-    if not isinstance(alias, str):
-        return None
-    match = re.fullmatch(r'epn(\d+)', alias)
-    if not match:
-        return None
-    number = int(match.group(1))
-    for node_class, (low, high) in NODE_CLASSES.items():
-        if low <= number <= high:
-            return node_class, number
-    return None
-
+from .prompt import choose_option
 
 def pattern_matches(pattern, requested):
-    """True when a `?`-masked SSH Host pattern matches requested (e.g. epn??? / epn000)."""
-    return len(pattern) == len(requested) and all(
-        p == '?' or p == r for p, r in zip(pattern, requested))
+    """OpenSSH Host lists: * and ? wildcards, with stanza-local negation."""
+    def match(item):
+        expression = ''.join('.*' if c == '*' else '.' if c == '?' else re.escape(c)
+                             for c in item)
+        return re.fullmatch(expression, requested, re.IGNORECASE) is not None
+    items = pattern.split()
+    return (any(match(item) for item in items if not item.startswith('!'))
+            and not any(match(item[1:]) for item in items if item.startswith('!')))
 
 
 def ssh_hosts(path=None):
@@ -65,15 +53,15 @@ def ssh_hosts(path=None):
                     for match in sorted(glob.glob(str(expanded))):
                         read(match)
             elif key.lower() == 'host':
+                negatives = [name for name in parts if name.startswith('!')]
                 for name in parts:
-                    if name in aliases or name in patterns:
+                    if name.startswith('!'):
                         continue
-                    # Skip bracket expressions and ?, but keep ?-masked patterns (epn???).
-                    if any(c in name for c in '*!['):
-                        continue
-                    if '?' in name:
-                        patterns.append(name)
-                    else:
+                    group = ' '.join([name, *negatives])
+                    if '*' in name or '?' in name:
+                        if group not in patterns:
+                            patterns.append(group)
+                    elif pattern_matches(group, name) and name not in aliases:
                         aliases.append(name)
     read(path or Path.home() / '.ssh/config')
     return aliases, patterns
@@ -82,61 +70,39 @@ def ssh_hosts(path=None):
 def ask(label, default='', options=None):
     if not sys.stdin.isatty():
         raise ValueError('First-time setup requires a terminal: ' + label)
-    while True:
-        value = input(label + (f' [{default}]' if default != '' else '') + ': ').strip() or str(default)
-        if options is None or value.lower() in options:
-            return value.lower() if options else value
-        print('Choose ' + ', '.join(options))
+    if options:
+        choices = list(options)
+        return choices[choose_option(choices, label, choices.index(default) if default in choices else 0)]
+    value = input(label + (f' [{default}]' if default != '' else '') + ': ').strip() or str(default)
+    if value == str(default) and default != '':
+        print('  Selected: ' + value)
+    return value
 
 
 def select_host(aliases, current, requested=None, patterns=None):
     patterns = patterns or []
-    if not aliases:
-        raise ValueError('No concrete SSH Host aliases found in ~/.ssh/config (including Include files)')
+    def allowed(value):
+        return (bool(value) and not value.startswith('-')
+                and not any(c.isspace() or c in '*?!' for c in value)
+                and (value in aliases or any(pattern_matches(p, value) for p in patterns)))
     if requested:
-        if requested in aliases:
+        if allowed(requested):
+            print('SSH host: ' + requested)
             return requested
-        matched_patterns = [pattern for pattern in patterns if pattern_matches(pattern, requested)]
-        if matched_patterns:
-            return choose_pattern_node(requested, matched_patterns)
         raise ValueError('SSH alias is not configured: ' + requested)
-    for i, alias in enumerate(aliases, 1):
-        print(f'  {i}. {alias}')
-    if patterns:
-        print('  ' + ', '.join(patterns) + ' (AWAY node patterns)')
+    choices = [*aliases, *patterns]
+    if not choices:
+        raise ValueError('No SSH Host aliases or patterns found in ~/.ssh/config')
+    default = next((i for i, p in enumerate(choices) if p == current or pattern_matches(p, current)), 0)
+    selected = choices[choose_option(choices, 'SSH host', default)]
+    if selected in aliases:
+        return selected
     while True:
-        value = ask('SSH host (name or number)', current if current in aliases else aliases[0])
-        if value.isdigit() and 1 <= int(value) <= len(aliases):
-            return aliases[int(value)-1]
-        if value in aliases:
+        value = ask('Concrete hostname for ' + selected,
+                    current if allowed(current) and pattern_matches(selected, current) else '')
+        if allowed(value) and pattern_matches(selected, value):
             return value
-        matched = [pattern for pattern in patterns if pattern_matches(pattern, value)]
-        if matched:
-            return choose_pattern_node(value, matched)
-    return value
-
-
-def choose_pattern_node(requested, matched_patterns):
-    """Resolve a concrete node (e.g. epn000) entered for a pattern such as epn??? by
-    asking which node class it represents."""
-    if len(matched_patterns) > 1:
-        print('Matching SSH Host patterns: ' + ', '.join(matched_patterns))
-    node_info = parse_node_alias(requested)
-    if node_info is None:
-        # Not a recognized AWAY node name (epnNNN); accept it as-is.
-        return requested
-    node_class, number = node_info
-    low, high = NODE_CLASSES[node_class]
-    default = node_class
-    if number in (low, high):
-        # The node sits at a class boundary (e.g. epn279/epn280); confirm.
-        default = ''
-    chosen = ask(
-        'Host ' + requested + ' matches ' + ', '.join(matched_patterns)
-        + ' - which node class is it? (mi50=epn000-epn279, mi100=epn280-epn349)',
-        default, ('mi50', 'mi100'))
-    print('Using ' + requested + ' as a ' + chosen + ' node.')
-    return requested
+        print('Enter a concrete hostname matching ' + selected)
 
 
 def remote_json(alias, script, *args, connection='ssh'):
@@ -215,6 +181,12 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
         gpus = int(ask('GPUs per job (0 for CPU)', '0' if backend == 'cpu' else '1'))
         if gpus < 0 or (backend != 'cpu' and gpus < 1):
             raise ValueError('GPU jobs require a positive GPU count')
+        if scheduler == 'direct':
+            # No Slurm job is ever submitted: the server runs on this host (direct ssh).
+            print('Direct mode: no Slurm job will be submitted; the server runs on '
+                  + alias + ' over the existing '
+                  + ('SSH connection' if connection == 'ssh' else 'local connection')
+                  + ' and uses this host directly.')
         llama = asdict(LlamaCppConfig(backend=backend, rocm_arch=arch, visible_devices='',
                         container=container, container_runtime=runtime, build_before_run=False, mtp='auto'))
         if scheduler == 'direct' and gpus:
@@ -228,7 +200,7 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
         kube = asdict(KubernetesConfig())
         if scheduler == 'slurm':
             print('Available partitions: ' + ', '.join(info['partitions']))
-            slurm['partition'] = ask('Slurm partition', defaults.slurm.partition if defaults else (info['partitions'][0] if info['partitions'] else ''))
+            slurm['partition'] = ask('Slurm partition', defaults.slurm.partition if defaults else (info['partitions'][0] if info['partitions'] else ''), info['partitions'] or None)
             slurm['exclusive'] = ask('Exclusive node?', 'no', ('yes','no')) == 'yes'
             slurm['custom_options'] = shlex.split(ask('Additional Slurm options', '--cpus-per-task=8 --mem=64G --time=02:00:00'))
             if alias == 'epnh' and defaults:

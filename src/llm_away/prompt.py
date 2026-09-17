@@ -1,4 +1,4 @@
-"""Small terminal selector with a numbered-input fallback."""
+"""Inline terminal menus: arrows or numbers, preserving answered questions."""
 from __future__ import annotations
 
 import os
@@ -11,125 +11,117 @@ class PromptCanceled(ValueError):
 
 def interactive_available() -> bool:
     try:
-        import curses
-        if not sys.stdin.isatty() or not sys.stdout.isatty():
-            return False
-        return os.environ.get("TERM") != "dumb"
+        import termios
+        return sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get('TERM') != 'dumb'
     except (ImportError, OSError, ValueError):
         return False
 
 
 def choose_option(options: list[str], prompt: str, default: int = 0) -> int:
     if not options:
-        raise ValueError("No options to choose from")
+        raise ValueError('No options to choose from')
     default = max(0, min(default, len(options) - 1))
-    if not interactive_available():
-        return _choose_plain(options, prompt, default)
     try:
-        index = _choose_curses(options, f"{prompt}: arrows/up-down move; Enter selects; q/Esc cancels", default)
-    except KeyboardInterrupt:
-        raise PromptCanceled("Selection canceled; settings unchanged") from None
+        index = (_choose_inline(options, prompt, default) if interactive_available()
+                 else _choose_plain(options, prompt, default))
+    except (KeyboardInterrupt, EOFError):
+        raise PromptCanceled('Selection canceled; settings unchanged') from None
     if index < 0:
-        raise PromptCanceled("Selection canceled; settings unchanged")
+        raise PromptCanceled('Selection canceled; settings unchanged')
+    print(f'{prompt}: {options[index]}')
     return index
 
 
-def _choose_curses(options: list[str], title: str, default: int) -> int:
-    import curses
+def _choose_inline(options, prompt, default):
+    import select
+    import shutil
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    previous = termios.tcgetattr(fd)
+    index, digits, rows = default, '', 0
 
-    def _main(stdscr) -> int:
-        # Some ncurses builds (notably the one bundled with macOS Python)
-        # do not decode arrow-key escape sequences even with keypad(True),
-        # returning the leading ESC instead. Parse the raw sequences here so
-        # Up/Down work regardless of the terminfo/ncurses behavior.
-        stdscr.keypad(True)
-        # The primary key read blocks so the menu does not busy-spin when the
-        # user is idle. Continuation bytes of an escape sequence are read with
-        # a short nodelay window so a lone ESC is not mistaken for an arrow.
-        try:
-            curses.curs_set(0)
-        except Exception:
-            pass
+    def clear():
+        nonlocal rows
+        if rows:
+            sys.stdout.write(f'\x1b[{rows}A\r\x1b[J')
+            rows = 0
 
-        def next_key():
-            # Returns one of: "up", "down", "home", "end", "enter", "cancel",
-            # or None (ignorable key). A lone ESC means cancel; ESC followed
-            # by [ + a letter is an arrow/home/end sequence.
-            stdscr.nodelay(False)
-            c = stdscr.getch()
-            if c == -1:  # no key (should not block, but be safe)
-                return None
-            if c == 27:  # ESC: wait briefly to see if it starts an arrow seq.
-                stdscr.nodelay(True)
-                n = stdscr.getch()
-                if n == -1:
-                    return "cancel"
-                if n == ord("["):
-                    m = stdscr.getch()
-                    arrows = {ord("A"): "up", ord("B"): "down", ord("F"): "home", ord("H"): "home"}
-                    if m in arrows:
-                        return arrows[m]
-                    if m == ord("6") and stdscr.getch() == ord("~"):
-                        return "end"
-                    return "cancel"
-                return "cancel"
-            if c in (curses.KEY_UP, ord("k")):
-                return "up"
-            if c in (curses.KEY_DOWN, ord("j")):
-                return "down"
-            if c in (curses.KEY_ENTER, ord("\n"), ord("\r")):
-                return "enter"
-            if c in (ord("q"), ord("Q")):
-                return "cancel"
-            if c in (3, 4):  # Ctrl-C / Ctrl-D
-                return "cancel"
-            return None
+    def read_key():
+        key = os.read(fd, 1)
+        if not key:
+            raise EOFError
+        if key != b'\x1b':
+            return key
+        sequence = b''
+        while select.select([fd], [], [], 0.08)[0]:
+            sequence += os.read(fd, 1)
+            if len(sequence) > 1 and (sequence[-1:] in b'ABCDHF~' or len(sequence) >= 8):
+                break
+        return {b'[A': b'up', b'OA': b'up', b'[B': b'down', b'OB': b'down',
+                b'[H': b'home', b'OH': b'home', b'[1~': b'home',
+                b'[F': b'end', b'OF': b'end', b'[4~': b'end'}.get(sequence, b'escape' if not sequence else b'')
 
-        index = default
+    try:
+        tty.setcbreak(fd)
+        sys.stdout.write('\x1b[?25l')
         while True:
-            stdscr.erase()
-            try:
-                stdscr.addnstr(0, 0, title, stdscr.getmaxyx()[1] - 1)
-            except Exception:
-                pass
-            for i, option in enumerate(options):
-                marker = "* " if i == index else "  "
-                try:
-                    stdscr.addnstr(2 + i, 0, marker + str(option), stdscr.getmaxyx()[1] - 1)
-                except Exception:
-                    pass
-            stdscr.refresh()
-            key = next_key()
-            if key is None:
-                continue
-            if key == "up":
-                index = (index - 1) % len(options)
-            elif key == "down":
-                index = (index + 1) % len(options)
-            elif key == "home":
-                index = 0
-            elif key == "end":
-                index = len(options) - 1
-            elif key == "enter":
-                return index
-            elif key == "cancel":
+            clear()
+            width, height = shutil.get_terminal_size((80, 24))
+            count = max(1, min(len(options), height - 5))
+            start = max(0, min(index - count // 2, len(options) - count))
+            lines = [f'{prompt} (↑/↓ or number, Enter; q/Esc cancels) [{digits}]']
+            lines += [f'{">" if i == index else " "} {i+1}. {options[i]}'
+                      for i in range(start, start + count)]
+            for line in lines:
+                # Keep each menu entry on one row, including Unicode wide text.
+                import unicodedata
+                clean, cells = '', 0
+                for char in str(line):
+                    if unicodedata.category(char).startswith('C'):
+                        char = ' '
+                    size = 0 if unicodedata.combining(char) else (2 if unicodedata.east_asian_width(char) in 'WF' else 1)
+                    if cells + size > max(1, width - 1):
+                        break
+                    clean += char
+                    cells += size
+                sys.stdout.write(clean + '\n')
+            rows = len(lines)
+            sys.stdout.flush()
+            key = read_key()
+            if key in (b'up', b'k', b'down', b'j', b'home', b'end'):
+                digits = ''
+                index = (0 if key == b'home' else len(options)-1 if key == b'end'
+                         else (index + (-1 if key in (b'up', b'k') else 1)) % len(options))
+            elif key in (b'\r', b'\n'):
+                if not digits or 1 <= int(digits) <= len(options):
+                    return index
+            elif key in (b'q', b'Q', b'escape', b'\x03', b'\x04', b''):
+                if key == b'':
+                    continue
                 return -1
-
-    return curses.wrapper(_main)
+            elif key in (b'\x7f', b'\x08'):
+                digits = digits[:-1]
+            elif key in b'0123456789' and len(key) == 1:
+                digits = (digits + key.decode())[:len(str(len(options)))]
+            if digits and 1 <= int(digits) <= len(options):
+                index = int(digits) - 1
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+        clear()
+        sys.stdout.write('\x1b[?25h')
+        sys.stdout.flush()
 
 
 def _choose_plain(options: list[str], prompt: str, default: int) -> int:
     for index, option in enumerate(options, 1):
-        print(f"  {index}. {option}" + (" (current)" if index - 1 == default else ""))
+        print(f'  {index}. {option}' + (' (current)' if index - 1 == default else ''))
     while True:
-        try:
-            answer = input(f"Choose {prompt} number [Enter keeps current], q to cancel: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            raise PromptCanceled("Selection canceled; settings unchanged") from None
-        if answer.lower() == "q":
-            raise PromptCanceled("Selection canceled; settings unchanged")
+        answer = input(f'{prompt} number [Enter keeps current], q to cancel: ').strip()
+        if answer.lower() == 'q':
+            return -1
         if not answer:
             return default
         if answer.isdigit() and 1 <= int(answer) <= len(options):
             return int(answer) - 1
-        print("Choose one of the listed options.")
+        print('Choose one of the listed options.')

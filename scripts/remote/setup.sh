@@ -6,8 +6,10 @@ SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 workdir="$(cd "$SOURCE_DIR/../.." && pwd)"
 bin_dir="${LLM_REMOTE_REMOTE_BIN:-$HOME/.local/bin}"
 mode=install
+scheduler=slurm
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --scheduler) scheduler=${2:?Specify slurm, kubernetes or direct}; shift 2 ;;
         --check) mode=check; shift ;;
         --workdir|--bin-dir)
             if [[ $# -lt 2 || -z "$2" ]]; then
@@ -18,7 +20,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h|--help)
-            echo "Usage: setup.sh [--check] [--workdir PATH] [--bin-dir PATH]"
+            echo "Usage: setup.sh [--check] [--scheduler slurm|kubernetes|direct] [--workdir PATH] [--bin-dir PATH]"
             echo "Run on the Slurm login host to install the adjacent AWAY helpers."
             echo "Default workdir: two directories above this script (the remote runner project)."
             echo "Default bin directory: \$HOME/.local/bin; relative overrides are home-relative."
@@ -32,9 +34,15 @@ done
 case "$bin_dir" in /*) ;; *) bin_dir="$HOME/$bin_dir" ;; esac
 
 # Complete preflight before creating any installation files.
-for command in python3 sbatch squeue scancel sinfo srun timeout cmp mktemp cp chmod mv; do
+case "$scheduler" in
+    slurm) prerequisites=(sbatch squeue scancel sinfo srun timeout) ;;
+    kubernetes) prerequisites=(kubectl) ;;
+    direct) prerequisites=() ;;
+    *) echo "Unknown scheduler: $scheduler" >&2; exit 2 ;;
+esac
+for command in python3 cmp mktemp cp chmod mv "${prerequisites[@]}"; do
     if ! command -v "$command" >/dev/null 2>&1; then
-        echo "Missing command: $command. Run setup on the Slurm login host with its environment loaded." >&2
+        echo "Missing command: $command. Load the environment for the selected scheduler, or select --scheduler direct." >&2
         exit 1
     fi
 done
@@ -45,7 +53,7 @@ for file in bin/run-server bin/run-cli scripts/lib/llamacpp-env.sh; do
         exit 1
     fi
 done
-for name in llm-away-slurm-run llm-away-serverctl llm-away-k8sctl ensure-container.py; do
+for name in llm-away-slurm-run llm-away-serverctl llm-away-directctl llm-away-k8sctl ensure-container.py; do
     if [[ ! -r "$SOURCE_DIR/$name" ]]; then
         echo "Missing bundled helper: $SOURCE_DIR/$name" >&2
         exit 1
@@ -82,7 +90,7 @@ install_helper() (
     echo "Installed: $dest"
 )
 
-for name in llm-away-slurm-run llm-away-serverctl llm-away-k8sctl ensure-container.py; do
+for name in llm-away-slurm-run llm-away-serverctl llm-away-directctl llm-away-k8sctl ensure-container.py; do
     install_helper "$name"
 done
 echo "Remote AWAY helpers are ready. Model files, GPU builds, and Slurm access must also be configured; see README."

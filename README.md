@@ -453,3 +453,18 @@ Start locally with `REMOTE_HOST=hydra-h200 away-agent` or
 llama.cpp source/build tree is needed for these server profiles. Keep model
 files, recipes, bin/ and scripts/. Source compilation and llama-cli diagnostics
 still require their own source/build or CLI-capable container.
+
+### Interactive setup menus
+
+Run `./scripts/init-local.sh` (add `--restart` to reconfigure a saved host).
+Use Up/Down or type an option number, then Enter. Answers remain in the terminal
+above the next question, including the model selection. Long lists scroll within
+the menu; q/Esc cancels. Plain terminals retain numbered input.
+
+SSH Host patterns (`?`, `*`, and stanza-local `!` exclusions) are listed alongside
+literal aliases, including Include files. Select a pattern, then enter a concrete
+hostname; `epn000`, `epn137`, etc. are handled identically. Patterns express SSH
+configuration matching, not authorization or proof that a machine exists.
+
+Remote setup supports `--scheduler slurm|kubernetes|direct` (default Slurm), so
+direct installations do not require scheduler commands.
