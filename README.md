@@ -264,6 +264,8 @@ Model discovery and server status do not submit a job; status may create the sta
 - `bin/away-agent`: foreground provider command for already-open VS Code windows.
 - `bin/codex-away`: Codex launcher that owns the local provider lifecycle.
 - `bin/code-away`: VS Code launcher that starts the local provider before opening the editor.
+- `bin/download-away-model`: keyword-based GGUF downloader; searches Hugging Face, lists quantizations and MTP drafts, downloads the choice on the active host, and writes a preset.
+- `bin/find-model`: the downloader script executed on the host (uploaded automatically by `download-away-model` when missing).
 - `src/llm_away/`: stdlib Python proxy and backend code.
 - `scripts/init-local.sh`: installs launcher links and writes Codex setup.
 - `scripts/remote/setup.sh`: initializer run on the remote login host, deployed as `scripts/remote/setup.sh` in the runner project.
@@ -395,6 +397,24 @@ LLAMACPP_BACKEND=rocm LLAMACPP_ROCM_ARCH=gfx908 bin/build-llama  # MI100 allocat
 bin/download-model qwen3.8-27b-q4km                  # requires Hugging Face CLI
 ```
 
+### Keyword model downloader
+
+`bin/download-away-model` finds and installs models that are not already
+presets. It searches Hugging Face for GGUF repositories by keyword, lists the
+available quantizations (grouped per quant, with MTP/draft files detected and
+offered), downloads the selected files to the active host's
+`models/<REPO>-GGUF/`, and writes `models/<alias>/model.env` so the AWAY agent
+discovers the preset on its next model listing. Existing files are skipped;
+the download uses the `hf` CLI when present and falls back to plain HTTP.
+
+```bash
+bin/download-away-model qwen3 gguf                  # interactive, on the active host
+bin/download-away-model --repo ggml-org/Qwen3.8-27B-GGUF --quant Q4_K_M --mtp --dry-run
+```
+
+Non-interactive flags: `--repo` (skip search), `--quant`, `--mtp`/`--no-mtp`,
+`--alias NAME`, `--no-preset`, `--dry-run`, `--config PATH`.
+
 Suggested manual checks from the local project (not run during this migration):
 
 ```bash
@@ -422,7 +442,7 @@ See the remote repository’s `docs/hydra-containers.md` for the commands.
 
 Both Hydra profiles now use prebuilt llama.cpp server images. On agent startup,
 missing SIF images are downloaded on the login host before GPUs are allocated,
-then cached in `/lustre/alice/users/csonnab/TPC/TPC_PRODUCTION/Containers` as
+then cached in `/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY-remote/containers` as
 `llama-server-cuda.sif` and `llama-server-rocm.sif`. Existing nonempty images are
 reused, never silently refreshed. Downloads are locked and published atomically.
 To change storage or pin an image version, edit the host profile's `container`

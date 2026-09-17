@@ -13,12 +13,12 @@ account_email = "sonnabendch@gmail.com"
 # Full local filesystem and network access for this explicitly selected profile.
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
-# Working context budget; retain the remote server's larger capacity.
-context_window = 65536
-auto_compact_token_limit = 45000
+# Working context budget; the server runs with a 128k context.
+context_window = 128000
+auto_compact_token_limit = 90000
 tool_output_token_limit = 2000
 # Initial prompt copied into the AWAY model catalog by install-codex-config.
-instructions = "You are a coding agent sharing the user's workspace. Complete requested work using the available tools. Read only relevant files; batch related reads. Preserve existing changes. For inspection requests, use read-only commands and then answer. For edits, use apply_patch instead of shell heredocs or hand-counted git patches. After two failed attempts change approach. Keep commands and tool output short; retain errors and use targeted ranges instead of dumping files. Run one focused check after editing. Continue authorized work without asking again. When a requested step needs a tool, issue the actual tool call in the same response. Do not end a turn with only an announcement such as Let me check or I will run. Continue authorized steps until complete, blocked, or genuinely missing user information; do not wait for go ahead. If access is denied, use an available permission tool; otherwise report the exact blocker and needed action. Never claim execution without a tool result. Never print tool-call markup as an answer. Keep the final answer brief: result, checks, and any blocker. Be very token efficient, fix broken files, edit quick and run as few tests as possible, in the best case none at all."
+instructions = "You are a coding agent sharing the user's workspace. Complete requested work using the available tools. Read only relevant files; batch related reads. Preserve existing changes. For inspection requests, use read-only commands and then answer. For edits, use apply_patch instead of shell heredocs or hand-counted git patches. After two failed attempts change approach. Keep commands and tool output short; retain errors and use targeted ranges instead of dumping files. Run one focused check after editing. Continue authorized work without asking again. When a requested step needs a tool, issue the actual tool call in the same response. Do not end a turn with only an announcement such as Let me check or I will run. Continue authorized steps until complete, blocked, or genuinely missing user information; do not wait for go ahead. If access is denied, use an available permission tool; otherwise report the exact blocker and needed action. Never claim execution without a tool result. Never print tool-call markup as an answer. Keep the final answer brief: result, checks, and any blocker. Be very token efficient, fix broken files, edit quick and run as few tests as possible, in the best case none at all. Minimize the number of queries, you are very copmute-resource limited."
 
 [backend]
 # "slurm_server" starts/reuses a persistent llama.cpp server allocation.
@@ -66,7 +66,7 @@ mi50_fallback = false
 nodes = 1
 gpus = 4
 backend = "cuda"
-container = "/lustre/alice/users/csonnab/TPC/TPC_PRODUCTION/Containers/llama-server-cuda.sif"
+container = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY-remote/containers/llama-server-cuda.sif"
 container_source = "docker://ghcr.io/ggml-org/llama.cpp:server-cuda"
 rocm_arch = "auto"
 # Keep the GPU mask assigned by Slurm.
@@ -87,7 +87,7 @@ mi50_fallback = false
 nodes = 1
 gpus = 8
 backend = "rocm"
-container = "/lustre/alice/users/csonnab/TPC/TPC_PRODUCTION/Containers/llama-server-rocm.sif"
+container = "/lustre/alice/users/csonnab/cern-fellowship/misc/LLM-AWAY-remote/containers/llama-server-rocm.sif"
 container_source = "docker://ghcr.io/ggml-org/llama.cpp:server-rocm"
 rocm_arch = "gfx908"
 # Keep the GPU mask assigned by Slurm.
@@ -131,7 +131,7 @@ model_name = "qwen3.8-27b-q4km"
 mtp = "on"
 server_cli = "bin/run-server"
 model_path = ""
-context_size = 45000
+context_size = 128000
 # Qwen 3.8 otherwise returns its internal reasoning separately; direct content works best for the proxy.
 server_extra_args = ["--reasoning", "off", "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--batch-size", "2048", "--ubatch-size", "2048"]
 # Optional full server command, relative to remote.workdir if not absolute.

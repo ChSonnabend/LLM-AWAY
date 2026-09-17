@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Run the interactive GGUF downloader on the currently selected compute host.
+
+Usage: download-away-model [keyword] [options passed through to find-model]
+
+The command resolves the active AWAY host from config/away.toml, checks that
+bin/find-model exists there (uploading it when missing), and then starts
+find-model interactively. The model is downloaded into the remote project's
+models/ directory and registered as a preset the AWAY agent can discover.
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(root / "src"))
+from llm_away.config import load_config  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False)
+    parser.add_argument("keyword", nargs="?")
+    parser.add_argument("--config", default=str(root / "config/away.toml"))
+    parser.add_argument("-h", "--help", action="store_true")
+    args, forwarded = parser.parse_known_args()
+    if args.help:
+        parser.print_help()
+        return 0
+
+    try:
+        cfg = load_config(args.config)
+    except (ValueError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    script_path = root / "bin/find-model"
+    if not script_path.is_file():
+        print("bin/find-model is missing from this checkout.", file=sys.stderr)
+        return 1
+
+    remote_script = cfg.remote.workdir + "/bin/find-model"
+    command = [sys.executable, remote_script, "--root", cfg.remote.workdir]
+    if args.keyword:
+        command.append(args.keyword)
+    command.extend(forwarded)
+
+    if cfg.ssh.connection == "local":
+        print("Model destination: this machine — " + cfg.remote.workdir, flush=True)
+        if not Path(cfg.remote.workdir, "bin/find-model").is_file():
+            print(f"{remote_script} is missing; run the remote setup or push it first.",
+                  file=sys.stderr)
+            return 1
+        try:
+            return subprocess.call(command)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+    print("Model destination: " + cfg.ssh.destination + " — " + cfg.remote.workdir, flush=True)
+    check = (f"import os,sys; os.path.isfile({shlex.quote(remote_script)})"
+             " or sys.exit(1)")
+    probe = subprocess.run(
+        ["ssh", "-o", f"ConnectTimeout={cfg.ssh.connect_timeout_seconds}",
+         cfg.ssh.destination, "python3 -c", shlex.quote(check)],
+        capture_output=True, text=True)
+    if probe.returncode:
+        print("Uploading bin/find-model to the host ...", flush=True)
+        push = subprocess.run(
+            ["scp", "-q", "-o", f"ConnectTimeout={cfg.ssh.connect_timeout_seconds}",
+             str(script_path), f"{cfg.ssh.destination}:{remote_script}"],
+            capture_output=True, text=True)
+        if push.returncode:
+            print("Could not upload find-model: " + push.stderr.strip(), file=sys.stderr)
+            return 1
+
+    remote_command = " ".join(shlex.quote(part) for part in command)
+    try:
+        return subprocess.call([
+            "ssh", "-t",
+            "-o", f"ConnectTimeout={cfg.ssh.connect_timeout_seconds}",
+            cfg.ssh.destination, remote_command])
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

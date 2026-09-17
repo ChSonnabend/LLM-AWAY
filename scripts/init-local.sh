@@ -11,7 +11,7 @@ connection_args=()
 skip_selection=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --model|--config|--mtp|--ssh-alias|--remote-workdir)
+        --model|--config|--mtp|--ssh-alias|--remote-workdir|--connection)
             if [[ $# -lt 2 || -z "$2" ]]; then
                 echo "$1 requires a value" >&2
                 exit 2
@@ -58,6 +58,7 @@ install_link "$ROOT/bin/llm-away"
 install_link "$ROOT/bin/away-agent"
 install_link "$ROOT/bin/code-away"
 install_link "$ROOT/bin/codex-away"
+install_link "$ROOT/bin/download-away-model"
 
 "$ROOT/bin/llm-away" install-codex-config --config "$config" --no-activate
 

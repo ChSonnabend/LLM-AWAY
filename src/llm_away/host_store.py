@@ -31,7 +31,13 @@ def write_store(config_path, data):
 
 
 def apply_profile(cfg, profile):
-    changes = {key: replace(getattr(cfg, key), **profile[key])
-               for key in ('ssh', 'remote', 'slurm', 'llamacpp', 'model', 'kubernetes') if key in profile}
+    changes = {}
+    for key in ('ssh', 'remote', 'slurm', 'llamacpp', 'model', 'kubernetes'):
+        if key not in profile:
+            continue
+        values = dict(profile[key])
+        if key == 'ssh':
+            values.setdefault('connection', 'ssh')  # Profiles saved before local transport existed.
+        changes[key] = replace(getattr(cfg, key), **values)
     changes['backend_type'] = profile['backend_type']
     return replace(cfg, **changes)

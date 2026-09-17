@@ -28,22 +28,27 @@ def mtp_label(model: dict) -> str:
 
 
 def choose_mtp(model: dict, current: str = "auto", requested: str | None = None,
-               interactive: bool = False) -> str:
+               interactive: bool | None = None) -> str:
     mtp = model.get("mtp", {})
     mode = requested if requested is not None else current
+    if interactive is None:
+        interactive = interactive_available()
     if interactive and requested is None and mtp.get("available") and mtp.get("toggle_supported"):
         default = mode != "off"
         if interactive_available():
             index = choose_option(["MTP on", "MTP off"], "MTP", 0 if default else 1)
-            return choose_mtp(model, current, "on" if index == 0 else "off")
-        while True:
-            answer = input("Use MTP? " + ("[Y/n]" if default else "[y/N]") + ", q to cancel: ").strip().lower()
-            if answer == "q":
-                raise ValueError("Model selection canceled; settings unchanged")
-            if answer in ("", "y", "yes", "n", "no"):
-                mode = "on" if (default if not answer else answer in ("y", "yes")) else "off"
-                break
-            print("Choose y or n, or q to cancel.")
+            mode = "on" if index == 0 else "off"
+        else:
+            while True:
+                answer = input("Use MTP? " + ("[Y/n]" if default else "[y/N]") + ", q to cancel: ").strip().lower()
+                if answer == "q":
+                    raise ValueError("Model selection canceled; settings unchanged")
+                if answer in ("", "y", "yes", "n", "no"):
+                    mode = "on" if (default if not answer else answer in ("y", "yes")) else "off"
+                    break
+                print("Choose y or n, or q to cancel.")
+    if requested is not None:
+        mode = requested
     if mode not in ("auto", "on", "off"):
         raise ValueError("MTP mode must be auto, on, or off")
     if mode == "on" and not mtp.get("available"):
@@ -60,6 +65,8 @@ def discover_models(config: AppConfig) -> list[dict]:
     command = ["ssh", "-o", "BatchMode=yes", "-o",
                f"ConnectTimeout={config.ssh.connect_timeout_seconds}",
                config.ssh.destination, "python3 - " + shlex.quote(config.remote.workdir)]
+    if config.ssh.connection == "local":
+        command = [sys.executable, '-', config.remote.workdir]
     for attempt in range(max(1, config.ssh.retries)):
         result = subprocess.run(command, input=script, text=True, capture_output=True,
                                 timeout=max(60, config.ssh.connect_timeout_seconds + 30))

@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Manage a detached local llama-server without a scheduler."""
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+if len(sys.argv) != 3 or sys.argv[2] != '--json':
+    sys.exit('Usage: llm-away-directctl ensure|status|cancel|log --json')
+action = sys.argv[1]
+p = json.load(sys.stdin)
+l = p['llamacpp']
+root = Path(os.path.expandvars(p['remote_workdir'])).expanduser().resolve()
+state_dir = Path(os.path.expandvars(p['state_dir'])).expanduser()
+state_dir.mkdir(parents=True, exist_ok=True)
+key = hashlib.sha256(p.get('model','default').encode()).hexdigest()[:24]
+state_file = state_dir / (key+'.direct.json')
+log_file = state_dir / (key+'.direct.log')
+
+def identity(pid):
+    try:
+        proc = Path('/proc') / str(pid) / 'stat'
+        if proc.exists():
+            fields = proc.read_text().rsplit(')',1)[1].split()
+            if fields[0] == 'Z': return ''
+            return fields[19]  # Linux process start time, unaffected by exec.
+        return subprocess.check_output(['ps','-p',str(pid),'-o','lstart='], universal_newlines=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.SubprocessError):
+        return ''
+
+def read():
+    return json.loads(state_file.read_text()) if state_file.exists() else {}
+
+def write(s):
+    temp = state_file.with_suffix('.tmp')
+    temp.write_text(json.dumps(s))
+    os.replace(str(temp), str(state_file))
+
+def status():
+    s = read()
+    active = bool(s.get('identity') and identity(s.get('pid')) == s['identity'])
+    s.update(active=active, slurm_state='RUNNING' if active else '', reason='', host='127.0.0.1', log_path=str(log_file))
+    return s
+
+try:
+    with open(str(state_file)+'.lock','a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if action == 'ensure':
+            if int(p.get('nodes',1)) != 1:
+                raise ValueError('Direct mode supports only one host')
+            fingerprint = hashlib.sha256(json.dumps([l,p['server_port']],sort_keys=True).encode()).hexdigest()
+            s = status()
+            if s['active']:
+                if s.get('fingerprint') != fingerprint or p.get('force_new_job'):
+                    raise ValueError('A direct server is running; cancel it before changing settings')
+            else:
+                image = l.get('container','')
+                if image:
+                    subprocess.check_call([sys.executable,str(root/'scripts/remote/ensure-container.py'),image,l.get('container_source',''),l.get('container_runtime','apptainer')], stdout=sys.stderr)
+                # Fail early instead of accidentally connecting to somebody else's server.
+                with socket.socket() as sock:
+                    sock.bind(('127.0.0.1',int(p['server_port'])))
+                env = dict(os.environ)
+                for name in list(env):
+                    if name.startswith(('SLURM_', 'MODEL_', 'LLAMACPP_')):
+                        env.pop(name)
+                env.update(LLAMACPP_BACKEND=l.get('backend','cpu'), LLAMACPP_ROCM_ARCH=l.get('rocm_arch','auto'),
+                    LLAMACPP_CONTAINER=image, LLAMACPP_CONTAINER_RUNTIME=l.get('container_runtime','apptainer'),
+                    LLAMACPP_VISIBLE_DEVICES=l.get('visible_devices',''), LLAMACPP_HOST='127.0.0.1',
+                    LLAMACPP_PORT=str(p['server_port']), LLAMACPP_CTX_SIZE=str(l.get('context_size',8192)),
+                    LLAMACPP_MTP=l.get('mtp','auto'), MODEL_NAME=l.get('model_name') or p['model'])
+                if l.get('backend') == 'cuda' and l.get('visible_devices'):
+                    env['CUDA_VISIBLE_DEVICES'] = l['visible_devices']
+                if l.get('backend') == 'rocm' and l.get('visible_devices'):
+                    env['ROCR_VISIBLE_DEVICES'] = l['visible_devices']
+                if l.get('container_runtime') == 'docker' and image:
+                    env['LLAMACPP_HOST'] = '0.0.0.0'
+                    env['LLAMACPP_PUBLISH_ADDRESS'] = '127.0.0.1'
+                if l.get('model_path') or l.get('server_command'):
+                    raise ValueError('Direct mode currently requires a managed model preset')
+                cmd = [str(root/l.get('server_cli','bin/run-server')), '--ctx-size',str(l.get('context_size',8192))] + l.get('server_extra_args',[])
+                with open(log_file,'w') as log:
+                    child = subprocess.Popen(cmd,cwd=str(root),env=env,stdin=subprocess.DEVNULL,
+                                             stdout=log,stderr=log,start_new_session=True)
+                birth = identity(child.pid)
+                if not birth:
+                    raise RuntimeError('Server exited immediately; inspect '+str(log_file))
+                s = {'pid':child.pid,'identity':birth,'job_id':str(child.pid),'model':p['model'],
+                     'server_port':p['server_port'],'fingerprint':fingerprint,'submitted_at':int(time.time())}
+                write(s)
+            result = status()
+        elif action == 'status':
+            result = status()
+        elif action == 'cancel':
+            s = status()
+            if p.get('job_id') and str(p['job_id']) != str(s.get('job_id')):
+                raise ValueError('Refusing to terminate a process not owned by this profile')
+            if s['active']:
+                os.killpg(int(s['pid']),signal.SIGTERM)
+            result = status()
+        elif action == 'log':
+            with open(log_file, 'r+b') if log_file.exists() else open(log_file, 'wb') as log:
+                offset = max(0, int(p.get('log_offset', 0)))
+                log.seek(0, 2)
+                size = log.tell()
+                if offset > size:
+                    offset = 0
+                log.seek(offset)
+                chunk = log.read(65536)
+                result = {'offset': size, 'data': chunk.decode('utf-8', 'replace')}
+        else:
+            raise ValueError('Unknown action: '+action)
+        print(json.dumps(result))
+except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+    sys.exit(str(exc))

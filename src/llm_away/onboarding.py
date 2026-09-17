@@ -76,9 +76,10 @@ def select_host(aliases, current, requested=None):
             return value
 
 
-def remote_json(alias, script, *args):
+def remote_json(alias, script, *args, connection='ssh'):
     command = 'python3 - ' + ' '.join(shlex.quote(str(a)) for a in args)
-    result = subprocess.run(['ssh', '-o', 'ConnectTimeout=30', alias, command],
+    invocation = [sys.executable, '-', *map(str, args)] if connection == 'local' else ['ssh', '-o', 'ConnectTimeout=30', alias, command]
+    result = subprocess.run(invocation,
                             input=script, text=True, capture_output=True, timeout=90)
     if result.returncode:
         raise ValueError('Remote inspection failed: ' + result.stderr.strip())
@@ -105,10 +106,13 @@ print(json.dumps({'tools':tools,'partitions':parts}))
 
 
 def configure_local(config_path, alias=None, workdir=None, restart=False,
-                    model=None, mtp=None, skip_model_selection=False):
+                    model=None, mtp=None, skip_model_selection=False, connection=None):
     cfg = load_config(config_path)
     store = read_store(config_path)
-    alias = select_host(ssh_hosts(), store.get('active') or cfg.ssh.host, alias)
+    connection = connection or ask('Connection: ssh or local', 'ssh' if alias else cfg.ssh.connection, ('ssh','local'))
+    alias = '@local' if connection == 'local' else select_host(ssh_hosts(), store.get('active') or cfg.ssh.host, alias)
+    def inspect_host(script, *args):
+        return remote_json(alias, script, *args, connection=connection)
     old = store['hosts'].get(alias)
     if old and not restart:
         profile = old
@@ -120,14 +124,14 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
             defaults = None
         root = absolute(workdir or ask('Full path to LLM-AWAY-remote',
                         old['remote']['workdir'] if old else (defaults.remote.workdir if defaults else '')))
-        info = remote_json(alias, PROBE, root)
+        info = inspect_host(PROBE, root)
         use_container = ask('Container required? yes/no', 'yes' if (old and old['llamacpp']['container']) or (defaults and defaults.llamacpp.container) else 'no', ('yes','no')) == 'yes'
         container, runtime = '', 'apptainer'
         if use_container:
             container = absolute(ask('Full path to container (SIF or Docker archive)',
                                  old['llamacpp']['container'] if old else (defaults.llamacpp.container if defaults else '')))
-        scheduler = ask('Submission system', 'slurm', ('slurm','kubernetes'))
-        if use_container and scheduler == 'slurm':
+        scheduler = ask('Submission system', 'slurm', ('slurm','kubernetes','direct'))
+        if use_container and scheduler != 'kubernetes':
             available = [x for x in ('apptainer','docker') if info['tools'][x]]
             if not available:
                 raise ValueError('Neither Apptainer nor Docker is available on this SSH host')
@@ -137,11 +141,11 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
             print('Container runtime: ' + runtime)
             if runtime == 'docker' and container.endswith('.sif'):
                 raise ValueError('Docker cannot run SIF images; provide a Docker archive or use Apptainer')
-            remote_json(alias, "import json,os,sys; p=sys.argv[1]; assert os.path.isfile(p), 'Container not found: '+p; print(json.dumps(True))", container)
-        if not info['tools']['sbatch' if scheduler == 'slurm' else 'kubectl']:
+            inspect_host("import json,os,sys; p=sys.argv[1]; assert os.path.isfile(p), 'Container not found: '+p; print(json.dumps(True))", container)
+        if scheduler != 'direct' and not info['tools']['sbatch' if scheduler == 'slurm' else 'kubectl']:
             raise ValueError('Required scheduler command is not installed on ' + alias)
         backend = ask('GPU backend', defaults.llamacpp.backend if defaults else 'cuda', ('cuda','rocm','cpu'))
-        if scheduler == 'slurm' and use_container and runtime == 'docker' and backend == 'rocm':
+        if scheduler != 'kubernetes' and use_container and runtime == 'docker' and backend == 'rocm':
             raise ValueError('ROCm Docker device mapping is not supported; use an Apptainer SIF or Kubernetes')
         arch = ask('ROCm architecture', 'gfx908') if backend == 'rocm' else 'auto'
         gpus = int(ask('GPUs per job (0 for CPU)', '0' if backend == 'cpu' else '1'))
@@ -149,6 +153,10 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
             raise ValueError('GPU jobs require a positive GPU count')
         llama = asdict(LlamaCppConfig(backend=backend, rocm_arch=arch, visible_devices='',
                         container=container, container_runtime=runtime, build_before_run=False, mtp='auto'))
+        if scheduler == 'direct' and gpus:
+            llama['visible_devices'] = ask('GPU device IDs (comma-separated)', ','.join(str(i) for i in range(gpus)))
+            if not re.fullmatch(r'\d+(,\d+)*', llama['visible_devices']):
+                raise ValueError('GPU device IDs must be comma-separated integers')
         # Preserve application context and model-independent generation settings.
         for key in ('context_size','server_extra_args','max_tokens'):
             llama[key] = getattr(cfg.llamacpp, key)
@@ -161,7 +169,7 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
             slurm['custom_options'] = shlex.split(ask('Additional Slurm options', '--cpus-per-task=8 --mem=64G --time=02:00:00'))
             if alias == 'epnh' and defaults:
                 slurm['node_class'], slurm['mi50_fallback'] = defaults.slurm.node_class, defaults.slurm.mi50_fallback
-        else:
+        elif scheduler == 'kubernetes':
             print('Kubernetes runs OCI images, not SIF files or Docker archives.')
             kube['image'] = ask('Kubernetes OCI image', 'ghcr.io/ggml-org/llama.cpp:server-rocm' if backend == 'rocm' else 'ghcr.io/ggml-org/llama.cpp:server-cuda')
             kube['context'] = ask('kubectl context (blank uses current)', '')
@@ -170,19 +178,20 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
             kube['gpu_resource'] = 'amd.com/gpu' if backend == 'rocm' else 'nvidia.com/gpu'
             llama['container'] = ''  # No nested container inside a Kubernetes pod.
             probe = "import json,subprocess,sys; c=['kubectl']; c+=['--context',sys.argv[1]] if sys.argv[1] else []; c+=['--namespace',sys.argv[2],'auth','can-i','create','jobs.batch']; p=subprocess.run(c,stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True); assert p.returncode==0 and p.stdout.strip()=='yes', 'kubectl cannot create Jobs: '+p.stderr; print(json.dumps(True))"
-            remote_json(alias, probe, kube['context'], kube['namespace'])
-        profile = {'ssh': {'host':alias,'user':''}, 'remote': asdict(RemoteConfig(
+            inspect_host(probe, kube['context'], kube['namespace'])
+        controller = {'slurm':'llm-away-serverctl', 'kubernetes':'llm-away-k8sctl', 'direct':'llm-away-directctl'}[scheduler]
+        profile = {'ssh': {'host':alias,'user':'','connection':connection}, 'remote': asdict(RemoteConfig(
                     workdir=root, state_dir=root+'/.state/'+alias,
                     runner=root+'/scripts/remote/llm-away-slurm-run',
-                    serverctl=root+'/scripts/remote/'+('llm-away-k8sctl' if scheduler == 'kubernetes' else 'llm-away-serverctl'))),
+                    serverctl=root+'/scripts/remote/'+controller)),
                     'llamacpp':llama, 'slurm':slurm, 'kubernetes':kube,
-                    'backend_type':'kubernetes' if scheduler == 'kubernetes' else 'slurm_server'}
-        required = 'scripts/remote/llm-away-k8sctl' if scheduler == 'kubernetes' else 'scripts/remote/llm-away-serverctl'
-        remote_json(alias, "import json,os,sys; assert os.path.isfile(sys.argv[1]), 'Update the remote project: '+sys.argv[1]; print(json.dumps(True))", root+'/'+required)
+                    'backend_type':'slurm_server' if scheduler == 'slurm' else scheduler}
+        required = 'scripts/remote/'+controller
+        inspect_host("import json,os,sys; assert os.path.isfile(sys.argv[1]), 'Update the remote project: '+sys.argv[1]; print(json.dumps(True))", root+'/'+required)
     selected_cfg = apply_profile(cfg, profile)
     if not skip_model_selection:
         chosen = choose_model(discover_models(selected_cfg), selected_cfg.llamacpp.model_name, model)
-        mode = choose_mtp(chosen, 'auto', mtp, interactive=False)
+        mode = choose_mtp(chosen, 'auto', mtp, interactive=sys.stdin.isatty())
         profile = {**profile, 'model': {'name':chosen['alias']},
                    'llamacpp': {**profile['llamacpp'], 'model_name':chosen['name'], 'mtp':mode}}
     elif not old:

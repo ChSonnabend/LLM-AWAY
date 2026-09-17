@@ -397,6 +397,7 @@ def main(argv: list[str] | None = None) -> int:
     setup_parser.add_argument("--ssh-alias", help="AWAY login-node Host alias from ~/.ssh/config")
     setup_parser.add_argument("--remote-workdir")
     setup_parser.add_argument("--restart", action="store_true")
+    setup_parser.add_argument("--connection", choices=("ssh", "local"))
     setup_parser.add_argument("--model")
     setup_parser.add_argument("--mtp", choices=("auto", "on", "off"))
     setup_parser.add_argument("--skip-model-selection", action="store_true")
@@ -422,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
         from .onboarding import configure_local
         try:
             configure_local(args.config, args.ssh_alias, args.remote_workdir,
-                            args.restart, args.model, args.mtp, args.skip_model_selection)
+                            args.restart, args.model, args.mtp, args.skip_model_selection, args.connection)
         except (ValueError, OSError, subprocess.SubprocessError) as exc:
             print(str(exc), file=sys.stderr)
             return 1

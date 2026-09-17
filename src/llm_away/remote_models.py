@@ -45,7 +45,10 @@ def installed_models(workdir):
         )
         if result.returncode:
             continue
-        alias, path, draft, spec_type, draft_max, toggle = result.stdout.split("\0")
+        parts = result.stdout.split("\0")
+        if len(parts) != 6:
+            continue
+        alias, path, draft, spec_type, draft_max, toggle = parts
         model_path = Path(path)
         size = gguf_size(model_path)
         if not size:

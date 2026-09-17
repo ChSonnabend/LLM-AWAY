@@ -255,6 +255,8 @@ class SlurmServerBackend(Backend):
             cfg.ssh.destination,
             remote,
         ]
+        if cfg.ssh.connection == "local":
+            cmd = ["bash", "-lc", shlex.quote(cfg.remote.serverctl) + " " + shlex.quote(command) + " --json"]
         if command == "ensure" and cfg.llamacpp.container:
             print("llm-away: preparing remote container (first launch downloads it; later launches reuse it)", file=sys.stderr, flush=True)
         attempts = max(1, cfg.ssh.retries)
@@ -292,6 +294,9 @@ class SlurmServerBackend(Backend):
 
     def ensure_tunnel(self, host: str) -> None:
         remote_port = self.job_port if self.job_port is not None else self.config.gateway.server_port
+        if self.config.ssh.connection == "local":
+            self._local_endpoint = (host, remote_port)
+            return
         target = f"{self.local_port}:{host}:{remote_port}"
         if self._tunnel and self._tunnel.poll() is None and self._tunnel_target == target:
             return
@@ -399,6 +404,9 @@ class SlurmServerBackend(Backend):
         return str(data.get("content") or data.get("response") or data)
 
     def local_url(self, path: str) -> str:
+        if hasattr(self, '_local_endpoint'):
+            host, port = self._local_endpoint
+            return f"http://{host}:{port}{path}"
         return f"http://127.0.0.1:{self.local_port}{path}"
 
     def ssh_options(self, exit_on_forward_failure: bool = False) -> list[str]:
@@ -464,6 +472,10 @@ class KubernetesBackend(SlurmServerBackend):
         port = self.job_port or self.config.gateway.server_port
         cmd.extend(["--namespace", k.namespace, "port-forward", "--address", "127.0.0.1",
                     "pod/" + host, str(self.local_port) + ":" + str(port)])
+        if self.config.ssh.connection == "local":
+            self._tunnel = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=None, text=True)
+            self._tunnel_target = host
+            return
         self._tunnel = subprocess.Popen([
             "ssh", *self.ssh_options(exit_on_forward_failure=True),
             "-L", f"{self.local_port}:127.0.0.1:{self.local_port}",
@@ -475,7 +487,7 @@ class KubernetesBackend(SlurmServerBackend):
 def make_backend(config: AppConfig) -> Backend:
     if config.backend_type == "slurm":
         return SubprocessSlurmSshBackend(config)
-    if config.backend_type == "slurm_server":
+    if config.backend_type in ("slurm_server", "direct"):
         return SlurmServerBackend(config)
     if config.backend_type == "kubernetes":
         return KubernetesBackend(config)

@@ -23,6 +23,7 @@ class ModelConfig:
 
 @dataclass(frozen=True)
 class SshConfig:
+    connection: str = "ssh"
     host: str = "epnh"
     user: str = ""
     connect_timeout_seconds: int = 60
@@ -31,6 +32,8 @@ class SshConfig:
 
     @property
     def destination(self) -> str:
+        if self.connection == "local":
+            return "local machine"
         return f"{self.user}@{self.host}" if self.user else self.host
 
 
@@ -135,7 +138,7 @@ class LlamaCppConfig:
     model_name: str = "qwen3.8-flash-next-125b-ultralite-37g"
     server_cli: str = "bin/run-server"
     model_path: str = ""
-    context_size: int = 45000
+    context_size: int = 100000
     server_extra_args: list[str] = field(default_factory=list)
     server_command: list[str] = field(default_factory=list)
     mtp: str = "auto"
@@ -158,7 +161,7 @@ class CodexConfig:
     sandbox_mode: str = "workspace-write"
     approval_policy: str = "on-request"
     context_window: int = 65536
-    auto_compact_token_limit: int = 45000
+    auto_compact_token_limit: int = 100000
     tool_output_token_limit: int = 2000
 
 
@@ -224,7 +227,7 @@ class AppConfig:
             backend_type="slurm_server",
             active_host="",
             kubernetes=KubernetesConfig(),
-            ssh=replace(self.ssh, host=host.ssh_host, user=host.ssh_user),
+            ssh=replace(self.ssh, connection="ssh", host=host.ssh_host, user=host.ssh_user),
             remote=replace(self.remote,
                 workdir=host.remote_workdir or self.remote.workdir,
                 runner=host.runner or self.remote.runner,
