@@ -86,3 +86,5 @@ rebooting the Mac. Existing allocations are not automatically resumed after rebo
 Verification: one temporary CPU-only two-session lifecycle check; Slurm/Kubernetes
 and real model/GPU inference still require a user smoke check. Try allocating one GPU,
 starting a small model, exiting with “keep”, then running the same ID and releasing it.
+
+Hydra: [GLM-5.3-Flash Q4 on two H200s, 750k context](remote/docs/glm-5.3-flash.md).

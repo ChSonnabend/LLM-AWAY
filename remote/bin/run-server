@@ -4,12 +4,12 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 
-source "$ROOT_DIR/scripts/lib/container-env.sh"
-llamacpp_enter_container "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "$@"
-
 source "$ROOT_DIR/scripts/lib/llamacpp-env.sh"
 
 llamacpp_load_model_config "${MODEL_NAME:-$LLAMACPP_DEFAULT_MODEL}"
+
+source "$ROOT_DIR/scripts/lib/container-env.sh"
+llamacpp_enter_container "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "$@"
 
 BACKEND=$(llamacpp_detect_backend)
 llamacpp_export_visible_devices "$BACKEND"
@@ -31,4 +31,9 @@ done < <(llamacpp_common_run_args "$BACKEND" "$GPU_COUNT")
 
 # Native build directories may have moved since compilation.
 export LD_LIBRARY_PATH="$(dirname "${LLAMA_SERVER}")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "$LLAMA_SERVER" "${ARGS[@]}" "$@"
+# Model-specific compatibility flags take precedence over saved host defaults.
+MODEL_SERVER_ARGS=()
+if [[ -n ${LLAMACPP_SERVER_EXTRA_ARGS:-} ]]; then
+  read -r -a MODEL_SERVER_ARGS <<< "$LLAMACPP_SERVER_EXTRA_ARGS"
+fi
+exec "$LLAMA_SERVER" "${ARGS[@]}" "$@" "${MODEL_SERVER_ARGS[@]}"

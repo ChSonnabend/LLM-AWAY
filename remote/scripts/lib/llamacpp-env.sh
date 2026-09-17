@@ -298,11 +298,16 @@ llamacpp_binary() {
   fi
   build_id=$(llamacpp_build_id "$backend" "${arch:-}")
 
+  local env_name="LLAMA_${tool^^}"
+  if [[ -n ${!env_name:-} ]]; then
+    [[ -x ${!env_name} ]] || llamacpp_die "configured binary is missing: ${!env_name}"
+    echo "${!env_name}"
+    return 0
+  fi
   if [[ ${LLAMACPP_IN_CONTAINER:-0} == 1 && -x /app/llama-$tool ]]; then
     echo "/app/llama-$tool"
     return 0
   fi
-  local env_name="LLAMA_${tool^^}"
   local candidate
   for candidate in \
     "${!env_name:-}" \

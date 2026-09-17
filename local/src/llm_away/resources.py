@@ -174,6 +174,8 @@ def daemon(path):
                             if not allocation.get('active'): raise ValueError('Allocation is not active')
                             cfg=replace(cfg,model=replace(cfg.model,name=request['model']['alias']),
                                 llamacpp=replace(cfg.llamacpp,model_name=request['model']['name'],mtp=request['mtp']))
+                            if request['model'].get('context_size',0)>0:
+                                cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=request['model']['context_size']))
                             state(config=asdict(cfg),model=cfg.model.name,provider_exit=None,client_pid=request.get('client_pid'),client_identity=identity(request.get('client_pid')))
                             child=subprocess.Popen([sys.executable,'-m','llm_away.resources','provider',str(path)],stdin=subprocess.DEVNULL)
                             state(provider_pid=child.pid,provider_identity=identity(child.pid))
@@ -252,6 +254,10 @@ def run_agent(args):
         except BlockingIOError:raise ValueError('Another run command owns this session')
         data=rpc(path,'status');cfg=config(data['config'])
         model=choose_model(discover_models(cfg),cfg.llamacpp.model_name,args.model)
+        # Explicit preset context also applies to allocations created before the preset.
+        if model.get('context_size',0)>0:
+            cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=model['context_size']),
+                        codex=replace(cfg.codex,context_window=model['context_size']))
         mtp=choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
         started=False
         agent=None

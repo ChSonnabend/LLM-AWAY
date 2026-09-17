@@ -36,9 +36,9 @@ def installed_models(workdir):
             ["bash", "-c", 'set -e; source "$1"; llamacpp_load_model_config "$2"; '
              'path=$(llamacpp_resolve_model); '
              'toggle=no; if declare -F llamacpp_apply_mtp_mode >/dev/null; then toggle=yes; fi; '
-             'printf "%s\\0%s\\0%s\\0%s\\0%s\\0%s" "$MODEL_ALIAS" "$path" '
+             'printf "%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0%s" "$MODEL_ALIAS" "$path" '
              '"${MODEL_DRAFT_GGUF:-}" "${LLAMACPP_SPEC_TYPE:-draft-mtp}" '
-             '"${LLAMACPP_SPEC_DRAFT_N_MAX:-8}" "$toggle"',
+             '"${LLAMACPP_SPEC_DRAFT_N_MAX:-8}" "$toggle" "${MODEL_CONTEXT_SIZE:-0}"',
              "discover-model", str(library), preset.parent.name],
             cwd=str(root), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True, timeout=15,
@@ -46,9 +46,9 @@ def installed_models(workdir):
         if result.returncode:
             continue
         parts = result.stdout.split("\0")
-        if len(parts) != 6:
+        if len(parts) != 7:
             continue
-        alias, path, draft, spec_type, draft_max, toggle = parts
+        alias, path, draft, spec_type, draft_max, toggle, context_size = parts
         model_path = Path(path)
         size = gguf_size(model_path)
         if not size:
@@ -58,6 +58,7 @@ def installed_models(workdir):
         configured = bool(draft) and spec_type == "draft-mtp"
         models.append({"name": preset.parent.name, "alias": alias, "path": path,
                        "size_bytes": size,
+                       "context_size": int(context_size) if context_size.isdigit() else 0,
                        "mtp": {"configured": configured,
                                "available": configured and draft_size > 0,
                                "draft_path": str(draft_path) if draft_path else "",
