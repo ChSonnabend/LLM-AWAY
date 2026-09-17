@@ -254,7 +254,7 @@ def write_preset(root: Path, alias: str, repo_id: str, quant_files: list[dict],
     if mtp_file:
         lines += [f"MODEL_DRAFT_GGUF={gguf_dir}/{Path(mtp_file['path']).name}",
                   "LLAMACPP_SPEC_TYPE=draft-mtp",
-                  "LLAMACPP_SPEC_DRAFT_N_MAX=4"]
+                  "LLAMACPP_SPEC_DRAFT_N_MAX=8"]
     preset = preset_dir / "model.env"
     if preset.exists():
         shutil.move(str(preset), str(preset) + ".bak-" + time.strftime("%Y%m%d-%H%M%S"))
