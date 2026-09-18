@@ -122,6 +122,8 @@ class GatewayConfig:
 
 @dataclass(frozen=True)
 class LlamaCppConfig:
+    models_dir: str = ""
+    installation_dir: str = ""
     container: str = ""
     container_source: str = ""
     container_runtime: str = "apptainer"

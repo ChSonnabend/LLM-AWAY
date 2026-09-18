@@ -71,7 +71,7 @@ try:
                 for name in list(env):
                     if name.startswith(('SLURM_', 'MODEL_', 'LLAMACPP_')):
                         env.pop(name)
-                env.update(LLAMACPP_BACKEND=l.get('backend','cpu'), LLAMACPP_ROCM_ARCH=l.get('rocm_arch','auto'),
+                env.update(LLAMACPP_MODELS_DIR=l.get('models_dir',''), LLAMACPP_INSTALLATION_DIR=l.get('installation_dir',''), LLAMACPP_BACKEND=l.get('backend','cpu'), LLAMACPP_ROCM_ARCH=l.get('rocm_arch','auto'),
                     LLAMACPP_CONTAINER=image, LLAMACPP_CONTAINER_RUNTIME=l.get('container_runtime','apptainer'),
                     LLAMACPP_VISIBLE_DEVICES=l.get('visible_devices',''), LLAMACPP_HOST='127.0.0.1',
                     LLAMACPP_PORT=str(p['server_port']), LLAMACPP_CTX_SIZE=str(l.get('context_size',8192)),

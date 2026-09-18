@@ -17,6 +17,9 @@ llamacpp_enter_container() {
   for path in /lustre /scratch /cvmfs; do
     [[ ! -d $path ]] || binds+=(--bind "$path")
   done
+  for path in "${LLAMACPP_MODELS_DIR:-}" "${LLAMACPP_INSTALLATION_DIR:-}"; do
+    [[ -z $path ]] || binds+=(--bind "$path:$path:ro")
+  done
   # Do not inherit host PATH, module functions, or compiler paths.
   while IFS= read -r name; do
     case "$name" in
@@ -26,11 +29,14 @@ llamacpp_enter_container() {
   done < <(compgen -e)
   local build_id=$backend
   [[ $backend != rocm ]] || build_id="rocm-${LLAMACPP_ROCM_ARCH:-auto}"
-  preserved+=("LLAMACPP_BUILD_DIR=${LLAMACPP_BUILD_DIR:-$ROOT_DIR/builds/$build_id-container}")
+  preserved+=("LLAMACPP_BUILD_DIR=${LLAMACPP_BUILD_DIR:-${LLAMACPP_INSTALLATION_DIR:-$ROOT_DIR}/builds/$build_id-container}")
   if [[ ${LLAMACPP_CONTAINER_RUNTIME:-apptainer} == docker ]]; then
     local image_id
     image_id=$(python3 "$ROOT_DIR/scripts/remote/ensure-container.py" "$image" "" docker) || exit $?
     local -a docker_args=(run --rm --init --user "$(id -u):$(id -g)" --workdir "$ROOT_DIR" --volume "$ROOT_DIR:$ROOT_DIR")
+    for path in "${LLAMACPP_MODELS_DIR:-}" "${LLAMACPP_INSTALLATION_DIR:-}"; do
+      [[ -z $path ]] || docker_args+=(--volume "$path:$path:ro")
+    done
     if [[ -n ${LLAMACPP_PORT:-} ]]; then
       docker_args+=(--publish "${LLAMACPP_PUBLISH_ADDRESS:+$LLAMACPP_PUBLISH_ADDRESS:}$LLAMACPP_PORT:$LLAMACPP_PORT")
     fi

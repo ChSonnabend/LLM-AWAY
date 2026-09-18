@@ -130,7 +130,8 @@ parts=[]
 if tools['sbatch']:
     p=subprocess.run(['sinfo','-h','-o','%P'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True)
     parts=list(dict.fromkeys(p.stdout.replace('*','').split()))
-print(json.dumps({'tools':tools,'partitions':parts}))
+shared=next((p for p in ['/lustre/alice/users/csonnab/LLM-AWAY/remote', '/scratch/csonnabe/LLM-AWAY/remote'] if os.path.isdir(p)), '')
+print(json.dumps({'tools':tools,'partitions':parts,'shared_root':shared}))
 '''
 
 
@@ -153,13 +154,28 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
         except ValueError:
             defaults = None
         root = absolute(workdir or ask('Full path to LLM-AWAY/remote',
-                        old['remote']['workdir'] if old else (defaults.remote.workdir if defaults else '')))
+                        old['remote']['workdir'] if old else ''))
         info = inspect_host(PROBE, root)
+        shared_root = info.get('shared_root') or root
+        # The remote filesystem identifies shared defaults, never the SSH alias.
+        if defaults is None and info.get('shared_root'):
+            template = 'hydra-h200' if shared_root.startswith('/lustre/') else 'epnh'
+            try:
+                defaults = cfg.with_host(template)
+            except ValueError:
+                pass
+        previous = old.get('llamacpp', {}) if old else {}
+        models_dir = absolute(ask('Full path to models directory (presets and GGUF files)',
+                                 previous.get('models_dir') or shared_root+'/models'))
+        installation_dir = absolute(ask('Full path to llama.cpp installation (contains builds/ or build/)',
+                                       previous.get('installation_dir') or shared_root))
+        inspect_host("import json,os,sys; paths=sys.argv[1:]; missing=[p for p in paths if not os.path.isdir(p) or not os.access(p,os.R_OK|os.X_OK)]; assert not missing, 'Directories not accessible: '+', '.join(missing); print(json.dumps(True))", models_dir, installation_dir)
         use_container = ask('Container required? yes/no', 'yes' if (old and old['llamacpp']['container']) or (defaults and defaults.llamacpp.container) else 'no', ('yes','no')) == 'yes'
         container, runtime = '', 'apptainer'
+        shared_container = shared_root+'/containers/llama-server-'+('rocm' if defaults and defaults.llamacpp.backend == 'rocm' else 'cuda')+'.sif'
         if use_container:
             container = absolute(ask('Full path to container (SIF or Docker archive)',
-                                 old['llamacpp']['container'] if old else (defaults.llamacpp.container if defaults else '')))
+                                 old['llamacpp']['container'] if old else (defaults.llamacpp.container if defaults and defaults.llamacpp.container else shared_container)))
         scheduler = ask('Submission system', 'slurm', ('slurm','kubernetes','direct'))
         if use_container and scheduler != 'kubernetes':
             available = [x for x in ('apptainer','docker') if info['tools'][x]]
@@ -187,7 +203,7 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
                   + alias + ' over the existing '
                   + ('SSH connection' if connection == 'ssh' else 'local connection')
                   + ' and uses this host directly.')
-        llama = asdict(LlamaCppConfig(backend=backend, rocm_arch=arch, visible_devices='',
+        llama = asdict(LlamaCppConfig(models_dir=models_dir, installation_dir=installation_dir, backend=backend, rocm_arch=arch, visible_devices='',
                         container=container, container_runtime=runtime, build_before_run=False, mtp='auto'))
         if scheduler == 'direct' and gpus:
             llama['visible_devices'] = ask('GPU device IDs (comma-separated)', ','.join(str(i) for i in range(gpus)))
@@ -203,7 +219,7 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
             slurm['partition'] = ask('Slurm partition', defaults.slurm.partition if defaults else (info['partitions'][0] if info['partitions'] else ''), info['partitions'] or None)
             slurm['exclusive'] = ask('Exclusive node?', 'no', ('yes','no')) == 'yes'
             slurm['custom_options'] = shlex.split(ask('Additional Slurm options', '--cpus-per-task=8 --mem=64G --time=02:00:00'))
-            if alias == 'epnh' and defaults:
+            if defaults:
                 slurm['node_class'], slurm['mi50_fallback'] = defaults.slurm.node_class, defaults.slurm.mi50_fallback
         elif scheduler == 'kubernetes':
             print('Kubernetes runs OCI images, not SIF files or Docker archives.')

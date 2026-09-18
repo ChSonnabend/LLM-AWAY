@@ -22,16 +22,18 @@ def gguf_size(model_path):
     return sum(file.stat().st_size for file in shards)
 
 
-def installed_models(workdir):
+def installed_models(workdir, models_dir=""):
     root = Path(os.path.expandvars(workdir)).expanduser().resolve()
     library = root / "scripts/lib/llamacpp-env.sh"
     if not library.is_file():
         raise ValueError("Remote model library not found: " + str(library))
+    model_root = Path(models_dir).resolve() if models_dir else root / "models"
     models = []
     # Resolve each preset in a fresh shell, just as bin/run-server does.
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("MODEL", "LLAMACPP_SPEC_")) and key != "LLAMACPP_MTP"}
-    for preset in sorted((root / "models").glob("*/model.env")):
+    env["LLAMACPP_MODELS_DIR"] = str(model_root)
+    for preset in sorted(model_root.glob("*/model.env")):
         result = subprocess.run(
             ["bash", "-c", 'set -e; source "$1"; llamacpp_load_model_config "$2"; '
              'path=$(llamacpp_resolve_model); '
@@ -53,7 +55,7 @@ def installed_models(workdir):
         size = gguf_size(model_path)
         if not size:
             continue
-        draft_path = (root / draft) if draft else None
+        draft_path = ((model_root / draft[len("models/"):]) if draft.startswith("models/") else (root / draft)) if draft else None
         draft_size = gguf_size(draft_path) if draft_path else 0
         configured = embedded == '1' or bool(draft) and spec_type == "draft-mtp"
         models.append({"name": preset.parent.name, "alias": alias, "path": path,
@@ -72,7 +74,7 @@ def installed_models(workdir):
 
 if __name__ == "__main__":
     try:
-        print(json.dumps(installed_models(sys.argv[1])))
+        print(json.dumps(installed_models(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "")))
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)

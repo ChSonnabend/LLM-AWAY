@@ -67,9 +67,9 @@ def discover_models(config: AppConfig) -> list[dict]:
     script = Path(__file__).with_name("remote_models.py").read_text(encoding="utf-8")
     command = ["ssh", "-o", "BatchMode=yes", "-o",
                f"ConnectTimeout={config.ssh.connect_timeout_seconds}",
-               config.ssh.destination, "python3 - " + shlex.quote(config.remote.workdir)]
+               config.ssh.destination, "python3 - " + shlex.join([config.remote.workdir, config.llamacpp.models_dir])]
     if config.ssh.connection == "local":
-        command = [sys.executable, '-', config.remote.workdir]
+        command = [sys.executable, '-', config.remote.workdir, config.llamacpp.models_dir]
     for attempt in range(max(1, config.ssh.retries)):
         result = subprocess.run(command, input=script, text=True, capture_output=True,
                                 timeout=max(60, config.ssh.connect_timeout_seconds + 30))

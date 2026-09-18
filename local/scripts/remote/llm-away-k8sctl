@@ -99,7 +99,7 @@ def ensure():
         raise ValueError('Remote workdir must be absolute')
     model = re.sub('[^a-z0-9-]','-',p.get('model','model').lower())[:30].strip('-') or 'model'
     name = 'llm-away-'+model+'-'+uuid.uuid4().hex[:10]
-    env = {'MODEL_NAME':llama.get('model_name') or p['model'], 'LLAMACPP_BACKEND':llama['backend'],
+    env = {'LLAMACPP_MODELS_DIR':llama.get('models_dir',''), 'LLAMACPP_INSTALLATION_DIR':llama.get('installation_dir',''), 'MODEL_NAME':llama.get('model_name') or p['model'], 'LLAMACPP_BACKEND':llama['backend'],
            'LLAMACPP_ROCM_ARCH':llama.get('rocm_arch','auto'), 'LLAMACPP_HOST':'0.0.0.0',
            'LLAMACPP_PORT':str(p['server_port']), 'LLAMACPP_CTX_SIZE':str(llama.get('context_size',8192)),
            'LLAMACPP_MTP':llama.get('mtp','auto'), 'LLAMACPP_IN_CONTAINER':'1'}

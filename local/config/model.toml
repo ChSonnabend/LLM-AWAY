@@ -129,6 +129,9 @@ prompt_keep_head_chars = 4000
 prompt_keep_tail_chars = 16000
 
 [llamacpp]
+# Setup saves per-host shared paths in model.hosts.json; blank uses remote.workdir.
+models_dir = ""
+installation_dir = ""
 backend = "rocm"
 # "auto" maps epn000-epn279 to gfx906 and epn280-epn349 to gfx908 inside the Slurm job.
 rocm_arch = "auto"

@@ -126,6 +126,7 @@ def start():
          'LLAMACPP_ROCM_ARCH':l['rocm_arch'],'LLAMACPP_CONTAINER':l['container'],'LLAMACPP_CONTAINER_RUNTIME':l['container_runtime'],
          'LLAMACPP_HOST':'127.0.0.1' if kind=='direct' else '0.0.0.0','LLAMACPP_PORT':str(p['port']),
          'LLAMACPP_CTX_SIZE':str(l['context_size']),'LLAMACPP_MTP':l['mtp'],'LLAMACPP_GPU_COUNT':str(sl['gpus'])}
+    env.update(LLAMACPP_MODELS_DIR=l.get('models_dir',''), LLAMACPP_INSTALLATION_DIR=l.get('installation_dir',''))
     if kind=='kubernetes': env.update(LLAMACPP_IN_CONTAINER='1',LLAMACPP_CONTAINER='')
     if kind=='direct':
         env['LLAMACPP_VISIBLE_DEVICES']=l['visible_devices']

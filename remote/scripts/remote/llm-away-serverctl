@@ -274,6 +274,8 @@ def submit():
 set -euo pipefail
 echo "$(hostname -s)" > {host_q}
 cd {workdir_q}
+export LLAMACPP_MODELS_DIR={models_dir_q}
+export LLAMACPP_INSTALLATION_DIR={installation_dir_q}
 export LLAMACPP_BACKEND={backend_q}
 export LLAMACPP_CONTAINER={container_q}
 export LLAMACPP_CONTAINER_RUNTIME={container_runtime_q}
@@ -297,6 +299,8 @@ exec {server_cmd}
         workdir_q=q(workdir),
         container_q=q(llama.get("container", "")),
         container_runtime_q=q(llama.get("container_runtime", "apptainer")),
+        models_dir_q=q(llama.get("models_dir", "")),
+        installation_dir_q=q(llama.get("installation_dir", "")),
         backend_q=q(llama.get("backend", "rocm")),
         rocm_arch=rocm_arch_command(),
         devices_q=q(llama.get("visible_devices", "0,1,2,3,4,5,6,7")),

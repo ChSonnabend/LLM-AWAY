@@ -75,6 +75,8 @@ setup = [
     f"cd {q(payload['remote_workdir'])}",
     f"export MODEL_NAME={q(llama.get('model_name') or payload['model'])}",
     f"export LLAMACPP_MTP={q(mtp)}",
+    f"export LLAMACPP_MODELS_DIR={q(llama.get('models_dir', ''))}",
+    f"export LLAMACPP_INSTALLATION_DIR={q(llama.get('installation_dir', ''))}",
     f"export LLAMACPP_BACKEND={q(llama.get('backend', 'rocm'))}",
     f"export LLAMACPP_CONTAINER={q(llama.get('container', ''))}",
     f"export LLAMACPP_CONTAINER_RUNTIME={q(llama.get('container_runtime', 'apptainer'))}",

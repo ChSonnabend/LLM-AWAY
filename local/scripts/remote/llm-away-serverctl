@@ -174,17 +174,6 @@ def sbatch_options():
     if payload.get("exclusive", True):
         opts.append("#SBATCH --exclusive")
     node_class = payload.get("node_class", "")
-    if node_class == "mi50":
-        opts.append("#SBATCH -w " + choose_node("mi50"))
-    elif node_class == "mi100":
-        node = choose_node("mi100")
-        opts.append("#SBATCH -w " + node)
-        if int(node[3:]) >= 280:
-            opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=1")
-        else:
-            opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=0")
-    elif node_class:
-        opts.append("#SBATCH -w " + node_class)
     custom = payload.get("custom_options") or []
     if custom:
         i = 0
@@ -196,6 +185,17 @@ def sbatch_options():
             else:
                 opts.append("#SBATCH " + item)
                 i += 1
+    elif node_class == "mi50":
+        opts.append("#SBATCH -w " + choose_node("mi50"))
+    elif node_class == "mi100":
+        node = choose_node("mi100")
+        opts.append("#SBATCH -w " + node)
+        if int(node[3:]) >= 280:
+            opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=1")
+        else:
+            opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=0")
+    elif node_class:
+        opts.append("#SBATCH -w " + node_class)
     return "\n".join(opts)
 
 def choose_node(node_class, count=1):
@@ -223,7 +223,6 @@ def choose_node(node_class, count=1):
         if not ranges[node_class](number):
             continue
         # Never invent a hostname or select down/draining/unresponsive nodes.
-        state = state.rstrip('*~#@$')
         if state == "idle":
             idle.add(host)
         elif state in ("alloc", "mix", "comp"):
@@ -275,6 +274,8 @@ def submit():
 set -euo pipefail
 echo "$(hostname -s)" > {host_q}
 cd {workdir_q}
+export LLAMACPP_MODELS_DIR={models_dir_q}
+export LLAMACPP_INSTALLATION_DIR={installation_dir_q}
 export LLAMACPP_BACKEND={backend_q}
 export LLAMACPP_CONTAINER={container_q}
 export LLAMACPP_CONTAINER_RUNTIME={container_runtime_q}
@@ -298,6 +299,8 @@ exec {server_cmd}
         workdir_q=q(workdir),
         container_q=q(llama.get("container", "")),
         container_runtime_q=q(llama.get("container_runtime", "apptainer")),
+        models_dir_q=q(llama.get("models_dir", "")),
+        installation_dir_q=q(llama.get("installation_dir", "")),
         backend_q=q(llama.get("backend", "rocm")),
         rocm_arch=rocm_arch_command(),
         devices_q=q(llama.get("visible_devices", "0,1,2,3,4,5,6,7")),

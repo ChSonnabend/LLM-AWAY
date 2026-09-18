@@ -60,6 +60,9 @@ llamacpp_ensure_hf_cli() {
   local root
   root=$(llamacpp_root)
 
+  if [[ -n ${LLAMACPP_INSTALLATION_DIR:-} ]]; then
+    root=$LLAMACPP_INSTALLATION_DIR
+  fi
   local candidate
   for candidate in \
     "${LLAMACPP_HF_CLI:-}" \
@@ -247,7 +250,7 @@ llamacpp_load_model_config() {
   root=$(llamacpp_root)
 
   MODEL_NAME=${MODEL_NAME:-${1:-$LLAMACPP_DEFAULT_MODEL}}
-  MODEL_CONFIG=${MODEL_CONFIG:-$root/models/$MODEL_NAME/model.env}
+  MODEL_CONFIG=${MODEL_CONFIG:-${LLAMACPP_MODELS_DIR:-$root/models}/$MODEL_NAME/model.env}
 
   if [[ -f $MODEL_CONFIG ]]; then
     # shellcheck disable=SC1090
@@ -263,7 +266,9 @@ llamacpp_resolve_model() {
   root=$(llamacpp_root)
 
   local model_path=${MODEL:-${MODEL_GGUF:-models/$MODEL_NAME/model.gguf}}
-  if [[ $model_path != /* ]]; then
+  if [[ $model_path == models/* && -n ${LLAMACPP_MODELS_DIR:-} ]]; then
+    model_path="$LLAMACPP_MODELS_DIR/${model_path#models/}"
+  elif [[ $model_path != /* ]]; then
     model_path="$root/$model_path"
   fi
 
@@ -277,7 +282,9 @@ llamacpp_resolve_existing_path() {
   local root
   root=$(llamacpp_root)
 
-  if [[ $path != /* ]]; then
+  if [[ $path == models/* && -n ${LLAMACPP_MODELS_DIR:-} ]]; then
+    path="$LLAMACPP_MODELS_DIR/${path#models/}"
+  elif [[ $path != /* ]]; then
     path="$root/$path"
   fi
 
@@ -307,7 +314,7 @@ llamacpp_binary() {
   fi
   build_id=$(llamacpp_build_id "$backend" "${arch:-}")
 
-  local env_name="LLAMA_${tool^^}"
+  local env_name="LLAMA_$(printf '%s' "$tool" | tr '[:lower:]' '[:upper:]')"
   if [[ -n ${!env_name:-} ]]; then
     [[ -x ${!env_name} ]] || llamacpp_die "configured binary is missing: ${!env_name}"
     echo "${!env_name}"
@@ -317,11 +324,15 @@ llamacpp_binary() {
     echo "/app/llama-$tool"
     return 0
   fi
+  if [[ -n ${LLAMACPP_INSTALLATION_DIR:-} ]]; then
+    root=$LLAMACPP_INSTALLATION_DIR
+  fi
   local candidate
   for candidate in \
     "${!env_name:-}" \
     "${LLAMACPP_BUILD_DIR:-$root/builds/$build_id}/bin/llama-$tool" \
     "$root/builds/$build_id/bin/llama-$tool" \
+    "$root/build/bin/llama-$tool" \
     "$root/llama.cpp/build/bin/llama-$tool" \
     "$(command -v "llama-$tool" 2> /dev/null || true)"; do
     if [[ -n $candidate && -x $candidate ]]; then

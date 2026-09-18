@@ -68,6 +68,8 @@ class SlurmSshBackend(Backend):
             "nodes": cfg.slurm.nodes,
             "llamacpp": {
                 "backend": cfg.llamacpp.backend,
+                "models_dir": cfg.llamacpp.models_dir,
+                "installation_dir": cfg.llamacpp.installation_dir,
                 "container": cfg.llamacpp.container,
                 "container_source": cfg.llamacpp.container_source,
                 "container_runtime": cfg.llamacpp.container_runtime,
@@ -249,6 +251,8 @@ class SlurmServerBackend(Backend):
             "server_port": (extra or {}).get("server_port", self.job_port) or cfg.gateway.server_port,
             "llamacpp": {
                 "backend": cfg.llamacpp.backend,
+                "models_dir": cfg.llamacpp.models_dir,
+                "installation_dir": cfg.llamacpp.installation_dir,
                 "container": cfg.llamacpp.container,
                 "container_source": cfg.llamacpp.container_source,
                 "container_runtime": cfg.llamacpp.container_runtime,

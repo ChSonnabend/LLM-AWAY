@@ -140,3 +140,53 @@ Reasoning effort is forwarded to the server; for GLM, `medium` maps to `high` an
 `xhigh` to `max`. Output verbosity is guided by the concise instructions.
 
 CLI support: `run --session N` asks between Codex and Claude Code when both are installed, or automatically uses the only available CLI. See the [local CLI guide](local/README.md#codex-or-claude-code) for configuration and explicit selection.
+
+## Shared models and llama.cpp installations
+
+Run `res-alloc --restart` to configure or update a host. Setup asks, in order:
+
+1. Your own full path to `LLM-AWAY/remote` (no owner-specific default on first setup).
+2. The models directory, containing preset folders with `model.env` and GGUF files.
+3. The llama.cpp installation directory, containing `builds/<backend>/bin/llama-server`
+   or a standard `build/bin/llama-server` checkout.
+
+The following existing directories are offered as defaults when visible on that
+host. Previously saved answers take precedence. All answers remain editable.
+
+| Cluster | Models directory | llama.cpp installation directory |
+| --- | --- | --- |
+| EPN (my SSH alias: `epnh`) | `/scratch/csonnabe/LLM-AWAY/remote/models` | `/scratch/csonnabe/LLM-AWAY/remote` |
+| Hydra (my SSH alias: `hydra`) | `/lustre/alice/users/csonnab/LLM-AWAY/remote/models` | `/lustre/alice/users/csonnab/LLM-AWAY/remote` |
+
+Hydra container paths are
+`/lustre/alice/users/csonnab/LLM-AWAY/remote/containers/llama-server-cuda.sif`
+for NVIDIA and `.../containers/llama-server-rocm.sif` for AMD. Select the matching
+image and GPU backend. Setup retains an existing container choice; otherwise it
+offers the shared installation's container path. EPN normally uses native builds.
+
+The installation answer is the parent of `builds/`, not the executable itself.
+GPU-specific native builds are selected automatically. Runtime containers that
+provide `/app/llama-server` use that binary; development containers can use the
+shared `builds/<backend>-container` directories.
+
+Paths are saved per host as `llamacpp.models_dir` and
+`llamacpp.installation_dir` in `local/config/model.hosts.json`. Blank TOML values
+retain the original checkout-relative behavior. No symlinks or modifications to
+shared model/build directories are needed. Update both local and remote code to
+use these settings. Users need read/traverse access to shared files and execute
+access to binaries on login and compute nodes. Kubernetes users must also mount
+these paths into their pods.
+
+Each user must keep their own writable remote checkout: resource state and logs
+are written below that checkout's `.state/resources`. Shared directories are for
+reading existing models/builds, not downloading or rebuilding them.
+
+### Different SSH alias names
+
+`epnh` and `hydra` are examples from the owner's SSH config, not required names.
+A user can select their own configured alias (for example `my-epn`) or run
+`res-alloc --host my-epn --restart`. SSH uses that user's `HostName`, `User`, and
+`ProxyJump` settings. Setup detects shared default paths on the connected host,
+independently of the alias, and stores the resulting profile under the selected
+alias. Check the offered scheduler, partition, backend and GPU settings; these
+remain configurable. Renaming an SSH alias creates a separate setup profile.
