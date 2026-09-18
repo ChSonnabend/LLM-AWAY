@@ -138,7 +138,7 @@ server_cli = "bin/run-server"
 model_path = ""
 context_size = 128000
 # Qwen 3.8 otherwise returns its internal reasoning separately; direct content works best for the proxy.
-server_extra_args = ["--reasoning", "off", "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--batch-size", "2048", "--ubatch-size", "2048"]
+server_extra_args = ["--reasoning", "off", "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--batch-size", "2048", "--ubatch-size", "512"]
 # Optional full server command, relative to remote.workdir if not absolute.
 # When set, this replaces server_cli/server_extra_args.
 server_command = []

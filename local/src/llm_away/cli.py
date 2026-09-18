@@ -97,7 +97,7 @@ def quoted(value: str) -> str:
 
 def remote_model_catalog(model: str, context_window: int = 262000, settings: CodexConfig | None = None) -> dict:
     settings = settings or CodexConfig()
-    return {
+    catalog = {
         "models": [
             {
                 "slug": model,
@@ -150,6 +150,16 @@ def remote_model_catalog(model: str, context_window: int = 262000, settings: Cod
             }
         ]
     }
+    entry = catalog['models'][0]
+    instructions = (
+        f"You are {entry['display_name']} (model ID: {model}), running through the Codex coding-agent interface. "
+        "When asked which model you are, identify this model; Codex is the interface, not your model identity.\n\n"
+        + entry['model_messages']['instructions_template']
+    )
+    entry['base_instructions'] = instructions
+    entry['model_messages']['instructions_template'] = instructions
+    return catalog
+
 
 
 def write_model_catalogs(home: Path, model: str, context_window: int = 262000, settings: CodexConfig | None = None) -> tuple[Path, Path]:

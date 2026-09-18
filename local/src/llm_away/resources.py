@@ -433,7 +433,7 @@ def run_agent(args):
         try:
             if not reuse:
                 if loaded:rpc(path,'stop',client_pid=os.getpid())
-                rpc(path,'start',model=model,mtp=mtp,client_pid=os.getpid())
+                rpc(path,'start',model=model,mtp=mtp,server_extra_args=cfg.llamacpp.server_extra_args,client_pid=os.getpid())
             started=True
             write(path/'attachment.json',dict(client_pid=os.getpid(),client_identity=identity(os.getpid())))
             deadline=time.time()+cfg.gateway.startup_timeout_seconds
@@ -459,6 +459,8 @@ def run_agent(args):
                 catalog_data['models'][0]['slug']='remote-catalog-placeholder'
                 catalog_data['models'][0]['visibility']='hide'
             catalog=path/'models.json';write(catalog,catalog_data)
+            instructions_file=path/'model-instructions.txt'
+            instructions_file.write_text(catalog_data['models'][0]['base_instructions'],encoding='utf-8')
             # Per-process overrides keep simultaneous sessions out of global Codex settings.
             command=['codex','--no-alt-screen','-c','model_provider="remote_resource"','-c','model='+json.dumps(model['alias']),
                      '-c','model_providers.remote_resource.name="Remote resource"',
@@ -467,6 +469,7 @@ def run_agent(args):
                      '-c','model_providers.remote_resource.requires_openai_auth=false',
                      '-c','model_reasoning_effort='+json.dumps(cfg.codex.reasoning_effort),
                      '-c','model_catalog_json='+json.dumps(str(catalog)),
+                     '-c','model_instructions_file='+json.dumps(str(instructions_file.resolve())),
                      '-c','model_context_window='+str(min(cfg.codex.context_window,cfg.llamacpp.context_size)),
                      '-c','model_auto_compact_token_limit='+str(min(cfg.codex.auto_compact_token_limit,int(min(cfg.codex.context_window,cfg.llamacpp.context_size)*0.7))),
                      '-c','tool_output_token_limit='+str(cfg.codex.tool_output_token_limit)]
