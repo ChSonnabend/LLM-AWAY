@@ -223,6 +223,7 @@ def choose_node(node_class, count=1):
         if not ranges[node_class](number):
             continue
         # Never invent a hostname or select down/draining/unresponsive nodes.
+        state = state.rstrip('*~#@$')
         if state == "idle":
             idle.add(host)
         elif state in ("alloc", "mix", "comp"):
