@@ -507,7 +507,14 @@ def release_session(number):
 def monitor(args):
     if args.logs:
         path=path_for(args.logs);subprocess.call(['tail','-n','60','-f',str(path/'session.log')]);return
-    if not args.list and not args.kill and sys.stdin.isatty() and sys.stdout.isatty():
+    if not args.list and not args.kill and sys.stdin.isatty():
+        if not sys.stdout.isatty():
+            # Some terminal wrappers leave stdout piped while stdin remains the
+            # controlling TTY. Curses needs the TTY, so attach stdout to it.
+            try:
+                tty=os.open('/dev/tty',os.O_WRONLY);os.dup2(tty,1);os.close(tty)
+            except OSError:pass
+        if not sys.stdout.isatty():return
         from .monitor_ui import show
         chosen=show(STORE,release_session,run_agent)
         if chosen is not None:
