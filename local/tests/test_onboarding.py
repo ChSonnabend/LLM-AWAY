@@ -56,7 +56,7 @@ class OnboardingTests(unittest.TestCase):
 
     def configure_direct(self):
         with ExitStack() as stack:
-            self.mocks(stack, ['/scratch/x/remote', '/shared/models', '/shared/llama', 'no', 'direct', 'rocm', 'gfx906', '8', '0,1,2,3,4,5,6,7'])
+            self.mocks(stack, ['/scratch/x/remote', '/shared/models', '/shared/llama', '/scratch/x/state', 'no', 'direct', 'rocm', 'gfx906', '8', '0,1,2,3,4,5,6,7'])
             configure_local(str(self.path), alias='epn137', connection='ssh')
 
     def test_direct_profile_is_saved_without_changing_base_config(self):
@@ -70,6 +70,8 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(cfg.ssh.user, '')
         self.assertEqual(cfg.backend_type, 'direct')
         self.assertEqual(cfg.remote.serverctl, '/scratch/x/remote/scripts/remote/llm-away-directctl')
+        self.assertEqual(cfg.remote.resource_state_dir, '/scratch/x/state')
+        self.assertEqual(cfg.remote.state_dir, '/scratch/x/state')
         self.assertEqual(cfg.model.name, 'm')
         self.assertEqual(cfg.llamacpp.models_dir, '/shared/models')
         self.assertEqual(cfg.llamacpp.installation_dir, '/shared/llama')

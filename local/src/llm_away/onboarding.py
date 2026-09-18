@@ -131,7 +131,11 @@ if tools['sbatch']:
     p=subprocess.run(['sinfo','-h','-o','%P'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True)
     parts=list(dict.fromkeys(p.stdout.replace('*','').split()))
 shared=next((p for p in ['/lustre/alice/users/csonnab/LLM-AWAY/remote', '/scratch/csonnabe/LLM-AWAY/remote'] if os.path.isdir(p)), '')
-print(json.dumps({'tools':tools,'partitions':parts,'shared_root':shared}))
+import getpass
+user=getpass.getuser()
+parent=('/lustre/alice/users/'+user if shared.startswith('/lustre/') else '/scratch/'+user)
+state_default=(parent+'/.cache/llm-away') if os.path.isdir(parent) else os.path.expanduser('~/.cache/llm-away')
+print(json.dumps({'tools':tools,'partitions':parts,'shared_root':shared,'state_default':state_default}))
 '''
 
 
@@ -170,6 +174,9 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
         installation_dir = absolute(ask('Full path to llama.cpp installation (contains builds/ or build/)',
                                        previous.get('installation_dir') or shared_root))
         inspect_host("import json,os,sys; paths=sys.argv[1:]; missing=[p for p in paths if not os.path.isdir(p) or not os.access(p,os.R_OK|os.X_OK)]; assert not missing, 'Directories not accessible: '+', '.join(missing); print(json.dumps(True))", models_dir, installation_dir)
+        state_dir = absolute(ask('Your writable state directory (visible on compute nodes)',
+                                 (old or {}).get('remote', {}).get('resource_state_dir') or info.get('state_default', '')))
+        inspect_host("import json,os,sys,tempfile; p=sys.argv[1]; os.makedirs(p,mode=0o700,exist_ok=True); assert os.stat(p).st_uid==os.getuid(), 'State directory must belong to you'; f=tempfile.TemporaryFile(dir=p); f.close(); print(json.dumps(True))", state_dir)
         use_container = ask('Container required? yes/no', 'yes' if (old and old['llamacpp']['container']) or (defaults and defaults.llamacpp.container) else 'no', ('yes','no')) == 'yes'
         container, runtime = '', 'apptainer'
         shared_container = shared_root+'/containers/llama-server-'+('rocm' if defaults and defaults.llamacpp.backend == 'rocm' else 'cuda')+'.sif'
@@ -233,7 +240,7 @@ def configure_local(config_path, alias=None, workdir=None, restart=False,
             inspect_host(probe, kube['context'], kube['namespace'])
         controller = {'slurm':'llm-away-serverctl', 'kubernetes':'llm-away-k8sctl', 'direct':'llm-away-directctl'}[scheduler]
         profile = {'ssh': {'host':alias,'user':'','connection':connection}, 'remote': asdict(RemoteConfig(
-                    workdir=root, state_dir=root+'/.state/'+alias,
+                    workdir=root, state_dir=state_dir, resource_state_dir=state_dir,
                     runner=root+'/scripts/remote/llm-away-slurm-run',
                     serverctl=root+'/scripts/remote/'+controller)),
                     'llamacpp':llama, 'slurm':slurm, 'kubernetes':kube,

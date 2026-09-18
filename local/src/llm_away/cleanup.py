@@ -1,4 +1,4 @@
-"""Preview and selectively clean identifiable local framework leftovers."""
+"""Preview and selectively clean local leftovers and released remote session state."""
 import argparse
 import fcntl
 import json
@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
-from .resources import STORE, identity, released_ids
+from .resources import STORE, identity, released_ids, remote, config, write
 from .serve_registration import remove
 
 
@@ -28,6 +28,9 @@ def busy(path, check_lease=True):
 
 
 def add_session_items(items, path, delete_folders=False):
+    data=json.loads((path/'session.json').read_text())
+    if data.get('phase')=='RELEASED' and not data.get('remote_cleanup_done'):
+        items.append(('remote',path,f"Delete released session {path.name} remote state/cache (verified before deletion)"))
     registration=path/'serve-registration.json'
     if registration.exists():items.append(('mcp',path,f'Remove managed MCP registration for session {path.name}; attached helpers exit'))
     tunnel=path/'tunnel.json'
@@ -46,8 +49,6 @@ def add_session_items(items, path, delete_folders=False):
         if not target.is_symlink():items.append(('file',target,f'Delete stale watcher record {target}'))
     if delete_folders and int(path.name) in released_ids():
         items.append(('folder',path,f'Delete released session folder {path.name} (session.json and locks)'))
-    for lock in path.glob('*.lock'):
-        if lock.is_file() and not lock.is_symlink():items.append(('file',lock,f'Delete lock {lock}'))
 
 
 def main():
@@ -90,16 +91,26 @@ def main():
                 if result.returncode and b'Connection refused' in result.stderr:target.unlink(missing_ok=True)
                 elif result.returncode:raise RuntimeError(result.stderr.decode(errors='replace').strip())
             else:
-                session=target if kind in ('mcp','ssh','folder') else target.parent
+                session=target if kind in ('mcp','ssh','folder','remote') else target.parent
                 with (session/'client.lock').open('a') as lease:
                     fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
                     if busy(session,check_lease=False):print(f'Skipped: session {session.name} became active');continue
-                    if kind=='mcp':remove(session)
+                    if kind=='remote':
+                        data=json.loads((session/'session.json').read_text())
+                        if data.get('phase')!='RELEASED':raise ValueError('Session is no longer released')
+                        result=remote(config(data['config']),data['token'],data['remote_port'],'cleanup')
+                        if not result.get('cleaned'):raise ValueError('Remote cleanup was not confirmed')
+                        data['remote_cleanup_done']=True
+                        write(session/'session.json',data)
+                    elif kind=='mcp':remove(session)
                     elif kind=='ssh':
                         record=json.loads((session/'tunnel.json').read_text())
                         if record.get('identity') and identity(record['pid'])==record['identity']:
                             os.kill(record['pid'],signal.SIGTERM)
                     elif kind=='folder':
+                        data=json.loads((session/'session.json').read_text())
+                        if data.get('phase')!='RELEASED' or not data.get('remote_cleanup_done'):
+                            raise ValueError('Clean remote state first; retaining session record for retry')
                         shutil.rmtree(target)
                     elif target.is_symlink():raise ValueError('Path became a symlink; preserved')
                     elif target.is_dir():shutil.rmtree(target)

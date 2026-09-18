@@ -145,10 +145,11 @@ CLI support: `run --session N` asks between Codex and Claude Code when both are 
 
 Run `res-alloc --restart` to configure or update a host. Setup asks, in order:
 
-1. Your own full path to `LLM-AWAY/remote` (no owner-specific default on first setup).
+1. The full path to an existing `LLM-AWAY/remote` installation (your own or shared).
 2. The models directory, containing preset folders with `model.env` and GGUF files.
 3. The llama.cpp installation directory, containing `builds/<backend>/bin/llama-server`
    or a standard `build/bin/llama-server` checkout.
+4. Your own writable state directory, accessible from compute nodes.
 
 The following existing directories are offered as defaults when visible on that
 host. Previously saved answers take precedence. All answers remain editable.
@@ -177,9 +178,24 @@ use these settings. Users need read/traverse access to shared files and execute
 access to binaries on login and compute nodes. Kubernetes users must also mount
 these paths into their pods.
 
-Each user must keep their own writable remote checkout: resource state and logs
-are written below that checkout's `.state/resources`. Shared directories are for
-reading existing models/builds, not downloading or rebuilding them.
+No remote clone or copy is required. Use the existing shared installation path
+from the table as the `LLM-AWAY/remote` answer. Only the local client is needed
+on your computer. Shared code, models and builds require read/traverse access;
+executables also require execute access.
+
+Setup asks for a separate state directory owned by the connecting user. It
+suggests `/scratch/<remote-user>/.cache/llm-away` on EPN or
+`/lustre/alice/users/<remote-user>/.cache/llm-away` on Hydra when the user directory
+exists, falling back to the remote home cache. Choose a path visible on compute
+nodes; Hydra login-only home paths are unsuitable. State and logs go under
+`<state directory>/resources/`, leaving the shared installation unchanged.
+Kubernetes mounts this state path separately, so it must be shared across the
+login host and eligible worker nodes.
+
+Run `res-alloc --restart` to save this layout, then create a new allocation.
+Existing sessions keep their original state locations for compatibility. Shared
+installations need the updated `remote/bin/resource-control` script. Do not
+run download/build commands against another user's shared directories.
 
 ### Different SSH alias names
 
@@ -190,3 +206,11 @@ A user can select their own configured alias (for example `my-epn`) or run
 independently of the alias, and stores the resulting profile under the selected
 alias. Check the offered scheduler, partition, backend and GPU settings; these
 remain configurable. Renaming an SSH alias creates a separate setup profile.
+
+`res-clean --preview` now lists remote state/cache cleanup for released sessions.
+Use `res-clean --session N` and select the remote cleanup item (or `all`). The
+remote controller checks ownership, release status and worker shutdown before
+removing only that session's state directory. Active or uncertain sessions are
+preserved. Shared code/models/builds and the cache root remain. Local session
+records are retained until remote cleanup succeeds, allowing retries if SSH is
+offline. Update `remote/bin/resource-control` before using remote cleanup.

@@ -51,7 +51,7 @@ class SharedPathsTests(unittest.TestCase):
                     return answers.get(label,default)
                 stack.enter_context(patch('llm_away.onboarding.ask',side_effect=ask))
                 stack.enter_context(patch('llm_away.onboarding.ssh_hosts',return_value=(['my-cluster'],[])))
-                stack.enter_context(patch('llm_away.onboarding.remote_json',return_value={'tools':{},'partitions':[],'shared_root':shared}))
+                stack.enter_context(patch('llm_away.onboarding.remote_json',return_value={'tools':{},'partitions':[],'shared_root':shared,'state_default':'/scratch/other/state'}))
                 configure_local(config,alias='my-cluster',connection='ssh',resources_only=True)
                 self.assertEqual(seen['Full path to LLM-AWAY/remote'],'')
                 self.assertEqual(seen['Full path to models directory (presets and GGUF files)'],shared+'/models')

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Persistent resource reservations, independent of the model process (Python 3.6+)."""
-import fcntl, json, os, re, shlex, subprocess, sys, time, uuid
+import fcntl, json, os, re, shlex, shutil, subprocess, sys, time, uuid
 from pathlib import Path
 
 p=json.load(sys.stdin)
@@ -8,8 +8,25 @@ action=sys.argv[1]
 c=p['config']; token=p['token']
 if not re.fullmatch('[a-f0-9]{32}',token): raise ValueError('Invalid resource token')
 root=Path(c['remote']['workdir']).resolve()
-state=root/'.state'/'resources'/token
-state.mkdir(parents=True,exist_ok=True,mode=0o700)
+resource_base=c['remote'].get('resource_state_dir', '')
+if resource_base:
+    base=Path(os.path.expandvars(resource_base)).expanduser().resolve()
+    if action != 'cleanup': base.mkdir(parents=True,exist_ok=True,mode=0o700)
+    if base.exists() and base.stat().st_uid != os.getuid():
+        raise ValueError('Resource state directory must belong to the current user: '+str(base))
+    state=base/'resources'/token
+else:
+    # Existing allocations must remain addressable after updating the scripts.
+    state=root/'.state'/'resources'/token
+if action == 'cleanup':
+    if state.is_symlink() or state.parent.is_symlink():
+        raise ValueError('Refusing symlinked resource state')
+    if not state.exists():
+        print(json.dumps({'cleaned':True,'already_missing':True})); sys.exit(0)
+    if state.stat().st_uid != os.getuid():
+        raise ValueError('Resource state belongs to another user')
+else:
+    state.mkdir(parents=True,exist_ok=True,mode=0o700)
 kind=c['backend_type']; k=c['kubernetes']; sl=c['slurm']
 meta=state/'allocation.json'
 
@@ -104,6 +121,10 @@ def reserve():
         if sl['gpus']: limits[k['gpu_resource']]=sl['gpus']
         manifest={'apiVersion':'batch/v1','kind':'Job','metadata':{'name':job,'labels':{'llm-remote-resource':token}},'spec':{'backoffLimit':0,'template':{'spec':{'restartPolicy':'Never','automountServiceAccountToken':False,'securityContext':{'runAsUser':os.getuid(),'runAsGroup':os.getgid()},'containers':[{'name':'resource','image':k['image'],'command':worker,'workingDir':str(root),'resources':{'limits':limits},'volumeMounts':[{'name':'project','mountPath':str(root)}]}],'volumes':[volume]}}}}
         pod=manifest['spec']['template']['spec']
+        if resource_base:
+            pod['volumes'].append({'name':'user-state','hostPath':{'path':str(base),'type':'Directory'}})
+            pod['containers'][0]['volumeMounts'].append({'name':'user-state','mountPath':str(base)})
+            pod['containers'][0]['volumeMounts'][0]['readOnly']=True
         if k.get('node_selector'):pod['nodeSelector']=k['node_selector']
         if k.get('tolerations'):pod['tolerations']=k['tolerations']
         if k.get('priority_class'):pod['priorityClassName']=k['priority_class']
@@ -156,6 +177,22 @@ with open(state/'lock','a') as lock:
             if kind=='slurm_server': call(['scancel',s['job_id']])
             elif kind=='kubernetes': kubectl(['delete','job',s['job_id'],'--wait=false'])
         result={'released':True}
+    elif action=='cleanup':
+        if not (state/'release').is_file() or not meta.is_file():
+            raise ValueError('Keep remote state: allocation is not explicitly released')
+        if status()['active']:
+            raise ValueError('Keep remote state: allocation is still active')
+        worker_state=state/'worker.state'
+        if worker_state.exists() and 'STOPPED' not in worker_state.read_text().split():
+            raise ValueError('Keep remote state: worker shutdown is not confirmed')
+        if kind=='direct':
+            pid=json.loads(meta.read_text()).get('job_id')
+            if pid:
+                try: os.kill(int(pid),0)
+                except ProcessLookupError: pass
+                else: raise ValueError('Keep remote state: worker PID is still alive')
+        shutil.rmtree(str(state))
+        result={'cleaned':True}
     elif action=='log':
         path=state/'model.log'; offset=int(p.get('offset',0))
         data=b''

@@ -78,6 +78,8 @@ class HostConfig:
 
 @dataclass(frozen=True)
 class RemoteConfig:
+    # Empty preserves resource locations for already-created sessions.
+    resource_state_dir: str = ""
     runner: str = "$HOME/.local/bin/llm-away-slurm-run"
     serverctl: str = "$HOME/.local/bin/llm-away-serverctl"
     workdir: str = "/scratch/csonnabe/LLM-AWAY/remote"
