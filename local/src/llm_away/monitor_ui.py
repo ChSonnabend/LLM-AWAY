@@ -83,7 +83,7 @@ def show(store,release,attach):
                 except curses.error:pass
         rows=[];selected=None;last=0;message='';pending=None;confirm=None
         log_id=None;log_top=None;log_lines=[];detail_offset=0
-        preview_id=None;preview_scroll=0;preview_lines=[];preview_lock=threading.Lock();preview_loading=False
+        preview_id=None;preview_scroll=0;preview_lines=[];preview_lock=threading.Lock();preview_loading=False;last_refresh=0
         result=[]
         def release_worker(number):
             try:release(number);result.append(f'Allocation {number} released.')
@@ -111,13 +111,12 @@ def show(store,release,attach):
                     except OSError as exc:
                         with preview_lock:preview_lines=[str(exc)]
                     finally:preview_loading=False
-                if preview_id!=selected and not preview_loading:
-                    preview_id=selected;preview_scroll=0
-                    with preview_lock:preview_lines=[]
-                    if selected is None:preview_loading=False
-                    else:
-                        preview_loading=True
-                        threading.Thread(target=load_preview,args=(selected,),daemon=True).start()
+                if selected is not None and not preview_loading and (preview_id!=selected or now-last_refresh>=1):
+                    if preview_id!=selected:
+                        preview_scroll=0;preview_id=selected
+                        with preview_lock:preview_lines=[]
+                    preview_loading=True;last_refresh=now
+                    threading.Thread(target=load_preview,args=(selected,),daemon=True).start()
             if pending and not pending.is_alive():
                 message=result.pop() if result else 'Operation finished.';pending=None;last=0
             h,w=win.getmaxyx();win.erase()
@@ -206,7 +205,9 @@ def show(store,release,attach):
                 elif key in (ord('2'),curses.KEY_F2):confirm=selected
                 elif key in (ord('3'),curses.KEY_F3):log_id=selected;log_top=None;last=0
                 elif key in (ord('4'),curses.KEY_F4):
-                    if not next((d for d in rows if d['id']==selected),{}).get('_busy'):
+                    d=next((d for d in rows if d['id']==selected),{})
+                    if not d.get('_busy') and d.get('phase')!='DAEMON OFFLINE':
                         return selected
+                    if d.get('phase')=='DAEMON OFFLINE':message='Session daemon is offline; reconnect unavailable.'
     try:curses.wrapper(screen)
     except KeyboardInterrupt:pass
