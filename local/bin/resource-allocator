@@ -8,4 +8,9 @@ while [ -L "$SOURCE" ]; do
 done
 ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+# Interactive allocation menus need a terminal stdout; some terminal wrappers
+# pipe stdout while keeping stdin on the controlling TTY.
+if [[ -t 0 && ! -t 1 && -r /dev/tty && -w /dev/tty ]]; then
+    exec </dev/tty >/dev/tty 2>&1
+fi
 exec python3 -m llm_away.resources allocate "$@"

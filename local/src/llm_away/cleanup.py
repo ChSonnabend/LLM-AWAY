@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
-from .resources import STORE, identity
+from .resources import STORE, identity, released_ids
 from .serve_registration import remove
 
 
@@ -27,11 +27,37 @@ def busy(path, check_lease=True):
     except (OSError,ValueError):return True  # Unknown ownership/state: preserve it.
 
 
+def add_session_items(items, path, delete_folders=False):
+    registration=path/'serve-registration.json'
+    if registration.exists():items.append(('mcp',path,f'Remove managed MCP registration for session {path.name}; attached helpers exit'))
+    tunnel=path/'tunnel.json'
+    if tunnel.exists():
+        try:
+            record=json.loads(tunnel.read_text())
+            if record.get('identity') and identity(record['pid'])==record['identity']:
+                items.append(('ssh',path,f"Stop recorded session {path.name} tunnel PID {record['pid']}"))
+        except (OSError,ValueError,KeyError):pass
+    # Keep session.json and lock files: IDs must never be reused, locks must
+    # retain their inode. Never infer ownership of arbitrary /tmp directories.
+    for name in ('session.log','tool-errors','models.json','tmp'):
+        target=path/name
+        if target.exists() and not target.is_symlink():items.append(('file',target,f'Delete {target}'))
+    for target in path.glob('serve-watch-*.json'):
+        if not target.is_symlink():items.append(('file',target,f'Delete stale watcher record {target}'))
+    if delete_folders and int(path.name) in released_ids():
+        items.append(('folder',path,f'Delete released session folder {path.name} (session.json and locks)'))
+    for lock in path.glob('*.lock'):
+        if lock.is_file() and not lock.is_symlink():items.append(('file',lock,f'Delete lock {lock}'))
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--session',type=int)
     parser.add_argument('--preview',action='store_true')
+    parser.add_argument('--keep-folders',action='store_true',
+                        help='Do not offer deletion of explicitly RELEASED session folders')
     args=parser.parse_args()
+    delete_folders=not args.keep_folders
     sessions=list(STORE.glob('[0-9]*/session.json'))
     items=[]
     for state in sessions:
@@ -39,22 +65,7 @@ def main():
         if args.session is not None and path.name!=str(args.session):continue
         if busy(path):
             print(f'Keep session {path.name}: active or uncertain state');continue
-        registration=path/'serve-registration.json'
-        if registration.exists():items.append(('mcp',path,f'Remove managed MCP registration for session {path.name}; attached helpers exit'))
-        tunnel=path/'tunnel.json'
-        if tunnel.exists():
-            try:
-                record=json.loads(tunnel.read_text())
-                if record.get('identity') and identity(record['pid'])==record['identity']:
-                    items.append(('ssh',path,f"Stop recorded session {path.name} tunnel PID {record['pid']}"))
-            except (OSError,ValueError,KeyError):pass
-        # Keep session.json and lock files: IDs must never be reused, locks must
-        # retain their inode. Never infer ownership of arbitrary /tmp directories.
-        for name in ('session.log','tool-errors','models.json','tmp'):
-            target=path/name
-            if target.exists() and not target.is_symlink():items.append(('file',target,f'Delete {target}'))
-        for target in path.glob('serve-watch-*.json'):
-            if not target.is_symlink():items.append(('file',target,f'Delete stale watcher record {target}'))
+        add_session_items(items,path,delete_folders)
     if args.session is None and not any(busy(p.parent) for p in sessions):
         for sock in Path('/tmp').glob('llm-away-ssh-*'):
             if sock.is_socket() and sock.lstat().st_uid==os.getuid():
@@ -79,7 +90,7 @@ def main():
                 if result.returncode and b'Connection refused' in result.stderr:target.unlink(missing_ok=True)
                 elif result.returncode:raise RuntimeError(result.stderr.decode(errors='replace').strip())
             else:
-                session=target if kind in ('mcp','ssh') else target.parent
+                session=target if kind in ('mcp','ssh','folder') else target.parent
                 with (session/'client.lock').open('a') as lease:
                     fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
                     if busy(session,check_lease=False):print(f'Skipped: session {session.name} became active');continue
@@ -88,6 +99,8 @@ def main():
                         record=json.loads((session/'tunnel.json').read_text())
                         if record.get('identity') and identity(record['pid'])==record['identity']:
                             os.kill(record['pid'],signal.SIGTERM)
+                    elif kind=='folder':
+                        shutil.rmtree(target)
                     elif target.is_symlink():raise ValueError('Path became a symlink; preserved')
                     elif target.is_dir():shutil.rmtree(target)
                     else:target.unlink(missing_ok=True)

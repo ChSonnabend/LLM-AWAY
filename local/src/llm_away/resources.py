@@ -37,8 +37,15 @@ def config(data):
 def remote(cfg, token, port, action, **extra):
     command=['python3',cfg.remote.workdir+'/bin/resource-control',action]
     if cfg.ssh.connection!='local':
-        command=['ssh','-x','-o','BatchMode=yes','-o',f'ConnectTimeout={cfg.ssh.connect_timeout_seconds}',
-                 cfg.ssh.destination,shlex.join(command)]
+        # Reuse one authenticated connection for repeated allocation polls.
+        # Without multiplexing, every 5-second poll performs a new SSH and
+        # ProxyJump handshake; transient banner timeouts then appear as errors.
+        options=['-x','-o','BatchMode=yes','-o',f'ConnectTimeout={cfg.ssh.connect_timeout_seconds}',
+                 '-o','ServerAliveInterval=15','-o','ServerAliveCountMax=2']
+        control=os.environ.get('LLM_AWAY_SSH_CONTROL')
+        if control:
+            options += ['-o','ControlMaster=auto','-o',f'ControlPath={control}','-o','ControlPersist=60']
+        command=['ssh',*options,cfg.ssh.destination,shlex.join(command)]
     result=subprocess.run(command,input=json.dumps(dict(config=asdict(cfg),token=token,port=port,**extra)),
                           text=True,capture_output=True,timeout=120)
     if result.returncode: raise RuntimeError(result.stderr.strip() or result.stdout.strip())
@@ -81,6 +88,16 @@ def path_for(number):
     path=STORE/str(int(number))
     if not (path/'session.json').exists(): raise ValueError('Unknown session '+str(number))
     return path
+
+def released_ids(store=STORE):
+    """Session IDs that are explicitly released and safe to archive/delete."""
+    released=[]
+    for path in store.glob('[0-9]*/session.json'):
+        try:data=json.loads(path.read_text())
+        except (OSError,ValueError):continue
+        if data.get('phase')=='RELEASED' and not (path.parent/'control.sock').exists():
+            released.append(int(path.parent.name))
+    return released
 
 def rpc(path, action, **extra):
     with socket.socket(socket.AF_UNIX) as s:
@@ -159,6 +176,8 @@ def provider(path):
 def daemon(path):
     data=json.loads((path/'session.json').read_text());cfg=config(data['config'])
     token=data['token'];port=data['remote_port'];child=None;offset=0;last=None
+    if cfg.ssh.connection!='local':
+        os.environ['LLM_AWAY_SSH_CONTROL']=str((path/'ssh.sock').resolve())
     if (path/'control.sock').exists():
         if rpc_alive(path):raise RuntimeError('Daemon already owns this session')
         (path/'control.sock').unlink(missing_ok=True)
@@ -209,7 +228,13 @@ def daemon(path):
         nonlocal release_requested
         release_requested=True
     signal.signal(signal.SIGTERM,interrupted);signal.signal(signal.SIGINT,interrupted)
-    tick=0
+    tick=0;remote_poll=None
+    from concurrent.futures import ThreadPoolExecutor
+    remote_pool=ThreadPoolExecutor(max_workers=1)
+    def poll_remote():
+        s=remote(cfg,token,port,'status')
+        logs=remote(cfg,token,port,'log',offset=offset)
+        return s,logs['offset'],logs['data']
     def provider_ready():
         # The scheduler only knows "model process started" (LOADING). Confirm the
         # isolated local provider endpoint is healthy before displaying LOADED.
@@ -256,21 +281,28 @@ def daemon(path):
                     except Exception as exc:answer={'rpc_error':str(exc)}
                     client.sendall((json.dumps(answer)+'\n').encode())
                     if action=='release' and 'rpc_error' not in answer:break
-            if time.time()-tick>=5:
+            now=time.time()
+            if now-tick>=5:
                 tick=time.time()
+                if remote_poll and not remote_poll.done():
+                    print('Resource monitor: previous remote poll still in progress; skipping',flush=True)
+                    continue
+                remote_poll=remote_pool.submit(poll_remote)
                 try:
-                    s=remote(cfg,token,port,'status')
+                    s,new_offset,new_logs=remote_poll.result()
+                    offset=new_offset
                     if child is not None and child.poll() is None and s.get('model_state')=='LOADING' and provider_ready():
                         s['model_state']='LOADED'
                     state(allocation=s,phase=s['slurm_state'],error='',provider_exit=child.poll() if child else None)
                     summary=(s['slurm_state'],s.get('model_state'),s.get('host'))
                     if summary!=last:print('Resource state:',summary,flush=True);last=summary
-                    logs=remote(cfg,token,port,'log',offset=offset);offset=logs['offset']
-                    if logs['data']:print(logs['data'],end='',flush=True)
+                    if new_logs:print(new_logs,end='',flush=True)
                 except Exception as exc:state(error=str(exc));print('Monitor:',exc,flush=True)
     finally:
         if child is not None and child.poll() is None:child.terminate()
         sock.close();(path/'control.sock').unlink(missing_ok=True)
+        remote_pool.shutdown(wait=False,cancel_futures=True)
+        os.environ.pop('LLM_AWAY_SSH_CONTROL',None)
 
 
 def allocate(args):
@@ -309,7 +341,7 @@ def allocate(args):
                 other=config(old['config'])
                 if other.backend_type=='direct' and other.ssh.destination==cfg.ssh.destination and requested.intersection(other.llamacpp.visible_devices.split(',')):
                     raise ValueError('GPU device overlap with resource session '+str(old['id'])+'; release it or select other devices')
-        number=1+max([int(p.name) for p in STORE.iterdir() if p.name.isdigit()]+[0])
+        number=1+max([int(p.name) for p in STORE.iterdir() if p.name.isdigit()]+released_ids()+[0])
         path=STORE/str(number);path.mkdir(mode=0o700)
         ports=set()
         for saved in STORE.glob('*/session.json'):
@@ -500,8 +532,15 @@ def release_session(number):
         if pid and born and identity(pid)==born:
             try:os.kill(pid,signal.SIGTERM)
             except ProcessLookupError:pass
-        remote(config(data['config']),data['token'],data['remote_port'],'release')
+        release_error=''
+        try:remote(config(data['config']),data['token'],data['remote_port'],'release')
+        except Exception as exc:
+            # The user explicitly asked to release this session and the local
+            # daemon is gone. Preserve the remote error, but do not leave a
+            # daemon-less allocation stuck in the monitor when SSH is flaky.
+            release_error=str(exc)
         data['phase']='RELEASED';data['model']='';write(path/'session.json',data)
+        if release_error:raise RuntimeError('Remote release failed; local session released. '+release_error) from None
 
 
 def monitor(args):
