@@ -174,6 +174,17 @@ def sbatch_options():
     if payload.get("exclusive", True):
         opts.append("#SBATCH --exclusive")
     node_class = payload.get("node_class", "")
+    if node_class == "mi50":
+        opts.append("#SBATCH -w " + choose_node("mi50"))
+    elif node_class == "mi100":
+        node = choose_node("mi100")
+        opts.append("#SBATCH -w " + node)
+        if int(node[3:]) >= 280:
+            opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=1")
+        else:
+            opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=0")
+    elif node_class:
+        opts.append("#SBATCH -w " + node_class)
     custom = payload.get("custom_options") or []
     if custom:
         i = 0
@@ -185,17 +196,6 @@ def sbatch_options():
             else:
                 opts.append("#SBATCH " + item)
                 i += 1
-    elif node_class == "mi50":
-        opts.append("#SBATCH -w " + choose_node("mi50"))
-    elif node_class == "mi100":
-        node = choose_node("mi100")
-        opts.append("#SBATCH -w " + node)
-        if int(node[3:]) >= 280:
-            opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=1")
-        else:
-            opts.append("#SBATCH --export=ALL,REMOTE_NODE_MI100=0")
-    elif node_class:
-        opts.append("#SBATCH -w " + node_class)
     return "\n".join(opts)
 
 def choose_node(node_class, count=1):

@@ -75,7 +75,18 @@ def reserve():
         if node in ('mi50','mi100'):
             lines=call(['sinfo','-N','-h','-p',sl['partition'],'-o','%N|%t']).splitlines()
             low,high=(0,279) if node=='mi50' else (280,349)
-            candidates=[v.split('|')[0] for v in lines if re.fullmatch('epn[0-9]+\\|(?:idle|mix|alloc)',v) and low<=int(v.split('|')[0][3:])<=high]
+            idle,busy,fallback=set(),set(),set()
+            for line in lines:
+                match=re.fullmatch(r'(epn([0-9]+))\|(idle|mix|alloc)',line)
+                if not match: continue
+                host,number,phase=match.groups(); number=int(number)
+                if low<=number<=high:
+                    (idle if phase=='idle' else busy).add(host)
+                elif node=='mi100' and sl.get('mi50_fallback',False) and 0<=number<=279 and phase=='idle':
+                    fallback.add(host)
+            if not idle and fallback and c['llamacpp'].get('rocm_arch','auto')!='auto':
+                raise ValueError('MI50 fallback requires llamacpp.rocm_arch = auto')
+            candidates=sorted(idle or fallback or busy)
             if not candidates: raise ValueError('No usable '+node+' nodes')
             node=candidates[0]
         if node: args+=['--nodelist='+node]

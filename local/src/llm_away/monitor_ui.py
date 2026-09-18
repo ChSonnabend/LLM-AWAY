@@ -37,12 +37,21 @@ def snapshots(store):
 
 def detail(data):
     cfg=data.get('config',{});slurm=cfg.get('slurm',{});kind=cfg.get('backend_type','?')
+    llama=cfg.get('llamacpp',{})
     if kind=='slurm_server':
         options=['--nodes='+str(slurm.get('nodes',1)),'--gres=gpu:'+str(slurm.get('gpus',0))]
         if slurm.get('partition'):options+=['--partition='+slurm['partition']]
         if slurm.get('exclusive'):options+=['--exclusive']
         options+=slurm.get('custom_options',[])
-        lines=['Slurm: '+shlex.join(options),'Node class: '+str(slurm.get('node_class') or 'any')]
+        class_name=str(slurm.get('node_class') or 'any')
+        if slurm.get('mi50_fallback') and class_name=='mi100':
+            class_name+=' (MI50 fallback enabled)'
+        elif class_name=='any':
+            class_name+=' (no node-class filter)'
+        lines=['Slurm: '+shlex.join(options),
+               'Node class: '+class_name,
+               'GPU backend: '+str(llama.get('backend') or 'unknown')+
+               (' | ROCm arch: '+str(llama['rocm_arch']) if llama.get('rocm_arch') and llama['rocm_arch']!='auto' else '')]
     elif kind=='kubernetes':
         lines=['Kubernetes: '+json.dumps(cfg.get('kubernetes',{}),ensure_ascii=False)]
     else:lines=['Direct devices: '+str(cfg.get('llamacpp',{}).get('visible_devices') or 'auto')]

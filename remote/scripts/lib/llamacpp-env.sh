@@ -104,9 +104,17 @@ llamacpp_detect_backend() {
 }
 
 llamacpp_detect_rocm_arch() {
-  if [[ -n ${LLAMACPP_ROCM_ARCH:-} ]]; then
+  if [[ -n ${LLAMACPP_ROCM_ARCH:-} && ${LLAMACPP_ROCM_ARCH} != auto ]]; then
     echo "$LLAMACPP_ROCM_ARCH"
     return 0
+  fi
+
+  # Resolve automatic selection on the allocated node, before choosing a build.
+  if [[ ${LLAMACPP_ROCM_ARCH:-} == auto ]]; then
+    case "$(hostname -s)" in
+      epn[0-1][0-9][0-9]|epn2[0-6][0-9]|epn27[0-9]) echo gfx906; return 0 ;;
+      epn2[8-9][0-9]|epn3[0-4][0-9]) echo gfx908; return 0 ;;
+    esac
   fi
 
   if command -v rocminfo > /dev/null 2>&1; then
