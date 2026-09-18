@@ -44,7 +44,10 @@ def status():
     s.update(active=False,slurm_state='STOPPED',host='',model_state='IDLE')
     if not s.get('job_id'): return s
     if kind=='slurm_server':
-        out=call(['squeue','-h','-j',s['job_id'],'-o','%T|%N|%r'])
+        try: out=call(['squeue','-h','-j',s['job_id'],'-o','%T|%N|%r'])
+        except RuntimeError as e:
+            if 'Invalid job id' not in str(e): raise
+            out=''
         if out:
             phase,host,reason=out.splitlines()[0].split('|',2)
             s.update(active=phase in ('PENDING','RUNNING','CONFIGURING','COMPLETING'),slurm_state=phase,reason=reason)
