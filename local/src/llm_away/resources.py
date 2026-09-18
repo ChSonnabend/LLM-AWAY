@@ -350,9 +350,33 @@ def run_agent(args):
                 print('Allocation retained.' if choice==0 else 'Resources released.')
 
 
+def release_session(number):
+    path=path_for(number)
+    data=json.loads((path/'session.json').read_text())
+    # Stop the foreground run wrapper (which terminates its Codex child) first.
+    pid=data.get('client_pid');born=data.get('client_identity')
+    if pid and born and identity(pid)==born:
+        try:os.kill(pid,signal.SIGTERM)
+        except ProcessLookupError:pass
+        deadline=time.monotonic()+7
+        while time.monotonic()<deadline and identity(pid)==born:time.sleep(0.2)
+        if identity(pid)==born:raise RuntimeError('Agent did not stop; allocation retained. Stop the agent and retry.')
+    try:rpc(path,'release')
+    except (ConnectionRefusedError,FileNotFoundError):
+        pid=data.get('provider_pid');born=data.get('provider_identity')
+        if pid and born and identity(pid)==born:
+            try:os.kill(pid,signal.SIGTERM)
+            except ProcessLookupError:pass
+        remote(config(data['config']),data['token'],data['remote_port'],'release')
+        data['phase']='RELEASED';data['model']='';write(path/'session.json',data)
+
+
 def monitor(args):
     if args.logs:
         path=path_for(args.logs);subprocess.call(['tail','-n','60','-f',str(path/'session.log')]);return
+    if not args.list and not args.kill and sys.stdin.isatty() and sys.stdout.isatty():
+        from .monitor_ui import show
+        show(STORE,release_session);return
     entries=[]
     for p in sorted(STORE.glob('*/session.json'),key=lambda p:int(p.parent.name)):
         data=json.loads(p.read_text())
@@ -385,15 +409,7 @@ def monitor(args):
         path=path_for(number)
         release=args.release or (sys.stdin.isatty() and choose_option(['Stop model, keep allocation','Release resources and stop background session'],'Stop session')==1)
         if release:
-            try:rpc(path,'release')
-            except (ConnectionRefusedError,FileNotFoundError):
-                data=json.loads((path/'session.json').read_text());remote(config(data['config']),data['token'],data['remote_port'],'release')
-                for prefix in ('provider','client'):
-                    pid=data.get(prefix+'_pid');born=data.get(prefix+'_identity')
-                    if pid and born and identity(pid)==born:
-                        try:os.kill(pid,signal.SIGTERM)
-                        except ProcessLookupError:pass
-                data['phase']='RELEASED';write(path/'session.json',data)
+            release_session(number)
         else:rpc(path,'stop')
 
 

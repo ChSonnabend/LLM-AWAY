@@ -18,6 +18,18 @@ Use the session ID returned by `res-alloc`. Exiting the agent lets you keep the
 allocation (unloading the model) or release it. Independent sessions can use
 different hosts/models. No separate init script is needed.
 
+`res-mon` opens a full-screen monitor in the same terminal. Arrow keys select an
+allocation; **1/F1** exits, **2/F2** releases it (confirm with Enter; stops an attached
+agent first), and **3/F3** opens its live allocation/provider logs. Esc returns from
+logs without stopping anything; End resumes log following. PgUp/PgDn scroll logs
+or the selected allocation's details, including scheduler options. The display
+resizes with the terminal and reads local daemon snapshots rather than polling SSH.
+`res-mon --list`, `--logs ID`, and `--kill ID --release` remain available.
+
+One allocation ID supports one model/agent at a time. A second `run` on that ID is
+rejected even if GPU memory is available. Create another allocation for concurrent
+agents; sharing one allocation between multiple models is not implemented.
+
 Requires Python 3.10+, Bash, OpenSSH and Codex CLI. Add `~/.local/bin` to PATH.
 RAG installs its own optional dependencies and runs embeddings locally on CPU.
 
