@@ -4,7 +4,7 @@
 Keeping it offers **Reopen agent / Keep running in background**; `--serve`
 preselects background mode and returns to the shell once the model is ready.
 Reusing skips model discovery and MTP selection and does not reload the weights.
-Reopening uses Codex's saved-conversation picker (choose the previous conversation);
+Reopening uses the selected CLI's saved-conversation picker (choose the previous conversation);
 it restores conversation history, not the original terminal screen/process.
 Future launches remember their working directory for that picker. Older launches
 have no saved directory: invoke `run` from the original project folder.
@@ -159,3 +159,33 @@ Do not attach this helper to its own remote-model Codex session (recursive deleg
 No GPU or end-to-end tests were run for this addition. To check locally, ask for
 a short project summary, verify its file citations, and confirm the allocation
 remains running after disconnecting MCP.
+
+## Codex or Claude Code
+
+`run --session N` detects `codex` and `claude` on PATH. With both installed,
+it asks which CLI to use; with only one, it selects it without asking.
+With neither installed, it reports an error. `--serve` needs neither CLI.
+Use `run --session N --cli claude` or `--cli codex` to select explicitly.
+Non-interactive launches with both installed require an explicit selection.
+Selection precedence is `--cli`, `LLM_AWAY_CLI`, then `[agent].cli` in
+`config/model.toml` (default `"auto"`). CLI options go after `--`, for example
+`run --session 2 --cli claude -- --print "Explain this project"`.
+
+Claude uses the same remote model and provider lifecycle, including streaming,
+native tool calls, `--rag`, and its `--resume` conversation picker. Conversations
+belong to their CLI; switching CLI does not transfer history. Claude gets
+`[claude].instructions` appended to its system prompt, falling back to
+`[codex].instructions` when blank. Claude retains its own permission settings.
+No global Claude configuration is written; endpoint, model, and local placeholder
+authentication are set only for the child process.
+
+For the standalone provider workflow, use `local/bin/claude-away` from the
+repository root (or `claude-away` after installing command links), alongside
+`codex-away`. These dedicated launchers select the named CLI explicitly.
+
+The remote llama.cpp build must support its native `/v1/messages` endpoint
+(and `/v1/messages/count_tokens` for token counting). The local provider forwards
+these requests, including streaming and upstream errors, to the existing SSH
+tunnel. Older builds that lack these endpoints must be updated.
+See [llama.cpp server API](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
+and [Claude gateway configuration](https://code.claude.com/docs/en/llm-gateway).

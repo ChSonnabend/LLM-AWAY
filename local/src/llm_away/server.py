@@ -9,6 +9,9 @@ import sys
 import threading
 import time
 import uuid
+from urllib.error import HTTPError
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 from .backends import Backend, BackendError, InferenceRequest
 from .config import AppConfig
@@ -18,6 +21,7 @@ from .protocol import (
     messages_to_prompt,
     models_list,
     normalize_chat_messages,
+    normalize_anthropic_system,
     response_object,
     responses_request_to_prompt,
     responses_request_to_messages,
@@ -48,7 +52,9 @@ class ProviderHandler(BaseHTTPRequestHandler):
     def _do_POST(self) -> None:
         try:
             payload = self.read_json()
-            if self.path == "/v1/chat/completions":
+            if urlsplit(self.path).path in ("/v1/messages", "/v1/messages/count_tokens"):
+                self.handle_anthropic(payload)
+            elif self.path == "/v1/chat/completions":
                 self.handle_chat(payload)
             elif self.path == "/v1/responses":
                 self.handle_responses(payload)
@@ -60,6 +66,32 @@ class ProviderHandler(BaseHTTPRequestHandler):
             self.write_json({"error": {"message": str(exc), "type": "backend_error"}}, status=502)
         except Exception as exc:
             self.write_json({"error": {"message": str(exc), "type": "server_error"}}, status=500)
+
+    def handle_anthropic(self, payload: dict) -> None:
+        """Preserve native Anthropic tool blocks and SSE from llama.cpp."""
+        if not hasattr(self.backend, "ensure_ready") or not hasattr(self.backend, "local_url"):
+            raise BackendError("Claude Code requires a persistent llama.cpp server backend")
+        self.backend.ensure_ready(self.config.model.name)
+        headers = {"Content-Type": "application/json"}
+        for name in ("anthropic-version", "anthropic-beta"):
+            if self.headers.get(name):
+                headers[name] = self.headers[name]
+        request = Request(self.backend.local_url(self.path),
+                          data=json.dumps(normalize_anthropic_system(payload)).encode(), headers=headers)
+        try:
+            upstream = urlopen(request, timeout=self.config.llamacpp.inference_timeout_seconds)
+        except HTTPError as exc:
+            upstream = exc
+        with upstream:
+            self.send_response(upstream.status)
+            self.send_header("Content-Type", upstream.headers.get("Content-Type", "application/json"))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            # read1 returns available SSE bytes without waiting for a full buffer.
+            while chunk := upstream.read1(65536):
+                self.wfile.write(chunk)
+                self.wfile.flush()
 
     def handle_chat(self, payload: dict) -> None:
         model = payload.get("model") or self.config.model.name

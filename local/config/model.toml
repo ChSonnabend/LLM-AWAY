@@ -5,6 +5,15 @@ port = 8765
 [model]
 name = "qwen3.8-27b-q4km"
 
+[agent]
+# Ask when both CLIs exist; automatically select the only installed CLI.
+# Override per invocation with run --cli codex|claude or LLM_AWAY_CLI.
+cli = "auto"
+
+[claude]
+# Blank reuses [codex].instructions via --append-system-prompt.
+instructions = ""
+
 [codex]
 custom_metadata = true
 provider_display_name = "Christian Sonnabend"

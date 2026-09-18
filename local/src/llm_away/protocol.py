@@ -516,3 +516,34 @@ def response_object(
         "output": [message_output(text, item_id=item_id, content_id=content_id)],
         "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
     }
+
+
+def normalize_anthropic_system(payload: dict) -> dict:
+    """Use one system string for templates that allow only a leading system turn.
+
+    Older llama.cpp Anthropic adapters can turn separate system text blocks into
+    separate system messages. Also fold any in-history instructions into the
+    top-level system field without converting native tool or image blocks.
+    """
+    parts = []
+
+    def append_text(content):
+        if isinstance(content, str):
+            if content:
+                parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if block.get("type") in ("text", "input_text") and block.get("text"):
+                    parts.append(block["text"])
+
+    append_text(payload.get("system"))
+    messages = []
+    for message in payload.get("messages", []):
+        if message.get("role") in ("system", "developer"):
+            append_text(message.get("content"))
+        else:
+            messages.append(message)
+    result = {**payload, "messages": messages}
+    if parts or "system" in payload:
+        result["system"] = "\n\n".join(parts)
+    return result

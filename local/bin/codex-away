@@ -94,6 +94,17 @@ if pids:
 PY
 }
 
+agent_cli="${LLM_AWAY_CLI:-codex}"
+case "$agent_cli" in codex|claude) ;; *) echo "Use codex-away or claude-away, or run --session N for automatic selection" >&2; exit 1 ;; esac
+command -v "$agent_cli" >/dev/null || { echo "$agent_cli is not available on PATH" >&2; exit 1; }
+launch_agent() {
+    if [[ "$agent_cli" == "claude" ]]; then
+        PYTHONPATH="$repo_dir/src${PYTHONPATH:+:$PYTHONPATH}" python3 -m llm_away.agents "$config" "http://$host:$port" "$@"
+    else
+        codex --no-alt-screen --profile away "$@"
+    fi
+}
+
 if [[ "$restart_provider" == "1" ]] && healthcheck; then
     echo "llm-away: stopping existing local provider on http://$host:$port" >&2
     stop_existing_provider
@@ -129,10 +140,10 @@ else
 fi
 
 if [[ -t 1 ]]; then
-    codex --no-alt-screen --profile away "$@"
+    launch_agent "$@"
 elif [[ -r /dev/tty && -w /dev/tty ]]; then
     exec </dev/tty >/dev/tty 2>&1
-    codex --no-alt-screen --profile away "$@"
+    launch_agent "$@"
 else
     echo "llm-away: stdout is not a terminal and /dev/tty is unavailable" >&2
     exit 1

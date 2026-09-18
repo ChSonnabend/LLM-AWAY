@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo_dir="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "${BASH_SOURCE[0]}")"
+export LLM_AWAY_CLI=claude
+exec "$repo_dir/bin/codex-away" "$@"

@@ -21,6 +21,7 @@ from .backends import SlurmServerBackend, KubernetesBackend, BackendError
 from .models import discover_models, choose_model, choose_mtp
 from .onboarding import configure_local, ask
 from .prompt import choose_option
+from .agents import choose_cli, claude_launch
 
 ROOT=Path(__file__).resolve().parents[2]
 STORE=ROOT/'run'/'resources'
@@ -384,7 +385,9 @@ def run_agent(args):
                     time.sleep(0.2)
         cfg=config(data['config'])
         settings=Path(os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
-        if settings.exists():cfg=replace(cfg,codex=load_config(settings).codex)
+        if settings.exists():
+            current=load_config(settings)
+            cfg=replace(cfg,codex=current.codex,agent=current.agent,claude=current.claude)
         reuse=False;resume=False
         loaded=bool(data.get('model') and data.get('provider_exit') is None and
                     data.get('provider_identity') and identity(data.get('provider_pid'))==data['provider_identity'])
@@ -406,6 +409,7 @@ def run_agent(args):
         if model.get('context_size',0)>0:
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=model['context_size']),
                         codex=replace(cfg.codex,context_window=model['context_size']))
+        selected_cli=None if args.serve else choose_cli(getattr(args,'cli',None) or os.environ.get('LLM_AWAY_CLI') or cfg.agent.cli)
         mtp=cfg.llamacpp.mtp if reuse else choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
         if not reuse and sys.stdin.isatty():
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=shlex.split(
@@ -451,34 +455,38 @@ def run_agent(args):
                 detached=True
                 print(f'Session {args.session} is serving in the background. Use res-mon to stop it.')
                 return
-            from .cli import remote_model_catalog
-            catalog_data=remote_model_catalog(model['alias'],min(cfg.codex.context_window,cfg.llamacpp.context_size),cfg.codex)
-            if not cfg.codex.custom_metadata:
-                # Codex requires a nonempty catalog. An unmatched, hidden entry
-                # preserves its fallback metadata for the requested "model".
-                catalog_data['models'][0]['slug']='remote-catalog-placeholder'
-                catalog_data['models'][0]['visibility']='hide'
-            catalog=path/'models.json';write(catalog,catalog_data)
-            instructions_file=path/'model-instructions.txt'
-            instructions_file.write_text(catalog_data['models'][0]['base_instructions'],encoding='utf-8')
-            # Per-process overrides keep simultaneous sessions out of global Codex settings.
-            command=['codex','--no-alt-screen','-c','model_provider="remote_resource"','-c','model='+json.dumps(model['alias']),
-                     '-c','model_providers.remote_resource.name="Remote resource"',
-                     '-c',f'model_providers.remote_resource.base_url="http://127.0.0.1:{cfg.server.port}/v1"',
-                     '-c','model_providers.remote_resource.wire_api="responses"',
-                     '-c','model_providers.remote_resource.requires_openai_auth=false',
-                     '-c','model_reasoning_effort='+json.dumps(cfg.codex.reasoning_effort),
-                     '-c','model_catalog_json='+json.dumps(str(catalog)),
-                     '-c','model_instructions_file='+json.dumps(str(instructions_file.resolve())),
-                     '-c','model_context_window='+str(min(cfg.codex.context_window,cfg.llamacpp.context_size)),
-                     '-c','model_auto_compact_token_limit='+str(min(cfg.codex.auto_compact_token_limit,int(min(cfg.codex.context_window,cfg.llamacpp.context_size)*0.7))),
-                     '-c','tool_output_token_limit='+str(cfg.codex.tool_output_token_limit)]
-            if rag_command:
-                command+=['-c','mcp_servers.project_search.command='+json.dumps(rag_command[0]),
-                          '-c','mcp_servers.project_search.args='+json.dumps(rag_command[1:]),
-                          '-c','mcp_servers.project_search.startup_timeout_sec=120',
-                          '-c','mcp_servers.project_search.tool_timeout_sec=120',
-                          '-c','mcp_servers.project_search.required=true']
+            agent_env=dict(os.environ)
+            if selected_cli == 'claude':
+                command,agent_env=claude_launch(cfg,f'http://127.0.0.1:{cfg.server.port}',model['alias'],rag_command)
+            else:
+                from .cli import remote_model_catalog
+                catalog_data=remote_model_catalog(model['alias'],min(cfg.codex.context_window,cfg.llamacpp.context_size),cfg.codex)
+                if not cfg.codex.custom_metadata:
+                    # Codex requires a nonempty catalog. An unmatched, hidden entry
+                    # preserves its fallback metadata for the requested "model".
+                    catalog_data['models'][0]['slug']='remote-catalog-placeholder'
+                    catalog_data['models'][0]['visibility']='hide'
+                catalog=path/'models.json';write(catalog,catalog_data)
+                instructions_file=path/'model-instructions.txt'
+                instructions_file.write_text(catalog_data['models'][0]['base_instructions'],encoding='utf-8')
+                # Per-process overrides keep simultaneous sessions out of global Codex settings.
+                command=['codex','--no-alt-screen','-c','model_provider="remote_resource"','-c','model='+json.dumps(model['alias']),
+                         '-c','model_providers.remote_resource.name="Remote resource"',
+                         '-c',f'model_providers.remote_resource.base_url="http://127.0.0.1:{cfg.server.port}/v1"',
+                         '-c','model_providers.remote_resource.wire_api="responses"',
+                         '-c','model_providers.remote_resource.requires_openai_auth=false',
+                         '-c','model_reasoning_effort='+json.dumps(cfg.codex.reasoning_effort),
+                         '-c','model_catalog_json='+json.dumps(str(catalog)),
+                         '-c','model_instructions_file='+json.dumps(str(instructions_file.resolve())),
+                         '-c','model_context_window='+str(min(cfg.codex.context_window,cfg.llamacpp.context_size)),
+                         '-c','model_auto_compact_token_limit='+str(min(cfg.codex.auto_compact_token_limit,int(min(cfg.codex.context_window,cfg.llamacpp.context_size)*0.7))),
+                         '-c','tool_output_token_limit='+str(cfg.codex.tool_output_token_limit)]
+                if rag_command:
+                    command+=['-c','mcp_servers.project_search.command='+json.dumps(rag_command[0]),
+                              '-c','mcp_servers.project_search.args='+json.dumps(rag_command[1:]),
+                              '-c','mcp_servers.project_search.startup_timeout_sec=120',
+                              '-c','mcp_servers.project_search.tool_timeout_sec=120',
+                              '-c','mcp_servers.project_search.required=true']
             temporary=path/'tmp';temporary.mkdir(mode=0o700,exist_ok=True)
             # Save the original project so the resume picker retains its cwd filter.
             context_path=path/'agent-context.json'
@@ -487,10 +495,10 @@ def run_agent(args):
                 saved=json.loads(context_path.read_text()).get('cwd')
                 if saved and Path(saved).is_dir():cwd=saved
             write(context_path,dict(cwd=cwd))
-            if resume:command+=['resume']
-            agent=subprocess.Popen(command+args.agent_args,cwd=cwd,env=dict(os.environ,TMPDIR=str(temporary)))
+            if resume:command+=['--resume' if selected_cli == 'claude' else 'resume']
+            agent=subprocess.Popen(command+args.agent_args,cwd=cwd,env=dict(agent_env,TMPDIR=str(temporary)))
             code=agent.wait()
-            if code:print(f'Codex exited with status {code}.',file=sys.stderr,flush=True)
+            if code:print(f'{selected_cli} exited with status {code}.',file=sys.stderr,flush=True)
         except KeyboardInterrupt:pass
         except Exception as exc:
             print(f'Launch failed: {exc}; see res-mon --logs {args.session}',file=sys.stderr,flush=True)
@@ -604,8 +612,9 @@ def main():
     alloc=sub.add_parser('allocate');alloc.add_argument('--config',default=os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
     alloc.add_argument('--host');alloc.add_argument('--connection',choices=['ssh','local']);alloc.add_argument('--restart',action='store_true');alloc.add_argument('--gpus',type=int)
     run=sub.add_parser('run');run.add_argument('--session','-s',required=True,type=int);run.add_argument('--model');run.add_argument('--mtp',choices=['auto','on','off']);run.add_argument('--rag',action='append',metavar='FOLDER',help='Local code/docs folder; repeat for multiple folders');run.add_argument('agent_args',nargs=argparse.REMAINDER)
-    run.add_argument('--serve',action='store_true',help='Keep model loaded for MCP delegation without launching Codex')
-    run.add_argument('--resume',action='store_true',help='Reconnect directly to the saved Codex conversation when a model is already loaded')
+    run.add_argument('--cli',choices=['auto','codex','claude'],help='Agent CLI; auto asks only when both are installed')
+    run.add_argument('--serve',action='store_true',help='Keep model loaded for MCP delegation without launching an agent')
+    run.add_argument('--resume',action='store_true',help='Reconnect directly to the saved agent conversation when a model is already loaded')
     mon=sub.add_parser('monitor');mon.add_argument('--list',action='store_true');mon.add_argument('--logs',type=int);mon.add_argument('--kill',type=int);mon.add_argument('--release',action='store_true')
     for name in ('daemon','provider'):sub.add_parser(name).add_argument('path',type=Path)
     args=parser.parse_args()

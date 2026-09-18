@@ -138,3 +138,5 @@ the error reports their paths. These files are ignored by Git and may contain co
 or command arguments. Tool mistakes remain possible; no prompt guarantees their absence.
 Reasoning effort is forwarded to the server; for GLM, `medium` maps to `high` and
 `xhigh` to `max`. Output verbosity is guided by the concise instructions.
+
+CLI support: `run --session N` asks between Codex and Claude Code when both are installed, or automatically uses the only available CLI. See the [local CLI guide](local/README.md#codex-or-claude-code) for configuration and explicit selection.

@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "$HOME/.local/bin"
-for name in resource-allocator resource-monitor run res-alloc res-mon res-background session-tool add-serve res-clean; do
+for name in resource-allocator resource-monitor run res-alloc res-mon res-background session-tool add-serve res-clean codex-away claude-away; do
     case "$name" in res-alloc) target=resource-allocator ;; res-mon) target=resource-monitor ;; *) target=$name ;; esac
     dest="$HOME/.local/bin/$name"
     if [[ -e "$dest" && ! -L "$dest" ]]; then

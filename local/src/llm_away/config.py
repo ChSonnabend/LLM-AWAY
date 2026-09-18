@@ -185,6 +185,17 @@ class KubernetesConfig:
 
 
 @dataclass(frozen=True)
+class AgentConfig:
+    cli: str = "auto"
+
+
+@dataclass(frozen=True)
+class ClaudeConfig:
+    # Blank shares the concise instructions already configured for Codex.
+    instructions: str = ""
+
+
+@dataclass(frozen=True)
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -194,6 +205,8 @@ class AppConfig:
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
     llamacpp: LlamaCppConfig = field(default_factory=LlamaCppConfig)
     codex: CodexConfig = field(default_factory=CodexConfig)
+    agent: AgentConfig = field(default_factory=AgentConfig)
+    claude: ClaudeConfig = field(default_factory=ClaudeConfig)
     backend_type: str = "slurm_server"
     hosts: dict[str, HostConfig] = field(default_factory=dict)
     kubernetes: KubernetesConfig = field(default_factory=KubernetesConfig)
@@ -335,6 +348,8 @@ def load_config(path: str | Path) -> AppConfig:
         gateway=GatewayConfig(**_merge(GatewayConfig().__dict__, raw.get("gateway", {}))),
         llamacpp=LlamaCppConfig(**_merge(LlamaCppConfig().__dict__, raw.get("llamacpp", {}))),
         codex=CodexConfig(**_merge(CodexConfig().__dict__, raw.get("codex", {}))),
+        agent=AgentConfig(**raw.get("agent", {})),
+        claude=ClaudeConfig(**raw.get("claude", {})),
         backend_type=backend.get("type", "slurm_server"),
     )
     from .host_store import read_store
