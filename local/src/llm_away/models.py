@@ -113,7 +113,7 @@ def choose_model(models: list[dict], current: str, requested: str | None = None)
         marker = " (current)" if model["name"] == current else ""
         print(f"  {index}. {model['name']} — {model['size_bytes'] / 1024**3:.1f} GiB{marker}; {mtp_label(model)}")
     if not sys.stdin.isatty():
-        raise ValueError("Model selection needs a terminal; pass --model NAME or use init-local.sh --skip-model-selection")
+        raise ValueError("Model selection needs a terminal; pass --model NAME to run")
     default = next((model for model in models if model["name"] == current), None)
     while True:
         answer = input("Choose model number or name" + (" [Enter keeps current]" if default else "") + ", q to cancel: ").strip()

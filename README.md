@@ -63,8 +63,7 @@ No model downloads or GPU jobs are required for migration.
 ## Multiple independent resource sessions
 
 Install the commands once with `local/scripts/install-resource-tools.sh` and ensure
-`~/.local/bin` is on PATH. `init-local.sh` and `away-agent` remain legacy entry
-points; neither is needed for this workflow.
+`~/.local/bin` is on PATH. Use `res-alloc --restart` to repeat host setup.
 
 ```bash
 res-alloc                         # Choose connection/host/resources; returns an ID
@@ -115,9 +114,9 @@ starting a small model, exiting with “keep”, then running the same ID and re
 
 Hydra: [GLM-5.3-Flash Q4 on two H200s, 750k context](remote/docs/glm-5.3-flash.md).
 
-Configuration is now `local/config/model.toml`; `away.toml` remains a compatibility
-symlink. Existing host profiles are preserved. Use `res-alloc --restart` to configure
-a host afresh; `init-local.sh` is only needed for the legacy launcher workflow.
+Configuration is `local/config/model.toml`, with saved hosts in `model.hosts.json`.
+Use `res-alloc --restart` to configure a host afresh. Obsolete init scripts and
+config compatibility links have been removed.
 Every allocation asks for additional Slurm options, or Kubernetes CPU, memory,
 node selector, tolerations, priority and time limit. Existing allocations are unchanged.
 

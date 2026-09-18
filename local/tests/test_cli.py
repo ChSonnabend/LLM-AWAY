@@ -147,34 +147,6 @@ account_email = "sonnabendch@gmail.com"
             self.assertIn("use read-only commands and then answer", combined_catalog)
             self.assertIn("use apply_patch instead of shell heredocs", combined_catalog)
 
-    def test_repeated_install_preserves_global_settings(self):
-        repo = Path(__file__).resolve().parents[1]
-        for catalog_line in ("", 'model_catalog_json = "/custom/catalog.json"\n'):
-            with self.subTest(catalog=catalog_line), tempfile.TemporaryDirectory() as tmpdir:
-                home = Path(tmpdir)
-                codex_home = home / ".codex"
-                codex_home.mkdir()
-                config_file = codex_home / "config.toml"
-                original = (
-                    '# User settings\nmodel = "my-openai-model"\n'
-                    'model_provider = "openai"\nmodel_reasoning_effort = "medium"\n'
-                    + catalog_line
-                    + '\n[desktop]\nfollowUpQueueMode = "steer"\n'
-                    '\n[model_providers.other]\nname = "Other"\n'
-                )
-                config_file.write_text(original, encoding="utf-8")
-                with patch.dict(os.environ, {"HOME": str(home), "CODEX_HOME": str(codex_home)}):
-                    # Exercise both the bare CLI default and the actual init script.
-                    self.assertEqual(main(["install-codex-config"]), 0)
-                    installed = config_file.read_text(encoding="utf-8")
-                    self.assertEqual(remove_toml_table(installed, "model_providers.away"), original)
-                    backups = list(codex_home.glob("config.toml.bak-*"))
-                    self.assertEqual(len(backups), 1)
-                    self.assertEqual(backups[0].read_text(encoding="utf-8"), original)
-                    for _ in range(2):
-                        subprocess.run(["bash", str(repo / "scripts/init-local.sh"), "--skip-model-selection"], check=True, capture_output=True, text=True)
-                        self.assertEqual(config_file.read_text(encoding="utf-8"), installed)
-                    self.assertEqual(list(codex_home.glob("config.toml.bak-*")), backups)
 
     def test_global_activation_requires_explicit_flag(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"CODEX_HOME": tmpdir}):

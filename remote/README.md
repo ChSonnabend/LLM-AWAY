@@ -286,19 +286,19 @@ In the client's LLM_EPN config/model.toml, set:
 - [slurm] and [llamacpp]: your partition, GPU/node selection, model, build, and
   context settings. The built-in mi50/mi100 node ranges are AWAY-specific.
 
-Then on the client, from its LLM_EPN repository:
+Then on the client, from `LLM-AWAY/local`:
 
 ```bash
 ./bin/llm-away list-models
-./scripts/init-local.sh
+./bin/resource-allocator
 ./bin/llm-away server-status --config config/model.toml
-away-agent
+./bin/run --session ID
 ```
 
 Discovery verifies SSH, wrapper configuration, and readable model files.
 Server status verifies the helper/Slurm status path and may create the state
-directory. Neither submits a job. away-agent starts/reuses an allocation and
-checks the tunnel and inference; its configured exit behavior cancels the job.
+directory. The allocator submits a resource reservation. `run` loads the model and starts
+the agent; exiting offers to keep or release the allocation.
 A successful setup check alone does not verify scheduling or GPU compatibility.
 <!-- END AWAY SETUP -->
 
@@ -307,7 +307,7 @@ A successful setup check alone does not verify scheduling or GPU compatibility.
 The updated AWAY client shows configured MTP and draft-file availability in model
 selection. Select a model interactively with `llm-away select-model`, or use
 `llm-away select-model --model qwen3.8-27b-q4km --mtp auto|on|off` (choose one mode).
-`init-local.sh` also accepts `--mtp`. The default `auto` preserves this remote
+`run --session ID` accepts `--mtp`. The default `auto` preserves this remote
 preset's MTP setting. `on` requires its configured draft; `off` suppresses the MTP
 draft before llama.cpp arguments are assembled. An existing saved off choice is
 preserved by the interactive prompt. The local HTTP/Codex API is unchanged.

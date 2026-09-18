@@ -85,28 +85,6 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(self.config.read_text(), original)
         self.assertFalse(list(self.root.glob("*.backup-*")))
 
-    def test_init_selects_before_install_and_unavailable_model_stops_setup(self):
-        repo = Path(__file__).resolve().parents[1]
-        fake_bin = self.root / "fake-bin"
-        fake_bin.mkdir()
-        ssh = fake_bin / "ssh"
-        ssh.write_text("#!/usr/bin/env python3\nimport sys\nsys.stdin.read()\nprint(" + repr(json.dumps([self.model])) + ")\n")
-        ssh.chmod(0o755)
-        home = self.root / "home"
-        env = dict(os.environ, HOME=str(home), CODEX_HOME=str(home / ".codex"),
-                   PATH=str(fake_bin) + os.pathsep + os.environ["PATH"])
-        command = ["bash", str(repo / "scripts/init-local.sh"), "--config", str(self.config), "--model"]
-        original = self.config.read_text()
-        result = subprocess.run(command + ["unavailable"], env=env, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 2)
-        self.assertEqual(self.config.read_text(), original)
-        self.assertFalse(home.exists())
-        result = subprocess.run(command + ["preset"], env=env, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(load_config(self.config).llamacpp.model_name, "preset")
-        self.assertTrue((home / ".local/bin/codex-away").is_symlink())
-        self.assertIn('model = "away"', (home / ".codex/away.config.toml").read_text())
-        self.assertNotIn('model_provider =', (home / ".codex/config.toml").read_text())
 
     def test_discovery_ssh_transport_and_invalid_output(self):
         with patch("llm_away.models.subprocess.run", return_value=subprocess.CompletedProcess([], 0, json.dumps([self.model]), "")) as run:
