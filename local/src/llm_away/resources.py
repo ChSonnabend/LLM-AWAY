@@ -282,6 +282,10 @@ def run_agent(args):
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=model['context_size']),
                         codex=replace(cfg.codex,context_window=model['context_size']))
         mtp=choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
+        rag_command=None
+        if args.rag:
+            from .rag import prepare
+            rag_command=prepare(args.rag)
         started=False
         agent=None
         external_stop=False
@@ -323,6 +327,12 @@ def run_agent(args):
                      '-c','model_context_window='+str(min(cfg.codex.context_window,cfg.llamacpp.context_size)),
                      '-c','model_auto_compact_token_limit='+str(min(cfg.codex.auto_compact_token_limit,int(min(cfg.codex.context_window,cfg.llamacpp.context_size)*0.7))),
                      '-c','tool_output_token_limit='+str(cfg.codex.tool_output_token_limit)]
+            if rag_command:
+                command+=['-c','mcp_servers.project_search.command='+json.dumps(rag_command[0]),
+                          '-c','mcp_servers.project_search.args='+json.dumps(rag_command[1:]),
+                          '-c','mcp_servers.project_search.startup_timeout_sec=120',
+                          '-c','mcp_servers.project_search.tool_timeout_sec=120',
+                          '-c','mcp_servers.project_search.required=true']
             agent=subprocess.Popen(command+args.agent_args)
             agent.wait()
         except KeyboardInterrupt:pass
@@ -376,7 +386,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__);sub=parser.add_subparsers(dest='command',required=True)
     alloc=sub.add_parser('allocate');alloc.add_argument('--config',default=os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
     alloc.add_argument('--host');alloc.add_argument('--connection',choices=['ssh','local']);alloc.add_argument('--restart',action='store_true');alloc.add_argument('--gpus',type=int)
-    run=sub.add_parser('run');run.add_argument('--session','-s',required=True,type=int);run.add_argument('--model');run.add_argument('--mtp',choices=['auto','on','off']);run.add_argument('agent_args',nargs=argparse.REMAINDER)
+    run=sub.add_parser('run');run.add_argument('--session','-s',required=True,type=int);run.add_argument('--model');run.add_argument('--mtp',choices=['auto','on','off']);run.add_argument('--rag',action='append',metavar='FOLDER',help='Local code/docs folder; repeat for multiple folders');run.add_argument('agent_args',nargs=argparse.REMAINDER)
     mon=sub.add_parser('monitor');mon.add_argument('--list',action='store_true');mon.add_argument('--logs',type=int);mon.add_argument('--kill',type=int);mon.add_argument('--release',action='store_true')
     for name in ('daemon','provider'):sub.add_parser(name).add_argument('path',type=Path)
     args=parser.parse_args()
@@ -388,7 +398,7 @@ def main():
         elif args.command=='monitor':monitor(args)
         elif args.command=='daemon':daemon(args.path)
         else:provider(args.path)
-    except (ValueError,RuntimeError,OSError,KeyboardInterrupt) as exc:
+    except (ValueError,RuntimeError,OSError,subprocess.SubprocessError,KeyboardInterrupt) as exc:
         print(str(exc) or 'Canceled',file=sys.stderr);return 1
     return 0
 

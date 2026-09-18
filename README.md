@@ -1,5 +1,31 @@
 # LLM-AWAY
 
+Optional local code/document retrieval:
+
+```sh
+run --session 2 --rag .
+run --session 2 --rag ./src --rag ./docs
+```
+
+RAG is off unless requested. Paths are local to the machine running `run`.
+First use installs isolated dependencies and downloads a small CPU embedding model
+(`BAAI/bge-small-en-v1.5`). SQLite keyword search and semantic embeddings share a
+persistent index under ignored `local/run/rag/`; no database service or extra GPU
+allocation is needed. Multiple sessions can reuse the index.
+
+The agent receives a `search_project` tool returning bounded excerpts with paths
+and line numbers. Changed/deleted files are refreshed on launch and each search;
+unchanged files reuse embeddings. Python functions/classes and Markdown headings
+provide chunk boundaries; other text uses bounded overlapping chunks.
+
+Git ignore rules, `.ragignore` patterns, common generated directories, symlinks,
+large/binary files and common secret filenames/content are excluded. Secret detection
+is heuristic: select only appropriate folders and add sensitive paths to `.ragignore`.
+Embeddings/indexes stay local; retrieved excerpts go to the selected inference host.
+Indexing supports code, Markdown and text (not PDF). Limits: 20,000 files, 50,000
+chunks; select narrower folders for larger projects. Use `--rag` before `--` or any
+agent prompt. Nothing is injected unless the agent invokes the search tool.
+
 One repository for the local agent gateway and remote llama.cpp runners.
 
 - [local/](local/README.md): host/model selection, local gateway, agent commands and configuration.
