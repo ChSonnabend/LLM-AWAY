@@ -52,6 +52,30 @@ def free_port():
     with socket.socket() as s:
         s.bind(('127.0.0.1',0));return s.getsockname()[1]
 
+class AdoptedProcess:
+    """Minimal Popen stand-in for a provider started by a previous daemon."""
+    def __init__(self,pid):
+        self.pid=pid;self.returncode=None
+    def poll(self):
+        if self.returncode is not None:return self.returncode
+        try:os.kill(self.pid,0)
+        except ProcessLookupError:self.returncode=0
+        except PermissionError:pass
+        return self.returncode
+    def terminate(self):
+        try:os.kill(self.pid,signal.SIGTERM)
+        except ProcessLookupError:pass
+    def kill(self):
+        try:os.kill(self.pid,signal.SIGKILL)
+        except ProcessLookupError:pass
+    def wait(self,timeout=None):
+        deadline=time.time()+(timeout or 0)
+        while self.poll() is None:
+            if timeout is not None and time.time()>=deadline:
+                raise subprocess.TimeoutExpired(self.pid,timeout)
+            time.sleep(0.1)
+        return self.returncode
+
 def path_for(number):
     if not str(number).isdigit(): raise ValueError('Session ID must be a number')
     path=STORE/str(int(number))
@@ -70,6 +94,14 @@ def rpc(path, action, **extra):
     result=json.loads(data)
     if 'rpc_error' in result: raise RuntimeError(result['rpc_error'])
     return result
+
+def rpc_alive(path):
+    try:
+        with socket.socket(socket.AF_UNIX) as s:
+            s.settimeout(1);s.connect(str(path/'control.sock'))
+            s.sendall(b'{"action":"status"}\n')
+            return bool(s.recv(16))
+    except OSError:return False
 
 class ResourceBackend(SlurmServerBackend):
     def __init__(self,cfg,token,port):
@@ -127,6 +159,13 @@ def provider(path):
 def daemon(path):
     data=json.loads((path/'session.json').read_text());cfg=config(data['config'])
     token=data['token'];port=data['remote_port'];child=None;offset=0;last=None
+    if (path/'control.sock').exists():
+        if rpc_alive(path):raise RuntimeError('Daemon already owns this session')
+        (path/'control.sock').unlink(missing_ok=True)
+    pid=data.get('provider_pid');born=data.get('provider_identity')
+    if pid and born and identity(pid)==born:
+        # Adopt a live provider after a daemon restart so status and stop remain accurate.
+        child=AdoptedProcess(pid)
     sock=socket.socket(socket.AF_UNIX);sock.bind(str(path/'control.sock'));os.chmod(path/'control.sock',0o600)
     sock.listen(4);sock.settimeout(1)
     def state(**kwargs):
@@ -156,18 +195,29 @@ def daemon(path):
                 state(model='',client_pid=None,client_identity='',provider_pid=None,provider_identity='');return
             time.sleep(1)
         raise RuntimeError('Model stop not acknowledged; inspect res-mon logs')
-    state(pid=os.getpid(),phase='ALLOCATING',error='')
-    try:
-        allocation=remote(cfg,token,port,'reserve');state(allocation=allocation,phase=allocation['slurm_state'])
-        print('Allocation:',allocation,flush=True)
-    except Exception as exc:
-        state(phase='ERROR',error=str(exc));print(exc,flush=True)
+    state(pid=os.getpid(),phase='RUNNING',error='')
+    if child is None:
+        try:
+            allocation=remote(cfg,token,port,'reserve');state(allocation=allocation,phase=allocation['slurm_state'])
+            print('Allocation:',allocation,flush=True)
+        except Exception as exc:
+            state(phase='ERROR',error=str(exc));print(exc,flush=True)
+    else:
+        print('Adopted live provider '+str(child.pid)+'; skipping reserve',flush=True)
     release_requested=False
     def interrupted(sig,frame):
         nonlocal release_requested
         release_requested=True
     signal.signal(signal.SIGTERM,interrupted);signal.signal(signal.SIGINT,interrupted)
     tick=0
+    def provider_ready():
+        # The scheduler only knows "model process started" (LOADING). Confirm the
+        # isolated local provider endpoint is healthy before displaying LOADED.
+        try:
+            with urlopen(f'http://127.0.0.1:{cfg.server.port}/health',timeout=1) as response:
+                return response.status==200
+        except OSError:
+            return False
     try:
         while True:
             if release_requested:
@@ -186,7 +236,8 @@ def daemon(path):
                             allocation=remote(cfg,token,port,'status')
                             if not allocation.get('active'): raise ValueError('Allocation is not active')
                             cfg=replace(cfg,model=replace(cfg.model,name=request['model']['alias']),
-                                llamacpp=replace(cfg.llamacpp,model_name=request['model']['name'],mtp=request['mtp']))
+                                llamacpp=replace(cfg.llamacpp,model_name=request['model']['name'],mtp=request['mtp'],
+                                                 server_extra_args=request.get('server_extra_args',cfg.llamacpp.server_extra_args)))
                             if request['model'].get('context_size',0)>0:
                                 cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=request['model']['context_size']))
                             # A preset without a draft model cannot run MTP; enforce it locally too.
@@ -208,7 +259,10 @@ def daemon(path):
             if time.time()-tick>=5:
                 tick=time.time()
                 try:
-                    s=remote(cfg,token,port,'status');state(allocation=s,phase=s['slurm_state'],error='',provider_exit=child.poll() if child else None)
+                    s=remote(cfg,token,port,'status')
+                    if child is not None and child.poll() is None and s.get('model_state')=='LOADING' and provider_ready():
+                        s['model_state']='LOADED'
+                    state(allocation=s,phase=s['slurm_state'],error='',provider_exit=child.poll() if child else None)
                     summary=(s['slurm_state'],s.get('model_state'),s.get('host'))
                     if summary!=last:print('Resource state:',summary,flush=True);last=summary
                     logs=remote(cfg,token,port,'log',offset=offset);offset=logs['offset']
@@ -306,6 +360,10 @@ def run_agent(args):
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=model['context_size']),
                         codex=replace(cfg.codex,context_window=model['context_size']))
         mtp=cfg.llamacpp.mtp if reuse else choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
+        if not reuse and sys.stdin.isatty():
+            cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=shlex.split(
+                ask('Additional llama.cpp server options (blank uses saved options)',
+                    shlex.join(cfg.llamacpp.server_extra_args)))))
         rag_command=None
         if args.rag:
             from .rag import prepare
@@ -436,7 +494,11 @@ def monitor(args):
         path=path_for(args.logs);subprocess.call(['tail','-n','60','-f',str(path/'session.log')]);return
     if not args.list and not args.kill and sys.stdin.isatty() and sys.stdout.isatty():
         from .monitor_ui import show
-        show(STORE,release_session);return
+        chosen=show(STORE,release_session,run_agent)
+        if chosen is not None:
+            # Re-exec the run wrapper: guarantees a clean terminal handoff to Codex.
+            raise SystemExit(subprocess.call([sys.executable,'-m','llm_away.resources','run','--session',str(chosen)]))
+        return
     entries=[]
     for p in sorted(STORE.glob('*/session.json'),key=lambda p:int(p.parent.name)):
         data=json.loads(p.read_text())

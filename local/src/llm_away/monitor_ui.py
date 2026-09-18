@@ -55,7 +55,7 @@ def detail(data):
     return lines
 
 
-def show(store,release):
+def show(store,release,attach):
     """Release runs off the UI thread; terminal state is restored on every exit."""
     def screen(win):
         try:curses.curs_set(0)
@@ -83,6 +83,7 @@ def show(store,release):
                 except curses.error:pass
         rows=[];selected=None;last=0;message='';pending=None;confirm=None
         log_id=None;log_top=None;log_lines=[];detail_offset=0
+        preview_id=None;preview_scroll=0;preview_lines=[];preview_lock=threading.Lock();preview_loading=False
         result=[]
         def release_worker(number):
             try:release(number);result.append(f'Allocation {number} released.')
@@ -99,6 +100,24 @@ def show(store,release):
                             if offset:f.readline()
                             log_lines=f.read().decode('utf-8','replace').splitlines()
                     except OSError as exc:log_lines=[str(exc)]
+                def load_preview(number):
+                    nonlocal preview_loading,preview_lines
+                    try:
+                        with (store/str(number)/'session.log').open('rb') as f:
+                            size=f.seek(0,2);offset=max(0,size-4194304);f.seek(offset)
+                            if offset:f.readline()
+                            data=f.read().decode('utf-8','replace').splitlines()
+                        with preview_lock:preview_lines=data
+                    except OSError as exc:
+                        with preview_lock:preview_lines=[str(exc)]
+                    finally:preview_loading=False
+                if preview_id!=selected and not preview_loading:
+                    preview_id=selected;preview_scroll=0
+                    with preview_lock:preview_lines=[]
+                    if selected is None:preview_loading=False
+                    else:
+                        preview_loading=True
+                        threading.Thread(target=load_preview,args=(selected,),daemon=True).start()
             if pending and not pending.is_alive():
                 message=result.pop() if result else 'Operation finished.';pending=None;last=0
             h,w=win.getmaxyx();win.erase()
@@ -128,7 +147,7 @@ def show(store,release):
                     def cells(d):return [d['id'],d.get('phase','?'),'BUSY' if d['_busy'] else 'idle',str(d.get('host','?'))+' / '+str(d.get('model') or 'none')]
                 def formatted(values):return ''.join(clean(v)[:max(1,n-1)].ljust(n) for v,n in zip(values,widths))
                 put(2,formatted(headers),curses.A_BOLD)
-                count=max(1,(h-8)//2);top=max(0,min(pos-count+1,max(0,len(rows)-count)))
+                count=max(1,(h-8)//3);top=max(0,min(pos-count+1,max(0,len(rows)-count)))
                 for i,d in enumerate(rows[top:top+count],3):
                     attr=curses.A_REVERSE if d['id']==selected else color(2 if d['_busy'] else 1)
                     put(i,formatted(cells(d)),attr)
@@ -137,14 +156,23 @@ def show(store,release):
                 y=4+count
                 put(y,' SELECTED ALLOCATION ',curses.A_BOLD|color(1));y+=1
                 details=[part for line in (detail(rows[pos]) if rows else []) for part in (textwrap.wrap(clean(line),max(1,w-2)) or [''])]
-                detail_offset=min(detail_offset,max(0,len(details)-max(1,h-3-y)))
+                preview_y=max(y+1,(h-5)*2//3)
+                detail_offset=min(detail_offset,max(0,len(details)-(preview_y-y)))
                 for wrapped in details[detail_offset:]:
-                    if y>=h-3:break
+                    if y>=preview_y:break
                     put(y,wrapped);y+=1
+                separator(preview_y)
+                put(preview_y+1,' LOG PREVIEW  ↑/↓ scroll'+('' if preview_scroll else '  (following)'),curses.A_BOLD|color(1))
+                pcount=h-4-(preview_y+2)
+                ptop=max(0,len(preview_lines)-pcount-preview_scroll)
+                if preview_id==selected and not preview_lines:
+                    put(preview_y+2,'Loading recent log…',color(3))
+                for i,line in enumerate(preview_lines[ptop:ptop+pcount],preview_y+2):
+                    put(i,line)
                 status=f'Release allocation {confirm} and stop its agent? Enter/y confirms; Esc cancels.' if confirm is not None else ('Stopping agent and releasing allocation…' if pending else message)
                 separator(h-3)
                 put(h-2,status,color(3))
-                put(h-1,'1/F1 Exit   2/F2 Release   3/F3 Logs   ↑↓ Select   PgUp/Dn Details',curses.A_REVERSE)
+                put(h-1,'1/F1 Exit   2/F2 Release   3/F3 Logs   4/F4 Attach   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
             win.refresh();key=win.getch()
             if key==-1:continue
             if key==curses.KEY_RESIZE:last=0;continue
@@ -169,11 +197,16 @@ def show(store,release):
             if key in (ord('1'),curses.KEY_F1,ord('q'),27,3):return
             if rows:
                 pos=next((i for i,d in enumerate(rows) if d['id']==selected),0)
-                if key in (curses.KEY_UP,ord('k')):selected=rows[max(0,pos-1)]['id'];detail_offset=0
-                elif key in (curses.KEY_DOWN,ord('j')):selected=rows[min(len(rows)-1,pos+1)]['id'];detail_offset=0
+                if key in (curses.KEY_LEFT,ord('h')):selected=rows[max(0,pos-1)]['id'];detail_offset=0;preview_id=None
+                elif key in (curses.KEY_RIGHT,ord('l')):selected=rows[min(len(rows)-1,pos+1)]['id'];detail_offset=0;preview_id=None
                 elif key==curses.KEY_PPAGE:detail_offset=max(0,detail_offset-3)
                 elif key==curses.KEY_NPAGE:detail_offset+=3
+                elif key in (curses.KEY_UP,curses.KEY_DOWN):
+                    preview_scroll=max(0,preview_scroll+(1 if key==curses.KEY_UP else -1))
                 elif key in (ord('2'),curses.KEY_F2):confirm=selected
                 elif key in (ord('3'),curses.KEY_F3):log_id=selected;log_top=None;last=0
+                elif key in (ord('4'),curses.KEY_F4):
+                    if not next((d for d in rows if d['id']==selected),{}).get('_busy'):
+                        return selected
     try:curses.wrapper(screen)
     except KeyboardInterrupt:pass

@@ -23,6 +23,7 @@ res-alloc --restart                  # Reconfigure a host
 res-mon --list
 run --session 2                      # Choose model and start the agent
 run --session 2 --model glm-5.3-flash-q4 --mtp on
+res-background --session 2           # Load/keep the model, then return to the shell
 run --session 2 --rag .              # Optional local project retrieval
 res-mon --logs 2                     # Ctrl+C only closes the log viewer
 res-mon --kill 2 --release
@@ -31,6 +32,11 @@ res-mon --kill 2 --release
 Use the session ID returned by `res-alloc`. Exiting the agent lets you keep the
 allocation (unloading the model) or release it. Independent sessions can use
 different hosts/models. No separate init script is needed.
+
+`res-background --session 2` is the non-interactive equivalent of choosing
+**Keep running in background**: it loads or reuses the model, keeps the
+allocation alive, and returns to the shell. Reattach later with
+`run --session 2` and choose **Reopen agent**.
 
 `res-mon` opens a full-screen monitor in the same terminal. Arrow keys select an
 allocation; **1/F1** exits, **2/F2** releases it (confirm with Enter; stops an attached

@@ -23,7 +23,7 @@ reasoning_effort = "low"
 model_verbosity = "low"
 hide_agent_reasoning = true
 # Initial prompt copied into the model catalog by install-codex-config.
-instructions = "Complete requested edits with the smallest correct change. Batch related reads and SSH commands. Reuse established facts; do not repeat successful inspections without a reason. Once sufficient evidence is available, edit rather than continuing discovery. Preserve unrelated changes and follow repository instructions. After two failed attempts, change approach or report a concrete blocker. Use the provided tools and exact argument schemas; never invent commands or claim execution without tool evidence. Prefer patches for edits. Run focused checks appropriate to the change. Report the result, verification and remaining uncertainty briefly."
+instructions = "Complete requested edits with the smallest correct change. Batch related reads and SSH commands. Reuse established facts; do not repeat successful inspections without a reason. Once sufficient evidence is available, edit rather than continuing discovery. Preserve unrelated changes and follow repository instructions. After two failed attempts, change approach or report a concrete blocker. Use the provided tools and exact argument schemas; never invent commands or claim execution without tool evidence. Prefer patches for edits. Run focused checks appropriate to the change. Report the result, verification and remaining uncertainty briefly. Be very token efficient and converge fast."
 
 [backend]
 # "slurm_server" starts/reuses a persistent llama.cpp server allocation.
