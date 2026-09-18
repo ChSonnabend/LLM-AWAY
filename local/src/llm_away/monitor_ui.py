@@ -76,6 +76,11 @@ def show(store,release):
             if 0<=y<h:
                 try:win.addnstr(y,0,clean(text).ljust(w-1),max(0,w-1),attr)
                 except curses.error:pass
+        def separator(y):
+            h,w=win.getmaxyx()
+            if 0<=y<h:
+                try:win.hline(y,0,curses.ACS_HLINE,w,color(1))
+                except curses.error:pass
         rows=[];selected=None;last=0;message='';pending=None;confirm=None
         log_id=None;log_top=None;log_lines=[];detail_offset=0
         result=[]
@@ -128,6 +133,7 @@ def show(store,release):
                     attr=curses.A_REVERSE if d['id']==selected else color(2 if d['_busy'] else 1)
                     put(i,formatted(cells(d)),attr)
                 if not rows:put(3,'No allocations. Create one with res-alloc.')
+                separator(3+count)
                 y=4+count
                 put(y,' SELECTED ALLOCATION ',curses.A_BOLD|color(1));y+=1
                 details=[part for line in (detail(rows[pos]) if rows else []) for part in (textwrap.wrap(clean(line),max(1,w-2)) or [''])]
@@ -136,6 +142,7 @@ def show(store,release):
                     if y>=h-3:break
                     put(y,wrapped);y+=1
                 status=f'Release allocation {confirm} and stop its agent? Enter/y confirms; Esc cancels.' if confirm is not None else ('Stopping agent and releasing allocation…' if pending else message)
+                separator(h-3)
                 put(h-2,status,color(3))
                 put(h-1,'1/F1 Exit   2/F2 Release   3/F3 Logs   ↑↓ Select   PgUp/Dn Details',curses.A_REVERSE)
             win.refresh();key=win.getch()

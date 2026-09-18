@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "${BASH_SOURCE[0]}")"
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+# Dependency installation must never write to the MCP protocol's stdout.
+PYTHON="$(python3 -c 'import os; from llm_away.rag import runtime
+output=os.dup(1); os.dup2(2,1)
+p=runtime()
+os.write(output,(str(p)+"\n").encode())')"
+exec "$PYTHON" -m llm_away.session_tool "$@"

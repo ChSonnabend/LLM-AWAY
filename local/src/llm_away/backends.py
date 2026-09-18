@@ -320,11 +320,22 @@ class SlurmServerBackend(Backend):
             return
         if self._tunnel and self._tunnel.poll() is None:
             self._tunnel.terminate()
+            try:self._tunnel.wait(timeout=5)
+            except subprocess.TimeoutExpired:self._tunnel.kill();self._tunnel.wait()
 
         local = f"{self.local_port}:{host}:{remote_port}"
+        # Older multiplexed tunnels left their forward on the persistent master.
+        # Cancel only this exact forward, never the shared SSH master itself.
+        try:
+            subprocess.run(['ssh',*self.ssh_options(),'-O','cancel','-L',local,
+                            self.config.ssh.destination],stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL,timeout=10)
+        except subprocess.TimeoutExpired:pass
         self._tunnel = subprocess.Popen(
             [
                 "ssh",
+                # OpenSSH uses the first option value; these must precede defaults.
+                "-o", "ControlMaster=no", "-o", "ControlPath=none",
                 *self.ssh_options(exit_on_forward_failure=True),
                 "-N",
                 "-L",
@@ -332,7 +343,7 @@ class SlurmServerBackend(Backend):
                 self.config.ssh.destination,
             ],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=None,
             text=True,
         )
         self._tunnel_target = target
@@ -513,7 +524,8 @@ class KubernetesBackend(SlurmServerBackend):
             self._tunnel_target = host
             return
         self._tunnel = subprocess.Popen([
-            "ssh", *self.ssh_options(exit_on_forward_failure=True),
+            "ssh", "-o", "ControlMaster=no", "-o", "ControlPath=none",
+            *self.ssh_options(exit_on_forward_failure=True),
             "-L", f"{self.local_port}:127.0.0.1:{self.local_port}",
             self.config.ssh.destination, " ".join(shlex.quote(arg) for arg in cmd)],
             stdout=subprocess.DEVNULL, stderr=None, text=True)

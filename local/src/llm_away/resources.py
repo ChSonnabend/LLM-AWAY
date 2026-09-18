@@ -94,12 +94,15 @@ class ResourceBackend(SlurmServerBackend):
     def ensure_tunnel(self,host):
         if self.config.backend_type=='kubernetes': KubernetesBackend.ensure_tunnel(self,host)
         else: super().ensure_tunnel(host)
+        if self._tunnel and os.environ.get('LLM_SESSION_DIR'):
+            write(Path(os.environ['LLM_SESSION_DIR'])/'tunnel.json',
+                  dict(pid=self._tunnel.pid,identity=identity(self._tunnel.pid)))
     def close(self):
         self._closing.set()
         if self._tunnel:
             self._tunnel.terminate()
             try:self._tunnel.wait(timeout=5)
-            except subprocess.TimeoutExpired:self._tunnel.kill()
+            except subprocess.TimeoutExpired:self._tunnel.kill();self._tunnel.wait()
             self._tunnel=None
 
 
@@ -109,6 +112,7 @@ def provider(path):
     settings=Path(os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
     if settings.exists():cfg=replace(cfg,codex=load_config(settings).codex)
     os.environ['LLM_TOOL_ERROR_DIR']=str(path/'tool-errors')
+    os.environ['LLM_SESSION_DIR']=str(path)
     backend=ResourceBackend(cfg,data['token'],data['remote_port'])
     def stop(sig,frame):
         backend.close();raise SystemExit(0)
@@ -129,8 +133,14 @@ def daemon(path):
         data.update(kwargs);write(path/'session.json',data)
     def stop_model(caller=None):
         nonlocal child,cfg
-        client=data.get('client_pid')
-        if client and client!=caller and data.get('client_identity') and identity(client)==data['client_identity']:
+        from .serve_registration import remove
+        try:remove(path)
+        except (OSError,ValueError) as exc:print(f'MCP cleanup: {exc}',file=sys.stderr)
+        current=data
+        try:current=json.loads((path/'attachment.json').read_text())
+        except (OSError,ValueError):pass
+        client=current.get('client_pid')
+        if client and client!=caller and current.get('client_identity') and identity(client)==current['client_identity']:
             try:os.kill(client,signal.SIGTERM)
             except ProcessLookupError:pass
         if child is not None and child.poll() is None:
@@ -276,12 +286,26 @@ def run_agent(args):
         data=rpc(path,'status');cfg=config(data['config'])
         settings=Path(os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
         if settings.exists():cfg=replace(cfg,codex=load_config(settings).codex)
-        model=choose_model(discover_models(cfg),cfg.llamacpp.model_name,args.model)
+        reuse=False;resume=False
+        loaded=bool(data.get('model') and data.get('provider_exit') is None and
+                    data.get('provider_identity') and identity(data.get('provider_pid'))==data['provider_identity'])
+        if loaded:
+            reuse=(not args.model or args.model in (data['model'],cfg.llamacpp.model_name))
+            if not args.model:
+                reuse=choose_option([f"Keep loaded model: {data['model']}",'Load a different model'],'Model already running')==0
+            if reuse:
+                mode=choose_option(['Reopen agent (saved-conversation picker)','Keep running in background'],
+                                   'Session mode',default=1 if args.serve else 0)
+                args.serve=mode==1;resume=mode==0
+        if reuse:
+            model=dict(alias=data['model'],name=cfg.llamacpp.model_name,context_size=cfg.llamacpp.context_size)
+        else:
+            model=choose_model(discover_models(cfg),cfg.llamacpp.model_name,args.model)
         # Explicit preset context also applies to allocations created before the preset.
         if model.get('context_size',0)>0:
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=model['context_size']),
                         codex=replace(cfg.codex,context_window=model['context_size']))
-        mtp=choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
+        mtp=cfg.llamacpp.mtp if reuse else choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
         rag_command=None
         if args.rag:
             from .rag import prepare
@@ -289,14 +313,24 @@ def run_agent(args):
         started=False
         agent=None
         external_stop=False
+        detached=False
         def interrupted(sig,frame):
             nonlocal external_stop
             external_stop=True
             if agent and agent.poll() is None:agent.terminate()
             raise KeyboardInterrupt
+        def hangup(sig,frame):
+            nonlocal detached
+            detached=True
+            raise KeyboardInterrupt
         previous=signal.signal(signal.SIGTERM,interrupted)
+        previous_hup=signal.signal(signal.SIGHUP,hangup)
         try:
-            rpc(path,'start',model=model,mtp=mtp,client_pid=os.getpid());started=True
+            if not reuse:
+                if loaded:rpc(path,'stop',client_pid=os.getpid())
+                rpc(path,'start',model=model,mtp=mtp,client_pid=os.getpid())
+            started=True
+            write(path/'attachment.json',dict(client_pid=os.getpid(),client_identity=identity(os.getpid())))
             deadline=time.time()+cfg.gateway.startup_timeout_seconds
             print(f'Loading model; telemetry: res-mon --logs {args.session}')
             while True:
@@ -308,6 +342,10 @@ def run_agent(args):
                 if s.get('provider_exit') is not None or not s.get('allocation',{}).get('active',True) or s.get('allocation',{}).get('model_state')=='EXITED':raise RuntimeError('Backend stopped; inspect session log')
                 if time.time()>deadline:raise TimeoutError('Model startup timed out')
                 time.sleep(1)
+            if args.serve:
+                detached=True
+                print(f'Session {args.session} is serving in the background. Use res-mon to stop it.')
+                return
             from .cli import remote_model_catalog
             catalog_data=remote_model_catalog(model['alias'],min(cfg.codex.context_window,cfg.llamacpp.context_size),cfg.codex)
             if not cfg.codex.custom_metadata:
@@ -333,28 +371,50 @@ def run_agent(args):
                           '-c','mcp_servers.project_search.startup_timeout_sec=120',
                           '-c','mcp_servers.project_search.tool_timeout_sec=120',
                           '-c','mcp_servers.project_search.required=true']
-            agent=subprocess.Popen(command+args.agent_args)
-            agent.wait()
+            temporary=path/'tmp';temporary.mkdir(mode=0o700,exist_ok=True)
+            # Save the original project so the resume picker retains its cwd filter.
+            context_path=path/'agent-context.json'
+            cwd=os.getcwd()
+            if resume and context_path.exists():
+                saved=json.loads(context_path.read_text()).get('cwd')
+                if saved and Path(saved).is_dir():cwd=saved
+            write(context_path,dict(cwd=cwd))
+            if resume:command+=['resume']
+            agent=subprocess.Popen(command+args.agent_args,cwd=cwd,env=dict(os.environ,TMPDIR=str(temporary)))
+            code=agent.wait()
+            if code:print(f'Codex exited with status {code}.',file=sys.stderr,flush=True)
         except KeyboardInterrupt:pass
+        except Exception as exc:
+            print(f'Launch failed: {exc}; see res-mon --logs {args.session}',file=sys.stderr,flush=True)
+            raise
         finally:
             if agent and agent.poll() is None:
                 agent.terminate()
                 try:agent.wait(timeout=5)
                 except subprocess.TimeoutExpired:agent.kill();agent.wait()
             signal.signal(signal.SIGTERM,previous)
-            if started and not external_stop:
+            signal.signal(signal.SIGHUP,previous_hup)
+            if started:(path/'attachment.json').unlink(missing_ok=True)
+            if started and not external_stop and not detached:
                 try:
-                    choice=choose_option(['Keep allocation for later (unload model)','Release allocation and stop background session'],'Session finished') if sys.stdin.isatty() else 0
+                    choice=choose_option(['Keep model running in background','Unload model, keep allocation','Release allocation and stop background session'],'Session finished') if sys.stdin.isatty() else 0
                 except (ValueError,KeyboardInterrupt):choice=0
-                rpc(path,'stop' if choice==0 else 'release',client_pid=os.getpid())
-                print('Allocation retained.' if choice==0 else 'Resources released.')
+                if choice:
+                    from .serve_registration import remove
+                    try:remove(path)
+                    except (OSError,ValueError) as exc:print(f'MCP cleanup: {exc}',file=sys.stderr)
+                    rpc(path,'stop' if choice==1 else 'release',client_pid=os.getpid())
+                print(['Model and allocation retained.','Allocation retained.','Resources released.'][choice])
 
 
 def release_session(number):
     path=path_for(number)
     data=json.loads((path/'session.json').read_text())
     # Stop the foreground run wrapper (which terminates its Codex child) first.
-    pid=data.get('client_pid');born=data.get('client_identity')
+    current=data
+    try:current=json.loads((path/'attachment.json').read_text())
+    except (OSError,ValueError):pass
+    pid=current.get('client_pid');born=current.get('client_identity')
     if pid and born and identity(pid)==born:
         try:os.kill(pid,signal.SIGTERM)
         except ProcessLookupError:pass
@@ -418,6 +478,7 @@ def main():
     alloc=sub.add_parser('allocate');alloc.add_argument('--config',default=os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
     alloc.add_argument('--host');alloc.add_argument('--connection',choices=['ssh','local']);alloc.add_argument('--restart',action='store_true');alloc.add_argument('--gpus',type=int)
     run=sub.add_parser('run');run.add_argument('--session','-s',required=True,type=int);run.add_argument('--model');run.add_argument('--mtp',choices=['auto','on','off']);run.add_argument('--rag',action='append',metavar='FOLDER',help='Local code/docs folder; repeat for multiple folders');run.add_argument('agent_args',nargs=argparse.REMAINDER)
+    run.add_argument('--serve',action='store_true',help='Keep model loaded for MCP delegation without launching Codex')
     mon=sub.add_parser('monitor');mon.add_argument('--list',action='store_true');mon.add_argument('--logs',type=int);mon.add_argument('--kill',type=int);mon.add_argument('--release',action='store_true')
     for name in ('daemon','provider'):sub.add_parser(name).add_argument('path',type=Path)
     args=parser.parse_args()
