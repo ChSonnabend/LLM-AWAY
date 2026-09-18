@@ -337,7 +337,20 @@ def run_agent(args):
     with open(path/'client.lock','a') as lease:
         try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise ValueError('Another run command owns this session')
-        data=rpc(path,'status');cfg=config(data['config'])
+        try:data=rpc(path,'status')
+        except OSError:
+            # A daemon can exit while its provider remains live. Restart it and
+            # let daemon() adopt the provider before attaching the agent.
+            with (path/'session.log').open('a') as log:
+                subprocess.Popen([sys.executable,'-m','llm_away.resources','daemon',str(path)],
+                                 stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
+            deadline=time.monotonic()+5
+            while True:
+                try:data=rpc(path,'status');break
+                except OSError:
+                    if time.monotonic()>=deadline:raise
+                    time.sleep(0.2)
+        cfg=config(data['config'])
         settings=Path(os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
         if settings.exists():cfg=replace(cfg,codex=load_config(settings).codex)
         reuse=False;resume=False
@@ -348,9 +361,11 @@ def run_agent(args):
             if not args.model:
                 reuse=choose_option([f"Keep loaded model: {data['model']}",'Load a different model'],'Model already running')==0
             if reuse:
-                mode=choose_option(['Reopen agent (saved-conversation picker)','Keep running in background'],
-                                   'Session mode',default=1 if args.serve else 0)
-                args.serve=mode==1;resume=mode==0
+                if getattr(args,'resume',False):resume=True
+                else:
+                    mode=choose_option(['Reopen agent (saved-conversation picker)','Keep running in background'],
+                                       'Session mode',default=1 if args.serve else 0)
+                    args.serve=mode==1;resume=mode==0
         if reuse:
             model=dict(alias=data['model'],name=cfg.llamacpp.model_name,context_size=cfg.llamacpp.context_size)
         else:
@@ -497,7 +512,7 @@ def monitor(args):
         chosen=show(STORE,release_session,run_agent)
         if chosen is not None:
             # Re-exec the run wrapper: guarantees a clean terminal handoff to Codex.
-            raise SystemExit(subprocess.call([sys.executable,'-m','llm_away.resources','run','--session',str(chosen)]))
+            raise SystemExit(subprocess.call([sys.executable,'-m','llm_away.resources','run','--resume','--session',str(chosen)]))
         return
     entries=[]
     for p in sorted(STORE.glob('*/session.json'),key=lambda p:int(p.parent.name)):
@@ -541,6 +556,7 @@ def main():
     alloc.add_argument('--host');alloc.add_argument('--connection',choices=['ssh','local']);alloc.add_argument('--restart',action='store_true');alloc.add_argument('--gpus',type=int)
     run=sub.add_parser('run');run.add_argument('--session','-s',required=True,type=int);run.add_argument('--model');run.add_argument('--mtp',choices=['auto','on','off']);run.add_argument('--rag',action='append',metavar='FOLDER',help='Local code/docs folder; repeat for multiple folders');run.add_argument('agent_args',nargs=argparse.REMAINDER)
     run.add_argument('--serve',action='store_true',help='Keep model loaded for MCP delegation without launching Codex')
+    run.add_argument('--resume',action='store_true',help='Reconnect directly to the saved Codex conversation when a model is already loaded')
     mon=sub.add_parser('monitor');mon.add_argument('--list',action='store_true');mon.add_argument('--logs',type=int);mon.add_argument('--kill',type=int);mon.add_argument('--release',action='store_true')
     for name in ('daemon','provider'):sub.add_parser(name).add_argument('path',type=Path)
     args=parser.parse_args()

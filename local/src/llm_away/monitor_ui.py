@@ -206,8 +206,7 @@ def show(store,release,attach):
                 elif key in (ord('3'),curses.KEY_F3):log_id=selected;log_top=None;last=0
                 elif key in (ord('4'),curses.KEY_F4):
                     d=next((d for d in rows if d['id']==selected),{})
-                    if not d.get('_busy') and d.get('phase')!='DAEMON OFFLINE':
-                        return selected
-                    if d.get('phase')=='DAEMON OFFLINE':message='Session daemon is offline; reconnect unavailable.'
+                    if not d.get('_busy'):return selected
+                    message='Another run command owns this session.'
     try:curses.wrapper(screen)
     except KeyboardInterrupt:pass
