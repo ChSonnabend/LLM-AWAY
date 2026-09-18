@@ -360,7 +360,22 @@ def monitor(args):
         try:data=rpc(p.parent,'status')
         except (OSError,RuntimeError):data['phase']='DAEMON OFFLINE'
         entries.append(data)
-        print(f"{data['id']:>3}  {data['host']}  GPUs={data['gpus']}  {data['phase']}  model={data.get('model') or '-'}  job={data.get('allocation',{}).get('job_id','-')}"+('  '+data['error'] if data.get('error') else ''))
+    if entries:
+        rows=[['ID','HOST','GPUS','STATE','MODEL','JOB','ERROR']]
+        for data in entries:
+            rows.append([str(data['id']),data['host'],str(data['gpus']),data['phase'],
+                         data.get('model') or '-',str(data.get('allocation',{}).get('job_id') or '-'),
+                         data.get('error') or ''])
+        widths=[max(len(row[col]) for row in rows) for col in range(len(rows[0]))]
+        header=rows[0]
+        print('\x1b[1;94m'+'    '.join(header[col].ljust(widths[col]) for col in range(len(header)))+'\x1b[0m')
+        for data,row in zip(entries,rows[1:]):
+            phase=row[3].upper()
+            color={'RUNNING':'\x1b[1;92m','READY':'\x1b[1;92m','LOADING':'\x1b[1;93m','ALLOCATING':'\x1b[1;93m'}.get(
+                phase,'\x1b[1;91m' if ('ERROR' in phase or 'OFFLINE' in phase or 'EXIT' in phase) else '\x1b[36m')
+            cells=[row[col].ljust(widths[col]) for col in range(len(row))]
+            print('    '.join(cells[:3])+f'    {color}{cells[3]}\x1b[0m    '+'    '.join(cells[4:]))
+        print()
     number=args.kill
     if not number and not args.list and entries and sys.stdin.isatty():
         idx=choose_option(['Exit']+[str(x['id'])+' — '+x['host'] for x in entries],'Manage session')

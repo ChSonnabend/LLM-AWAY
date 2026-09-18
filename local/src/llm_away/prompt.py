@@ -70,14 +70,31 @@ def _choose_inline(options, prompt, default):
             width, height = shutil.get_terminal_size((80, 24))
             count = max(1, min(len(options), height - 5))
             start = max(0, min(index - count // 2, len(options) - count))
-            lines = [f'{prompt} (↑/↓ or number, Enter; q/Esc cancels) [{digits}]']
-            lines += [f'{">" if i == index else " "} {i+1}. {options[i]}'
-                      for i in range(start, start + count)]
+            lines = ['\x1b[1;97;44m ' + prompt +
+                     '  ↑/↓ or number, Enter; q/Esc cancels  [' + digits + '] \x1b[0m']
+            for i in range(start, start + count):
+                marker = '\x1b[1;92m▸\x1b[0m' if i == index else ' '
+                number = f'\x1b[2m{i+1:>2}.\x1b[0m'
+                option = options[i]
+                lines.append(f' {marker} {number} {option}')
             for line in lines:
                 # Keep each menu entry on one row, including Unicode wide text.
                 import unicodedata
                 clean, cells = '', 0
-                for char in str(line):
+                text = str(line)
+                pos = 0
+                while pos < len(text):
+                    if text[pos] == '\x1b':
+                        end = pos + 1
+                        while end < len(text) and not text[end].isalpha():
+                            end += 1
+                        if end < len(text):
+                            end += 1
+                            clean += text[pos:end]
+                            pos = end
+                            continue
+                    char = text[pos]
+                    pos += 1
                     if unicodedata.category(char).startswith('C'):
                         char = ' '
                     size = 0 if unicodedata.combining(char) else (2 if unicodedata.east_asian_width(char) in 'WF' else 1)

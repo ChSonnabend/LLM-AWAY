@@ -67,7 +67,7 @@ assert after == before
         output = b''
         try:
             deadline = time.monotonic() + 5
-            while b'Enter selects' not in output:
+            while b'q/Esc cancels' not in output:
                 if time.monotonic() > deadline:
                     self.fail('Menu did not render: '+repr(output))
                 if select.select([master], [], [], .1)[0]:
