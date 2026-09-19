@@ -1,16 +1,10 @@
 ## Reuse a loaded session
 
-`run --session 3` now offers **Keep loaded model / Load a different model**.
-Keeping it offers **Reopen agent / Keep running in background**; `--serve`
-preselects background mode and returns to the shell once the model is ready.
-Reusing skips model discovery and MTP selection and does not reload the weights.
-Reopening uses the selected CLI's saved-conversation picker (choose the previous conversation);
-it restores conversation history, not the original terminal screen/process.
-Future launches remember their working directory for that picker. Older launches
-have no saved directory: invoke `run` from the original project folder.
-Closing the terminal preserves the model; exiting the agent offers keep-model,
-unload-model, or release-allocation choices. A currently attached client still
-holds an exclusive lease: close/detach it before reconnecting from another window.
+`run --session N` attaches to its existing tmux agent, or starts one.
+Detach with **Ctrl+B, then D**; the agent and loaded model keep running.
+`run --session N --detach` starts/reuses the agent and returns to the shell.
+`run --session N --helper --rag /path/to/project` registers the loaded model
+as a read-only helper for your primary Codex model, loading it if necessary.
 
 # Local client
 
@@ -23,7 +17,7 @@ res-alloc --restart                  # Reconfigure a host
 res-mon --list
 run --session 2                      # Choose model and start the agent
 run --session 2 --model glm-5.3-flash-q4 --mtp on
-res-background --session 2           # Load/keep the model, then return to the shell
+run --session 2 --detach           # Load/keep the model, then return to the shell
 run --session 2 --rag .              # Optional local project retrieval
 res-mon --logs 2                     # Ctrl+C only closes the log viewer
 res-mon --kill 2 --release
@@ -33,7 +27,7 @@ Use the session ID returned by `res-alloc`. Exiting the agent lets you keep the
 allocation (unloading the model) or release it. Independent sessions can use
 different hosts/models. No separate init script is needed.
 
-`res-background --session 2` is the non-interactive equivalent of choosing
+`run --session 2 --detach` is the non-interactive equivalent of choosing
 **Keep running in background**: it loads or reuses the model, keeps the
 allocation alive, and returns to the shell. Reattach later with
 `run --session 2` and choose **Reopen agent**.
@@ -97,27 +91,20 @@ files and remote folders cannot be reliably attributed and are not deleted.
 Tools that ignore `TMPDIR` also remain outside automatic cleanup. No files or
 processes are removed merely by installing this command.
 
-Quick setup (run the installer once to add `add-serve` to your PATH):
+Register a loaded model (or load one) as a helper for the main Codex model:
+
 ```sh
-/Users/jarvis/alice/misc/LLM-AWAY/local/scripts/install-resource-tools.sh
-run --session 2 --serve
-# In another terminal, from the project you want searched:
-add-serve --session 2
-# Or explicitly select one or more folders:
-add-serve --session 2 --rag /path/to/project
+run --session 2 --helper --rag /path/to/project
 ```
-`add-serve` appends a managed `session_helper_2` entry to Codex's config
-(`$CODEX_HOME/config.toml` or `~/.codex/config.toml`), preserving other settings.
-Reload the MCP connection in Codex after adding it. Each session gets a separate
-entry. Repeating the command replaces its managed entry. A background watcher
-removes the entry when the provider exits; choosing to unload or release also removes it. Keeping the model in the
-background preserves its MCP registration. Registered MCP processes exit within about two
-seconds of cleanup, even during a request. Killing the allocation has the same
-effect. This also works for allocations whose daemon predates this feature.
-Codex may retain a disconnected tool in its current conversation until MCP is
-reloaded; removing a config entry cannot force a live client to refresh its tool
-list. Restarted models require `add-serve` again. Automatic cleanup applies only
-to entries created by this command, not manually configured MCP entries below.
+Omit `--rag` to search the current directory; repeat it for multiple folders.
+This returns to the shell without launching another agent CLI. It registers
+`session_helper_2` in Codex's configuration. Restart the Codex MCP connection
+(or app) and ask the main model to use that helper before broad file reads.
+An already running agent is retained. Unloading/releasing the model removes the
+registration; after loading it again, repeat `run --session 2 --helper`.
+The former `add-serve` and `res-background` commands have been removed; rerun
+`./scripts/install-resource-tools.sh` to remove their installed links.
+Use `run --session 2 --detach` to start a tmux agent without attaching.
 
 `session-tool` is a read-only MCP server with `summarize_project` (local RAG →
 session model → short cited summary) and `summarize_text` (summarize supplied
@@ -125,27 +112,10 @@ content). The primary model sees the summary, not all retrieved source excerpts.
 It can reduce primary-model input tokens; savings and summary accuracy depend
 on the task. This is focused retrieval, not an exhaustive repository analysis.
 
-1. Keep an existing `run --session 2` open, or load a dedicated helper without Codex:
-   ```sh
-   run --session 2 --serve
-   ```
-   Model selection and MTP work as usual. `--serve` returns to the shell after
-   loading; use `res-mon` to stop the model or release resources. MCP
-   disconnection does not stop or release the allocation.
-2. Add this block to `~/.codex/config.toml`, replacing the folder and session:
-   ```toml
-   [mcp_servers.session_helper]
-   command = "/Users/jarvis/alice/misc/LLM-AWAY/local/bin/session-tool"
-   args = ["--session", "2", "--rag", "/absolute/path/to/your/project"]
-   startup_timeout_sec = 120
-   tool_timeout_sec = 600
-   ```
-   Repeat `--rag` for more local folders. Dependencies reuse the isolated RAG
-   environment, installed on first use. Restart the MCP connection in Codex.
-   Codex app and CLI share MCP configuration ([official documentation](https://developers.openai.com/codex/mcp)).
-3. Tell your primary model: “Use session_helper to summarize relevant code before
-   broad file reads. Verify cited files before editing.” This enables delegation;
-   it does not force every query through the helper.
+After restarting Codex, tell the primary model: “Use session_helper_2 to
+summarize relevant code before broad file reads. Verify cited files before editing.”
+This enables delegation; it does not force every query through the helper.
+Codex app and CLI share MCP configuration. No manual TOML edits are needed.
 
 Only the explicitly selected folders are searched, with existing RAG ignore and
 secret-file filtering. Retrieved excerpts are sent to the allocation's model;
@@ -165,7 +135,7 @@ remains running after disconnecting MCP.
 
 `run --session N` detects `codex` and `claude` on PATH. With both installed,
 it asks which CLI to use; with only one, it selects it without asking.
-With neither installed, it reports an error. `--serve` needs neither CLI.
+With neither installed, it reports an error. `--helper` needs neither CLI.
 Use `run --session N --cli claude` or `--cli codex` to select explicitly.
 Non-interactive launches with both installed require an explicit selection.
 Selection precedence is `--cli`, `LLM_AWAY_CLI`, then `[agent].cli` in
@@ -267,9 +237,9 @@ offline. Update `remote/bin/resource-control` before using remote cleanup.
 
 ## Interactive background terminals
 
-`run --session N` and `res-background --session N` now use a persistent tmux
+`run --session N` and `run --session N --detach` now use a persistent tmux
 terminal for the selected Codex/Claude agent. `run` attaches immediately;
-`res-background` starts detached and returns to your shell.
+`run --detach` starts detached and returns to your shell.
 
 - **F4 in res-mon:** attach to the existing agent, including while it is working.
 - **Ctrl+B, then D:** detach to your shell without stopping the agent.

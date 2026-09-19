@@ -73,9 +73,16 @@ def main():
         finally:args.watch.unlink(missing_ok=True)
         return
     if args.session is None:parser.error('--session is required')
+    register(args.session,args.rag)
+
+
+def register(session,rag=None):
+    from argparse import Namespace
+    args=Namespace(session=session,rag=rag)
+    os.umask(0o077)
     path=path_for(args.session);data=rpc(path,'status')
     if not data.get('model') or not alive(data):
-        raise ValueError(f'Load the model first: run --session {args.session} --serve')
+        raise ValueError(f'Load the model first: run --session {args.session} --helper')
     roots=[str(Path(p).expanduser().resolve()) for p in (args.rag or [os.getcwd()])]
     if any(not Path(p).is_dir() for p in roots):raise ValueError('--rag must be a directory')
     # Prepare dependencies before registration, avoiding MCP startup installation delays.

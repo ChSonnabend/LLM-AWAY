@@ -24,7 +24,7 @@ def main():
         from .serve_registration import registered, alive
         record=json.loads(Path(args.registration).read_text())
         if not registered(record) or not alive(record):
-            raise ValueError('Session registration expired; load a model and run add-serve again')
+            raise ValueError('Session registration expired; load a model and run --session N --helper again')
         def lifetime():
             import time
             while registered(record) and alive(record):time.sleep(2)
@@ -54,7 +54,7 @@ def main():
             pid=data.get('provider_pid')
             if (not data.get('model') or data.get('provider_exit') is not None or not pid
                     or not data.get('provider_identity') or identity(pid)!=data['provider_identity']):
-                raise ValueError(f'No loaded model. Start run --session {args.session} --serve first')
+                raise ValueError(f'No loaded model. Start run --session {args.session} --helper first')
             gateway=data['config']['gateway']
             budget=gateway.get('max_prompt_chars',0)
             if budget>0 and len(source)+len(question)+1000>budget:

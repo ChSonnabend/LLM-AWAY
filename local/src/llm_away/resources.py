@@ -369,6 +369,9 @@ def allocate(args):
 
 
 def run_agent(args):
+    from .serve_registration import register
+    helper=getattr(args,'helper',False)
+    if helper:args.detach=True
     path=path_for(args.session)
     from . import terminals
     selection_path=path/'agent-selection.json'
@@ -378,10 +381,14 @@ def run_agent(args):
         existing=(terminals.engine()['alive'](path) if selection.get('location')=='local' else
                   remote(config(data['config']),data['token'],data['remote_port'],'status').get('terminal',{}).get('status')=='TERMINAL')
         if existing:
+            if helper:
+                if args.model and args.model!=data.get('model'):raise ValueError('Exit the agent before switching its model')
+                register(args.session,args.rag)
+                return
             if args.model and args.model not in (data.get('model'),data['config']['llamacpp'].get('model_name')):raise ValueError('Exit the agent terminal before switching models')
             if getattr(args,'agent_location','local')!=selection.get('location') or (args.cli and args.cli not in ('auto',selection.get('cli'))) or (args.agent_workdir and args.agent_workdir!=selection.get('cwd')):
                 raise ValueError('An agent terminal already exists; exit it before changing its configuration')
-            if not args.serve:terminals.attach(path,data,selection)
+            if not args.detach:terminals.attach(path,data,selection)
             else:print('Agent terminal is already running; F4 attaches, Ctrl+B then D detaches.')
             return
     # Advisory lease prevents two foreground clients from sharing one model slot.
@@ -413,15 +420,15 @@ def run_agent(args):
                     data.get('provider_identity') and identity(data.get('provider_pid'))==data['provider_identity'])
         if loaded:
             reuse=(not args.model or args.model in (data['model'],cfg.llamacpp.model_name))
-            if not args.model and not args.serve:
+            if not args.model and not args.detach:
                 reuse=choose_option([f"Keep loaded model: {data['model']}",'Load a different model'],'Model already running')==0
             if reuse:
-                if args.serve:pass
+                if args.detach:pass
                 elif getattr(args,'resume',False):resume=True
                 else:
                     mode=choose_option(['Reopen agent (saved-conversation picker)','Keep running in background'],
-                                       'Session mode',default=1 if args.serve else 0)
-                    args.serve=mode==1;resume=mode==0
+                                       'Session mode',default=1 if args.detach else 0)
+                    args.detach=mode==1;resume=mode==0
         if reuse:
             model=dict(alias=data['model'],name=cfg.llamacpp.model_name,context_size=cfg.llamacpp.context_size)
         else:
@@ -431,17 +438,17 @@ def run_agent(args):
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=model['context_size']),
                         codex=replace(cfg.codex,context_window=model['context_size']))
         location=getattr(args,'agent_location','local')
-        if location=='remote' and (args.rag or args.agent_args):
+        if not helper and location=='remote' and (args.rag or args.agent_args):
             raise ValueError('Remote mode accepts prompts via its console or res-mon; local --rag and extra CLI arguments are not supported')
         preference=getattr(args,'cli',None) or os.environ.get('LLM_AWAY_CLI') or cfg.agent.cli
-        selected_cli=choose_cli(preference) if location=='local' else None
+        selected_cli=choose_cli(preference) if location=='local' and not helper else None
         mtp=cfg.llamacpp.mtp if reuse else choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
         if not reuse and sys.stdin.isatty():
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=shlex.split(
                 ask('Additional llama.cpp server options (blank uses saved options)',
                     shlex.join(cfg.llamacpp.server_extra_args)))))
         rag_command=None
-        if args.rag:
+        if args.rag and not helper:
             from .rag import prepare
             rag_command=prepare(args.rag)
         started=False
@@ -476,6 +483,10 @@ def run_agent(args):
                 if s.get('provider_exit') is not None or not s.get('allocation',{}).get('active',True) or s.get('allocation',{}).get('model_state')=='EXITED':raise RuntimeError('Backend stopped; inspect session log')
                 if time.time()>deadline:raise TimeoutError('Model startup timed out')
                 time.sleep(1)
+            if helper:
+                detached=True
+                register(args.session,args.rag)
+                return
             if location=='remote':
                 info=remote(cfg,data['token'],data['remote_port'],'agent-info')
                 if not info.get('clis'):raise ValueError('Install codex or claude on the compute host and start an updated allocation before selecting remote agents')
@@ -499,7 +510,7 @@ def run_agent(args):
                 # The pane worker takes ownership of the agent lease after this handoff.
                 fcntl.flock(lease,fcntl.LOCK_UN)
                 print('Agent terminal running. F4 attaches; Ctrl+B then D detaches.')
-            if not args.serve:terminals.attach(path,current,selection)
+            if not args.detach:terminals.attach(path,current,selection)
             return
         except KeyboardInterrupt:pass
         except Exception as exc:
@@ -561,7 +572,7 @@ def submit_prompt(number, text, location=None, cli=None, cwd=None):
     path=path_for(number)
     data=json.loads((path/'session.json').read_text())
     saved=path/'agent-selection.json'
-    if not saved.exists():raise ValueError('Open the agent first with run or res-background')
+    if not saved.exists():raise ValueError('Open the agent first with run')
     selection=json.loads(saved.read_text())
     if (location and location!=selection['location']) or (cli and cli!=selection['cli']) or (cwd and cwd!=selection.get('cwd')):
         raise ValueError('Use the existing terminal settings, or exit the agent before reconfiguring')
@@ -635,7 +646,8 @@ def main():
     run.add_argument('--agent-location',choices=['local','remote'],default='local')
     run.add_argument('--agent-workdir',help='Project directory on the selected agent host')
     run.add_argument('--cli',choices=['auto','codex','claude'],help='Agent CLI; auto asks only when both are installed')
-    run.add_argument('--serve',action='store_true',help='Keep model loaded for MCP delegation without launching an agent')
+    run.add_argument('--detach',action='store_true',help='Start or reuse the tmux agent without attaching')
+    run.add_argument('--helper',action='store_true',help='Load/reuse the model and register it as a Codex MCP helper; --rag selects folders, default current directory')
     run.add_argument('--resume',action='store_true',help='Reconnect directly to the saved agent conversation when a model is already loaded')
     prompt=sub.add_parser('prompt');prompt.add_argument('--session','-s',required=True,type=int);prompt.add_argument('text')
     prompt.add_argument('--agent-location',choices=['local','remote']);prompt.add_argument('--cli',choices=['codex','claude']);prompt.add_argument('--agent-workdir')

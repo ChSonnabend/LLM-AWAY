@@ -217,9 +217,9 @@ offline. Update `remote/bin/resource-control` before using remote cleanup.
 
 ## Interactive background terminals
 
-`run --session N` and `res-background --session N` now use a persistent tmux
+`run --session N` and `run --session N --detach` now use a persistent tmux
 terminal for the selected Codex/Claude agent. `run` attaches immediately;
-`res-background` starts detached and returns to your shell.
+`run --detach` starts detached and returns to your shell.
 
 - **F4 in res-mon:** attach to the existing agent, including while it is working.
 - **Ctrl+B, then D:** detach to your shell without stopping the agent.
