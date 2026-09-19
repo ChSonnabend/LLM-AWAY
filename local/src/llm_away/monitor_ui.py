@@ -28,6 +28,16 @@ def snapshots(store):
             data=json.loads(path.read_text())
             if data.get('phase')=='RELEASED':continue
             data['_busy']=busy(path.parent)
+            selection=path.parent/'agent-selection.json'
+            data['agent_location']=json.loads(selection.read_text()).get('location','local') if selection.exists() else 'local'
+            from .terminals import engine
+            terminal=(engine()['capture'](path.parent) if data['agent_location']=='local' and engine()['alive'](path.parent)
+                      else data.get('allocation',{}).get('terminal',{}))
+            data['_terminal']=terminal.get('status')=='TERMINAL'
+            if data['_terminal']:data.setdefault('allocation',{})['prompt']=terminal
+            result_path=path.parent/'agent-result.json'
+            if not data['_terminal'] and data['agent_location']=='local' and result_path.exists():
+                data.setdefault('allocation',{})['prompt']=json.loads(result_path.read_text())
             if not (path.parent/'control.sock').exists() or time.time()-path.stat().st_mtime>45:
                 data['_stale']=True
             rows.append(data)
@@ -59,12 +69,14 @@ def detail(data):
     lines+=['Remote path: '+str(cfg.get('remote',{}).get('workdir','')),
             'Model: '+str(data.get('model') or 'none')+' | backend: '+str(allocation.get('model_state','unknown')),
             'Agent: '+('in use' if data.get('_busy') else 'not attached')+' | PID: '+str(data.get('client_pid') or '—')]
+    job=allocation.get('prompt',{})
+    if job:lines+=['Agent prompt: '+job.get('status','?')+(' | '+job['error'] if job.get('error') else '')]
     if data.get('_stale'):lines+=['Status may be stale: background daemon is offline or not updating.']
     if data.get('error'):lines+=['Error: '+str(data['error'])]
     return lines
 
 
-def show(store,release,attach):
+def show(store,release,attach,submit=None):
     """Release runs off the UI thread; terminal state is restored on every exit."""
     def screen(win):
         try:curses.curs_set(0)
@@ -94,6 +106,11 @@ def show(store,release,attach):
         log_id=None;log_top=None;log_lines=[];detail_offset=0
         preview_id=None;preview_scroll=0;preview_lines=[];preview_lock=threading.Lock();preview_loading=False;last_refresh=0
         result=[]
+        prompt_text=None
+        def prompt_worker(number,text):
+            try:
+                answer=submit(number,text);result.append('Agent task '+answer['id'][:8]+' queued; safe to close this terminal.')
+            except Exception as exc:result.append('Prompt failed: '+str(exc))
         def release_worker(number):
             try:release(number);result.append(f'Allocation {number} released.')
             except Exception as exc:result.append('Release failed: '+str(exc))
@@ -137,7 +154,7 @@ def show(store,release,attach):
                 count=h-3;top=max(0,len(log_lines)-count) if log_top is None else min(log_top,max(0,len(log_lines)-count))
                 for i,line in enumerate(log_lines[top:top+count],1):put(i,line)
                 put(h-2,'Following' if log_top is None else 'Scrollback paused',color(3))
-                put(h-1,'Esc / 1 / F1: Back   ↑↓ / PgUp/PgDn: Scroll   End: Follow',curses.A_REVERSE)
+                put(h-1,'Esc / 1 / F1: Back   ↑↓ / PgUp/PgDn: Scroll   ←→: Session   End: Follow',curses.A_REVERSE)
             else:
                 pos=next((i for i,d in enumerate(rows) if d['id']==selected),0)
                 put(0,f' RESOURCE MONITOR  |  {len(rows)} allocations  |  refreshed every second',curses.A_BOLD|color(1))
@@ -170,26 +187,45 @@ def show(store,release,attach):
                     if y>=preview_y:break
                     put(y,wrapped);y+=1
                 separator(preview_y)
-                put(preview_y+1,' LOG PREVIEW  ↑/↓ scroll'+('' if preview_scroll else '  (following)'),curses.A_BOLD|color(1))
+                job=rows[pos].get('allocation',{}).get('prompt',{}) if rows else {}
+                title=' AGENT REPLY — '+job.get('status','') if job else ' LOG PREVIEW  ←/→ scroll'+('' if preview_scroll else '  (following)')
+                put(preview_y+1,title,curses.A_BOLD|color(1))
                 pcount=h-4-(preview_y+2)
-                ptop=max(0,len(preview_lines)-pcount-preview_scroll)
+                shown=([part for line in (job.get('text','') or job.get('error','') or 'Waiting for model…').splitlines() for part in (textwrap.wrap(line,max(1,w-2)) or [''])] if job else preview_lines)
+                ptop=max(0,len(shown)-pcount-preview_scroll)
                 if preview_id==selected and not preview_lines:
                     put(preview_y+2,'Loading recent log…',color(3))
-                for i,line in enumerate(preview_lines[ptop:ptop+pcount],preview_y+2):
+                for i,line in enumerate(shown[ptop:ptop+pcount],preview_y+2):
                     put(i,line)
-                status=f'Release allocation {confirm} and stop its agent? Enter/y confirms; Esc cancels.' if confirm is not None else ('Stopping agent and releasing allocation…' if pending else message)
+                status=f'Release allocation {confirm} and stop its agent? Enter/y confirms; Esc cancels.' if confirm is not None else ('Submitting operation…' if pending else message)
                 separator(h-3)
                 put(h-2,status,color(3))
-                put(h-1,'1/F1 Exit   2/F2 Release   3/F3 Logs   4/F4 Attach   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
+                put(h-1,'1/F1 Exit   2/F2 Release   3/F3 Logs   4/F4 Attach   Space Prompt   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
+            if prompt_text is not None:
+                put(h-3,' AGENT PROMPT — Enter submits; Esc cancels',curses.A_REVERSE)
+                put(h-2,'> '+prompt_text[-max(1,w-4):],curses.A_BOLD)
+                put(h-1,'Agent has file, shell and network access on its configured host.')
             win.refresh();key=win.getch()
             if key==-1:continue
             if key==curses.KEY_RESIZE:last=0;continue
+            if prompt_text is not None:
+                if key in (27,3):prompt_text=None
+                elif key in (10,13) and prompt_text.strip():
+                    pending=threading.Thread(target=prompt_worker,args=(selected,prompt_text),daemon=False)
+                    pending.start();prompt_text=None
+                elif key in (curses.KEY_BACKSPACE,127,8):prompt_text=prompt_text[:-1]
+                elif 32<=key<127 and len(prompt_text)<100000:prompt_text+=chr(key)
+                continue
             if pending:
                 # Do not abandon an in-flight release when exiting the UI.
                 continue
             if log_id is not None:
                 count=max(1,h-3)
                 if key in (27,ord('q'),ord('1'),curses.KEY_F1,3):log_id=None;last=0
+                elif key in (curses.KEY_LEFT,curses.KEY_RIGHT) and rows:
+                    pos=next((i for i,d in enumerate(rows) if d['id']==log_id),0)
+                    pos=max(0,min(len(rows)-1,pos+(-1 if key==curses.KEY_LEFT else 1)))
+                    selected=log_id=rows[pos]['id'];log_top=None;last=0
                 elif key==curses.KEY_END:log_top=None
                 elif key==curses.KEY_HOME:log_top=0
                 elif key in (curses.KEY_UP,curses.KEY_PPAGE,curses.KEY_DOWN,curses.KEY_NPAGE):
@@ -209,13 +245,23 @@ def show(store,release,attach):
                 elif key in (curses.KEY_RIGHT,ord('l')):selected=rows[min(len(rows)-1,pos+1)]['id'];detail_offset=0;preview_id=None
                 elif key==curses.KEY_PPAGE:detail_offset=max(0,detail_offset-3)
                 elif key==curses.KEY_NPAGE:detail_offset+=3
-                elif key in (curses.KEY_UP,curses.KEY_DOWN):
-                    preview_scroll=max(0,preview_scroll+(1 if key==curses.KEY_UP else -1))
+                elif key in (curses.KEY_UP,curses.KEY_DOWN,ord('j'),ord('k')):
+                    preview_scroll=max(0,preview_scroll+(1 if key in (curses.KEY_UP,ord('k')) else -1))
                 elif key in (ord('2'),curses.KEY_F2):confirm=selected
                 elif key in (ord('3'),curses.KEY_F3):log_id=selected;log_top=None;last=0
+                elif key==ord(' '):
+                    d=rows[pos]
+                    if not submit:message='Prompt submission unavailable.'
+                    elif d.get('_busy') and not d.get('_terminal'):message='A legacy background task is still running.'
+                    elif not d.get('model'):message='Load a model first with 4/F4.'
+                    elif d.get('allocation',{}).get('prompt',{}).get('status') in ('QUEUED','RUNNING'):message='A remote prompt is already running.'
+                    else:prompt_text=''
                 elif key in (ord('4'),curses.KEY_F4):
                     d=next((d for d in rows if d['id']==selected),{})
-                    if not d.get('_busy'):return selected
-                    message='Another run command owns this session.'
-    try:curses.wrapper(screen)
+                    if d.get('_terminal'):return selected
+                    elif d.get('allocation',{}).get('prompt',{}).get('status') in ('QUEUED','RUNNING'):
+                        message='An agent task is running; wait before attaching.'
+                    elif not d.get('_busy'):return selected
+                    else:message='Another run command owns this session.'
+    try:return curses.wrapper(screen)
     except KeyboardInterrupt:pass

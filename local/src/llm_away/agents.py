@@ -3,16 +3,20 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import shutil
+import subprocess
 import sys
+from pathlib import Path
 
 from .prompt import choose_option
 
 
-def choose_cli(preference="auto"):
+def choose_cli(preference="auto", available=None):
     if preference not in ("auto", "codex", "claude"):
         raise ValueError("CLI must be auto, codex, or claude")
-    available = [name for name in ("codex", "claude") if shutil.which(name)]
+    if available is None:
+        available = [name for name in ("codex", "claude") if shutil.which(name)]
     if preference != "auto":
         if preference not in available:
             raise ValueError(f"{preference} is not available on PATH")
@@ -24,6 +28,29 @@ def choose_cli(preference="auto"):
     if not sys.stdin.isatty():
         raise ValueError("Both CLIs are available; specify --cli codex or --cli claude (or LLM_AWAY_CLI)")
     return available[choose_option(available, "Which CLI do you want to use?")]
+
+
+def run_foreground(path, data, selection):
+    if selection.get("cli") != "codex":
+        raise ValueError("tmux is required to keep this agent running in the background")
+    spec = dict(selection, token=data["token"], model=data["model"], state=str(path),
+                base_url="http://127.0.0.1:" + str(data["config"]["server"]["port"]))
+    if selection.get("codex_catalog_content"):
+        catalog = Path(path) / "codex-model-catalog.json"
+        catalog.write_text(selection["codex_catalog_content"], encoding="utf-8")
+        spec["codex_catalog"] = str(catalog)
+    engine = runpy.run_path(str(Path(__file__).resolve().parents[2] / "remote/bin/resource-agent"))
+    command, env = engine["agent_command"](spec, spec["base_url"])
+    command.remove("--json")
+    command.remove("-")
+    command.insert(1, "--no-alt-screen")
+    command += selection.get("extra_args", [])
+    if selection.get("rag_command"):
+        rag = selection["rag_command"]
+        command += ["-c", "mcp_servers.project_search.command=" + json.dumps(rag[0]),
+                    "-c", "mcp_servers.project_search.args=" + json.dumps(rag[1:])]
+    cwd = Path(selection.get("cwd") or path)
+    return subprocess.call(command, cwd=str(cwd), env=env)
 
 
 def claude_launch(cfg, base_url, model, rag_command=None):

@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import time
+import threading
 import uuid
 from urllib.request import urlopen
 
@@ -22,6 +23,7 @@ from .models import discover_models, choose_model, choose_mtp
 from .onboarding import configure_local, ask
 from .prompt import choose_option
 from .agents import choose_cli, claude_launch
+from .cli import remote_model_catalog
 
 ROOT=Path(__file__).resolve().parents[2]
 STORE=ROOT/'run'/'resources'
@@ -193,6 +195,8 @@ def daemon(path):
     def stop_model(caller=None):
         nonlocal child,cfg
         from .serve_registration import remove
+        from .terminals import engine
+        engine()['stop'](path)
         try:remove(path)
         except (OSError,ValueError) as exc:print(f'MCP cleanup: {exc}',file=sys.stderr)
         current=data
@@ -366,6 +370,20 @@ def allocate(args):
 
 def run_agent(args):
     path=path_for(args.session)
+    from . import terminals
+    selection_path=path/'agent-selection.json'
+    if selection_path.exists():
+        selection=json.loads(selection_path.read_text())
+        data=json.loads((path/'session.json').read_text())
+        existing=(terminals.engine()['alive'](path) if selection.get('location')=='local' else
+                  remote(config(data['config']),data['token'],data['remote_port'],'status').get('terminal',{}).get('status')=='TERMINAL')
+        if existing:
+            if args.model and args.model not in (data.get('model'),data['config']['llamacpp'].get('model_name')):raise ValueError('Exit the agent terminal before switching models')
+            if getattr(args,'agent_location','local')!=selection.get('location') or (args.cli and args.cli not in ('auto',selection.get('cli'))) or args.agent_workdir:
+                raise ValueError('An agent terminal already exists; exit it before changing its configuration')
+            if not args.serve:terminals.attach(path,data,selection)
+            else:print('Agent terminal is already running; F4 attaches, Ctrl+B then D detaches.')
+            return
     # Advisory lease prevents two foreground clients from sharing one model slot.
     with open(path/'client.lock','a') as lease:
         try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -383,6 +401,8 @@ def run_agent(args):
                 except OSError:
                     if time.monotonic()>=deadline:raise
                     time.sleep(0.2)
+        if data.get('allocation',{}).get('prompt',{}).get('status') in ('QUEUED','RUNNING'):
+            raise ValueError('A remote prompt is running; view its progress in res-mon before attaching')
         cfg=config(data['config'])
         settings=Path(os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
         if settings.exists():
@@ -393,10 +413,11 @@ def run_agent(args):
                     data.get('provider_identity') and identity(data.get('provider_pid'))==data['provider_identity'])
         if loaded:
             reuse=(not args.model or args.model in (data['model'],cfg.llamacpp.model_name))
-            if not args.model:
+            if not args.model and not args.serve:
                 reuse=choose_option([f"Keep loaded model: {data['model']}",'Load a different model'],'Model already running')==0
             if reuse:
-                if getattr(args,'resume',False):resume=True
+                if args.serve:pass
+                elif getattr(args,'resume',False):resume=True
                 else:
                     mode=choose_option(['Reopen agent (saved-conversation picker)','Keep running in background'],
                                        'Session mode',default=1 if args.serve else 0)
@@ -409,7 +430,11 @@ def run_agent(args):
         if model.get('context_size',0)>0:
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=model['context_size']),
                         codex=replace(cfg.codex,context_window=model['context_size']))
-        selected_cli=None if args.serve else choose_cli(getattr(args,'cli',None) or os.environ.get('LLM_AWAY_CLI') or cfg.agent.cli)
+        location=getattr(args,'agent_location','local')
+        if location=='remote' and (args.rag or args.agent_args):
+            raise ValueError('Remote mode accepts prompts via its console or res-mon; local --rag and extra CLI arguments are not supported')
+        preference=getattr(args,'cli',None) or os.environ.get('LLM_AWAY_CLI') or cfg.agent.cli
+        selected_cli=choose_cli(preference) if location=='local' else None
         mtp=cfg.llamacpp.mtp if reuse else choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
         if not reuse and sys.stdin.isatty():
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=shlex.split(
@@ -451,54 +476,31 @@ def run_agent(args):
                 if s.get('provider_exit') is not None or not s.get('allocation',{}).get('active',True) or s.get('allocation',{}).get('model_state')=='EXITED':raise RuntimeError('Backend stopped; inspect session log')
                 if time.time()>deadline:raise TimeoutError('Model startup timed out')
                 time.sleep(1)
-            if args.serve:
-                detached=True
-                print(f'Session {args.session} is serving in the background. Use res-mon to stop it.')
-                return
-            agent_env=dict(os.environ)
-            if selected_cli == 'claude':
-                command,agent_env=claude_launch(cfg,f'http://127.0.0.1:{cfg.server.port}',model['alias'],rag_command)
+            if location=='remote':
+                info=remote(cfg,data['token'],data['remote_port'],'agent-info')
+                if not info.get('clis'):raise ValueError('Install codex or claude on the compute host and start an updated allocation before selecting remote agents')
+                selected_cli=choose_cli(preference,info['clis'])
+            agent_cwd=getattr(args,'agent_workdir',None) or (os.getcwd() if location=='local' else '')
+            if location=='remote' and agent_cwd and not agent_cwd.startswith('/'):
+                raise ValueError('--agent-workdir must be an absolute remote path')
+            selection={'location':location,'cli':selected_cli,'cwd':agent_cwd,'extra_args':args.agent_args,'rag_command':rag_command,
+                       'instructions':cfg.claude.instructions or cfg.codex.instructions if selected_cli=='claude' else cfg.codex.instructions}
+            if selected_cli=='codex' and cfg.codex.custom_metadata:
+                selection['codex_catalog_content']=json.dumps(remote_model_catalog(
+                    model,context_window=cfg.codex.context_window,settings=cfg.codex
+                ),indent=2)+'\n'
+            write(path/'agent-selection.json',selection)
+            current=json.loads((path/'session.json').read_text())
+            terminals.ensure(path,current,selection)
+            if selection.get('foreground'):
+                print('tmux unavailable; running the agent in this terminal. Closing it stops the agent.',flush=True)
             else:
-                from .cli import remote_model_catalog
-                catalog_data=remote_model_catalog(model['alias'],min(cfg.codex.context_window,cfg.llamacpp.context_size),cfg.codex)
-                if not cfg.codex.custom_metadata:
-                    # Codex requires a nonempty catalog. An unmatched, hidden entry
-                    # preserves its fallback metadata for the requested "model".
-                    catalog_data['models'][0]['slug']='remote-catalog-placeholder'
-                    catalog_data['models'][0]['visibility']='hide'
-                catalog=path/'models.json';write(catalog,catalog_data)
-                instructions_file=path/'model-instructions.txt'
-                instructions_file.write_text(catalog_data['models'][0]['base_instructions'],encoding='utf-8')
-                # Per-process overrides keep simultaneous sessions out of global Codex settings.
-                command=['codex','--no-alt-screen','-c','model_provider="remote_resource"','-c','model='+json.dumps(model['alias']),
-                         '-c','model_providers.remote_resource.name="Remote resource"',
-                         '-c',f'model_providers.remote_resource.base_url="http://127.0.0.1:{cfg.server.port}/v1"',
-                         '-c','model_providers.remote_resource.wire_api="responses"',
-                         '-c','model_providers.remote_resource.requires_openai_auth=false',
-                         '-c','model_reasoning_effort='+json.dumps(cfg.codex.reasoning_effort),
-                         '-c','model_catalog_json='+json.dumps(str(catalog)),
-                         '-c','model_instructions_file='+json.dumps(str(instructions_file.resolve())),
-                         '-c','model_context_window='+str(min(cfg.codex.context_window,cfg.llamacpp.context_size)),
-                         '-c','model_auto_compact_token_limit='+str(min(cfg.codex.auto_compact_token_limit,int(min(cfg.codex.context_window,cfg.llamacpp.context_size)*0.7))),
-                         '-c','tool_output_token_limit='+str(cfg.codex.tool_output_token_limit)]
-                if rag_command:
-                    command+=['-c','mcp_servers.project_search.command='+json.dumps(rag_command[0]),
-                              '-c','mcp_servers.project_search.args='+json.dumps(rag_command[1:]),
-                              '-c','mcp_servers.project_search.startup_timeout_sec=120',
-                              '-c','mcp_servers.project_search.tool_timeout_sec=120',
-                              '-c','mcp_servers.project_search.required=true']
-            temporary=path/'tmp';temporary.mkdir(mode=0o700,exist_ok=True)
-            # Save the original project so the resume picker retains its cwd filter.
-            context_path=path/'agent-context.json'
-            cwd=os.getcwd()
-            if resume and context_path.exists():
-                saved=json.loads(context_path.read_text()).get('cwd')
-                if saved and Path(saved).is_dir():cwd=saved
-            write(context_path,dict(cwd=cwd))
-            if resume:command+=['--resume' if selected_cli == 'claude' else 'resume']
-            agent=subprocess.Popen(command+args.agent_args,cwd=cwd,env=dict(agent_env,TMPDIR=str(temporary)))
-            code=agent.wait()
-            if code:print(f'{selected_cli} exited with status {code}.',file=sys.stderr,flush=True)
+                detached=True
+                # The pane worker takes ownership of the agent lease after this handoff.
+                fcntl.flock(lease,fcntl.LOCK_UN)
+                print('Agent terminal running. F4 attaches; Ctrl+B then D detaches.')
+            if not args.serve:terminals.attach(path,current,selection)
+            return
         except KeyboardInterrupt:pass
         except Exception as exc:
             print(f'Launch failed: {exc}; see res-mon --logs {args.session}',file=sys.stderr,flush=True)
@@ -554,6 +556,19 @@ def release_session(number):
         if release_error:raise RuntimeError('Remote release failed; local session released. '+release_error) from None
 
 
+def submit_prompt(number, text, location=None, cli=None, cwd=None):
+    from . import terminals
+    path=path_for(number)
+    data=json.loads((path/'session.json').read_text())
+    saved=path/'agent-selection.json'
+    if not saved.exists():raise ValueError('Open the agent first with run or res-background')
+    selection=json.loads(saved.read_text())
+    if (location and location!=selection['location']) or (cli and cli!=selection['cli']) or (cwd and cwd!=selection.get('cwd')):
+        raise ValueError('Use the existing terminal settings, or exit the agent before reconfiguring')
+    if not text.strip():raise ValueError('Prompt is empty')
+    return terminals.send(path,data,text)
+
+
 def monitor(args):
     if args.logs:
         path=path_for(args.logs);subprocess.call(['tail','-n','60','-f',str(path/'session.log')]);return
@@ -566,10 +581,15 @@ def monitor(args):
             except OSError:pass
         if not sys.stdout.isatty():return
         from .monitor_ui import show
-        chosen=show(STORE,release_session,run_agent)
+        chosen=show(STORE,release_session,run_agent,submit_prompt)
         if chosen is not None:
             # Re-exec the run wrapper: guarantees a clean terminal handoff to Codex.
-            raise SystemExit(subprocess.call([sys.executable,'-m','llm_away.resources','run','--resume','--session',str(chosen)]))
+            selection=path_for(chosen)/'agent-selection.json'
+            saved=json.loads(selection.read_text()) if selection.exists() else {}
+            command=[sys.executable,'-m','llm_away.resources','run','--resume','--session',str(chosen),'--agent-location',saved.get('location','local')]
+            if saved.get('cli'):command+=['--cli',saved['cli']]
+            if saved.get('cwd'):command+=['--agent-workdir',saved['cwd']]
+            raise SystemExit(subprocess.call(command))
         return
     entries=[]
     for p in sorted(STORE.glob('*/session.json'),key=lambda p:int(p.parent.name)):
@@ -612,9 +632,13 @@ def main():
     alloc=sub.add_parser('allocate');alloc.add_argument('--config',default=os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
     alloc.add_argument('--host');alloc.add_argument('--connection',choices=['ssh','local']);alloc.add_argument('--restart',action='store_true');alloc.add_argument('--gpus',type=int)
     run=sub.add_parser('run');run.add_argument('--session','-s',required=True,type=int);run.add_argument('--model');run.add_argument('--mtp',choices=['auto','on','off']);run.add_argument('--rag',action='append',metavar='FOLDER',help='Local code/docs folder; repeat for multiple folders');run.add_argument('agent_args',nargs=argparse.REMAINDER)
+    run.add_argument('--agent-location',choices=['local','remote'],default='local')
+    run.add_argument('--agent-workdir',help='Project directory on the selected agent host')
     run.add_argument('--cli',choices=['auto','codex','claude'],help='Agent CLI; auto asks only when both are installed')
     run.add_argument('--serve',action='store_true',help='Keep model loaded for MCP delegation without launching an agent')
     run.add_argument('--resume',action='store_true',help='Reconnect directly to the saved agent conversation when a model is already loaded')
+    prompt=sub.add_parser('prompt');prompt.add_argument('--session','-s',required=True,type=int);prompt.add_argument('text')
+    prompt.add_argument('--agent-location',choices=['local','remote']);prompt.add_argument('--cli',choices=['codex','claude']);prompt.add_argument('--agent-workdir')
     mon=sub.add_parser('monitor');mon.add_argument('--list',action='store_true');mon.add_argument('--logs',type=int);mon.add_argument('--kill',type=int);mon.add_argument('--release',action='store_true')
     for name in ('daemon','provider'):sub.add_parser(name).add_argument('path',type=Path)
     args=parser.parse_args()
@@ -623,6 +647,7 @@ def main():
         elif args.command=='run':
             if args.agent_args[:1]==['--']:args.agent_args=args.agent_args[1:]
             run_agent(args)
+        elif args.command=='prompt':print(json.dumps(submit_prompt(args.session,args.text,args.agent_location,args.cli,args.agent_workdir)))
         elif args.command=='monitor':monitor(args)
         elif args.command=='daemon':daemon(args.path)
         else:provider(args.path)

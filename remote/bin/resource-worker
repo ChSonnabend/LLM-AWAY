@@ -4,7 +4,14 @@ set -uo pipefail
 state=$1
 child=''
 seen=''
+prompt_pid=''
 stop_model() {
+    python3 "$(dirname "${BASH_SOURCE[0]}")/resource-terminal" stop "$state" 2>/dev/null || true
+    if [[ -n "$prompt_pid" ]]; then
+        kill "$prompt_pid" 2>/dev/null || true
+        wait "$prompt_pid" 2>/dev/null || true
+        prompt_pid=''
+    fi
     if [[ -n "$child" ]]; then
         kill "$child" 2>/dev/null || true
         for ((i=0;i<50;i++)); do
@@ -24,6 +31,8 @@ cleanup() { stop_model; report STOPPED; }
 trap cleanup EXIT
 trap 'exit 0' TERM INT HUP
 report IDLE
+python3 "$(dirname "${BASH_SOURCE[0]}")/resource-prompts" "$state" >> "$state/model.log" 2>&1 &
+prompt_pid=$!
 while [[ ! -f "$state/release" ]]; do
     touch "$state/heartbeat"
     desired=$(cat "$state/desired" 2>/dev/null || true)
@@ -33,6 +42,8 @@ while [[ ! -f "$state/release" ]]; do
         if [[ -f "$state/$seen.sh" ]]; then
             bash "$state/$seen.sh" >> "$state/model.log" 2>&1 &
             child=$!
+            python3 "$(dirname "${BASH_SOURCE[0]}")/resource-prompts" "$state" >> "$state/model.log" 2>&1 &
+            prompt_pid=$!
             report LOADING
         else
             report IDLE

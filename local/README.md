@@ -40,7 +40,8 @@ allocation alive, and returns to the shell. Reattach later with
 
 `res-mon` opens a full-screen monitor in the same terminal. Arrow keys select an
 allocation; **1/F1** exits, **2/F2** releases it (confirm with Enter; stops an attached
-agent first), and **3/F3** opens its live allocation/provider logs. Esc returns from
+agent first), and **3/F3** opens its live allocation/provider logs. Left/right selects
+sessions; up/down scrolls logs and reply previews. Esc returns from
 logs without stopping anything; End resumes log following. PgUp/PgDn scroll logs
 or the selected allocation's details, including scheduler options. The display
 resizes with the terminal and reads local daemon snapshots rather than polling SSH.
@@ -263,3 +264,32 @@ removing only that session's state directory. Active or uncertain sessions are
 preserved. Shared code/models/builds and the cache root remain. Local session
 records are retained until remote cleanup succeeds, allowing retries if SSH is
 offline. Update `remote/bin/resource-control` before using remote cleanup.
+
+## Interactive background terminals
+
+`run --session N` and `res-background --session N` now use a persistent tmux
+terminal for the selected Codex/Claude agent. `run` attaches immediately;
+`res-background` starts detached and returns to your shell.
+
+- **F4 in res-mon:** attach to the existing agent, including while it is working.
+- **Ctrl+B, then D:** detach to your shell without stopping the agent.
+- **Mouse wheel / Ctrl+B then `[`:** scroll terminal history; press `q` to leave copy mode.
+- **Space in res-mon:** send a prompt to that same terminal/conversation.
+- Closing an attached terminal also detaches. Exiting the CLI itself ends the agent.
+
+Space pastes into the CLI's current input. If the CLI is asking a question or is
+busy, it follows that CLI's normal input/queue behavior; use F4 to inspect it.
+The monitor shows captured terminal output. Existing headless tasks cannot be
+converted into a terminal mid-flight; let those complete, then reopen with run.
+
+`--agent-location local` remains the default. Local agents survive closing a
+terminal but need the computer awake. Remote agents continue on the compute
+host while the laptop sleeps, within the allocation's time limit. Both modes
+retain shell, file and network access. `--agent-workdir` selects the project.
+
+Install tmux on the agent host (`brew install tmux` on macOS). This Mac also
+supports the repository-local binary at `local/run/tools/bin/tmux`. Remote
+attachment uses SSH plus `srun --overlap --pty` for Slurm, `kubectl exec -it` for
+Kubernetes, or direct SSH. The selected CLI must be installed on that host.
+Use a new allocation after updating the remote workers. Releasing/unloading
+stops its agent terminal; detaching does not release the allocation.

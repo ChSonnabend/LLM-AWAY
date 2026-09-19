@@ -42,7 +42,7 @@ def add_session_items(items, path, delete_folders=False):
         except (OSError,ValueError,KeyError):pass
     # Keep session.json and lock files: IDs must never be reused, locks must
     # retain their inode. Never infer ownership of arbitrary /tmp directories.
-    for name in ('session.log','tool-errors','models.json','tmp'):
+    for name in ('session.log','agent.log','tool-errors','models.json','tmp'):
         target=path/name
         if target.exists() and not target.is_symlink():items.append(('file',target,f'Delete {target}'))
     for target in path.glob('serve-watch-*.json'):

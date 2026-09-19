@@ -75,6 +75,15 @@ def status():
         if len(fields)==3: s.update(generation=fields[0],model_state=fields[1])
         if len(fields)==2: s['model_state']=fields[0] # initial IDLE before first request
     if kind=='direct' and s.get('model_state')=='STOPPED': s.update(active=False,slurm_state='STOPPED')
+    latest=state/'prompt-latest'
+    if latest.exists():
+        prompt_id=latest.read_text().strip()
+        if re.fullmatch('[a-f0-9]{32}',prompt_id):
+            result=state/'prompts'/(prompt_id+'.result')
+            s['prompt']=json.loads(result.read_text()) if result.exists() else {'id':prompt_id,'status':'QUEUED','text':''}
+            s['prompt']['text']=s['prompt'].get('text','')[-32768:]
+    terminal=state/'terminal-status.json'
+    if terminal.exists():s['terminal']=json.loads(terminal.read_text())
     s['log_path']=str(state/'model.log')
     return s
 
@@ -180,6 +189,51 @@ with open(state/'lock','a') as lock:
             if kind=='slurm_server': call(['scancel',s['job_id']])
             elif kind=='kubernetes': kubectl(['delete','job',s['job_id'],'--wait=false'])
         result={'released':True}
+    elif action=='terminal-start':
+        ready=json.loads((state/'prompt-worker.ready').read_text())
+        if not isinstance(ready,dict) or ready.get('version',0)<3 or not ready.get('tmux'):
+            raise ValueError('Install tmux and start an allocation using the updated terminal worker')
+        current=status()
+        if not current['active'] or current.get('model_state') not in ('LOADING','LOADED'):raise ValueError('Load a model first')
+        if current.get('prompt',{}).get('status') in ('QUEUED','RUNNING'):raise ValueError('Wait for the legacy background task to finish')
+        spec=p['spec']
+        if spec.get('cli') not in ready.get('clis',[]):raise ValueError('Selected CLI unavailable on compute host')
+        spec.update(token=token,port=int(p['port']))
+        write(state/'terminal-status.json',json.dumps({'status':'STARTING'}))
+        write(state/'terminal-launch.json',json.dumps(spec))
+        result={'starting':True}
+    elif action=='terminal-send':
+        if status().get('terminal',{}).get('status')!='TERMINAL':raise ValueError('Open the agent terminal first')
+        if (state/'terminal-prompt.json').exists():raise ValueError('Previous prompt is still being delivered')
+        text=p.get('prompt','').strip()
+        if not text or len(text)>100000:raise ValueError('Prompt must contain 1–100000 characters')
+        write(state/'terminal-prompt.json',json.dumps({'prompt':text}));result={'queued':True}
+    elif action=='agent-info':
+        ready=state/'prompt-worker.ready'
+        result=json.loads(ready.read_text()) if ready.exists() else {}
+        if not isinstance(result,dict):result={}
+    elif action=='prompt':
+        current=status()
+        if not current['active'] or current.get('model_state') not in ('LOADING','LOADED') or (state/'release').exists():
+            raise ValueError('Session has no running model')
+        if not (state/'prompt-worker.ready').exists():
+            raise ValueError('Background prompts require the updated remote worker; create a new allocation')
+        if current.get('prompt',{}).get('status') in ('QUEUED','RUNNING'):
+            raise ValueError('A background prompt is already running')
+        text=p.get('prompt','').strip()
+        if not text or len(text)>100000:raise ValueError('Prompt must contain 1–100000 characters')
+        if p.get('cli') not in ('codex','claude'):raise ValueError('Select a Codex or Claude agent for background prompts')
+        ready=json.loads((state/'prompt-worker.ready').read_text())
+        if not isinstance(ready,dict) or p['cli'] not in ready.get('clis',[]):raise ValueError('Selected CLI unavailable on compute host; update worker/install CLI and create a new allocation')
+        prompt_id=uuid.uuid4().hex
+        queue=state/'prompts';queue.mkdir(exist_ok=True)
+        request={'id':prompt_id,'prompt':text,'cli':p['cli'],'cwd':p.get('cwd',''),'instructions':p.get('instructions',''),'generation':(state/'desired').read_text().strip(),
+                 'port':int(p['port']),'model':c['model']['name'],
+                 'max_tokens':int(c['llamacpp']['max_tokens']),
+                 'timeout':int(c['llamacpp']['inference_timeout_seconds'])}
+        write(queue/(prompt_id+'.json'),json.dumps(request))
+        write(state/'prompt-latest',prompt_id)
+        result={'id':prompt_id,'status':'QUEUED'}
     elif action=='cleanup':
         if not (state/'release').is_file() or not meta.is_file():
             raise ValueError('Keep remote state: allocation is not explicitly released')

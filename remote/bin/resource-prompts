@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Durable, serial model prompts executed beside the remote model (Python 3.6+)."""
+import json
+import os
+from pathlib import Path
+import signal
+import runpy
+import shutil
+import sys
+import time
+from urllib.request import Request, build_opener, ProxyHandler
+
+
+def save(path, value):
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(value))
+    os.replace(str(temporary), str(path))
+
+
+def execute(state, request_path):
+    request = json.loads(request_path.read_text())
+    result_path = request_path.with_suffix('.result')
+    result = {'id': request['id'], 'status': 'RUNNING', 'text': '', 'error': ''}
+    save(result_path, result)
+    try:
+        if (state/'desired').read_text().strip() != request['generation']:
+            raise ValueError('Model changed or stopped before this prompt ran')
+        if request.get('cli'):
+            engine=runpy.run_path(str(Path(__file__).with_name('resource-agent')))
+            cwd=Path(request.get('cwd') or str(state/'agent-workspace'))
+            if not request.get('cwd'):cwd.mkdir(exist_ok=True)
+            def emit(text):
+                result['text']=(result['text']+text)[-32768:];save(result_path,result)
+            engine['run_agent'](request,'http://127.0.0.1:'+str(request['port']),cwd,state/'remote-agent-history.json',emit)
+            result['status']='DONE'
+            return
+        history_path = state/'prompt-history.json'
+        history = json.loads(history_path.read_text()) if history_path.exists() else {}
+        messages = history.get('messages', []) if history.get('generation') == request['generation'] else []
+        messages = messages + [{'role':'user', 'content':request['prompt']}]
+        payload = {'model':request['model'], 'messages':messages,
+                   'max_tokens':request['max_tokens'], 'stream':True}
+        http = Request('http://127.0.0.1:%d/v1/chat/completions' % request['port'],
+                       data=json.dumps(payload).encode(), headers={'Content-Type':'application/json'})
+        opener = build_opener(ProxyHandler({}))
+        completed = False
+        last_write = 0
+        with opener.open(http, timeout=request['timeout']) as response:
+            for line in response:
+                if not line.startswith(b'data:'):continue
+                value = line[5:].strip()
+                if value == b'[DONE]':completed = True;break
+                event = json.loads(value)
+                if event.get('error'):raise ValueError(str(event['error']))
+                for choice in event.get('choices', []):
+                    result['text'] += choice.get('delta', {}).get('content') or ''
+                    if choice.get('finish_reason'):result['finish_reason'] = choice['finish_reason'];completed = True
+                if time.monotonic()-last_write >= 1:
+                    save(result_path,result);last_write=time.monotonic()
+        if not completed:raise ValueError('Model stream ended before completion')
+        result['status'] = 'DONE'
+        save(history_path, {'generation':request['generation'], 'messages':messages+[{'role':'assistant','content':result['text']}]})
+    except BaseException as exc:
+        result.update(status='FAILED',error=str(exc) or 'Prompt interrupted')
+        if isinstance(exc, (KeyboardInterrupt,SystemExit)):raise
+    finally:
+        save(result_path,result)
+
+
+def main(state):
+    queue = state/'prompts';queue.mkdir(exist_ok=True)
+    (state/'prompt-worker.ready').write_text(json.dumps({'version':3,'tmux':bool(shutil.which('tmux')),'clis':[name for name in ('codex','claude') if shutil.which(name)]}))
+    signal.signal(signal.SIGTERM,lambda *args:sys.exit('Worker stopped'))
+    terminal=runpy.run_path(str(Path(__file__).with_name('resource-terminal')))
+    try:
+        while not (state/'release').exists():
+            launch=state/'terminal-launch.json'
+            if launch.exists():
+                try:
+                    spec=json.loads(launch.read_text());spec['base_url']='http://127.0.0.1:'+str(spec['port'])
+                    terminal['start'](state,spec)
+                except Exception as exc:save(state/'terminal-status.json',{'status':'FAILED','error':str(exc)})
+                launch.unlink()
+            if (state/'terminal.json').exists():
+                try:
+                    message=state/'terminal-prompt.json'
+                    if message.exists():
+                        terminal['send'](state,json.loads(message.read_text())['prompt']);message.unlink()
+                    save(state/'terminal-status.json',terminal['capture'](state))
+                except Exception as exc:save(state/'terminal-status.json',{'status':'FAILED','error':str(exc)})
+            for request in sorted(queue.glob('*.json')):
+                result = request.with_suffix('.result')
+                if result.exists():continue
+                execute(state,request)
+            time.sleep(0.5)
+    finally:
+        terminal['stop'](state)
+        try:(state/'prompt-worker.ready').unlink()
+        except FileNotFoundError:pass
+
+
+if __name__ == '__main__':main(Path(sys.argv[1]))
