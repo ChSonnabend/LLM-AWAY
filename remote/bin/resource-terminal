@@ -19,13 +19,6 @@ def clipboard_command():
     return None
 
 
-def copy_binding():
-    command=clipboard_command()
-    if command:return 'tmux save-buffer - | '+shlex.join(command)
-    return 'tmux save-buffer - | python3 -c '+shlex.quote(
-        'import base64,sys;sys.stdout.write("\\033]52;c;"+base64.b64encode(sys.stdin.buffer.read()).decode()+"\\a")'
-    )
-
 
 def tmux(state=None):
     bundled=Path(__file__).resolve().parents[2]/'local/run/tools/bin/tmux'
@@ -54,15 +47,33 @@ def start(state,spec):
     path=state/'terminal.json';tmp=state/'terminal.tmp';tmp.write_text(json.dumps(spec));os.chmod(str(tmp),0o600);os.replace(str(tmp),str(path))
     command='exec '+' '.join(shlex.quote(x) for x in [sys.executable,__file__,'worker',str(state)])
     subprocess.check_call(tmux(state)+['new-session','-d','-s',name(state),'-x','120','-y','35','-e','PATH='+os.environ.get('PATH',''),command])
-    for option in (
-        ('remain-on-exit','off'),('history-limit','100000'),
-        ('mouse','on'),('mode-keys','vi'),
-    ):
-        subprocess.check_call(tmux(state)+['set-option','-t',name(state),*option])
-    copy=copy_binding()
-    subprocess.check_call(tmux(state)+['set-option','-g','set-clipboard','external'])
-    subprocess.check_call(tmux(state)+['bind-key','-n','C-v','run-shell','-b',copy])
-    subprocess.check_call(tmux(state)+['bind-key','-T','copy-mode-vi','C-v','send-keys','-X','copy-selection-and-cancel',';','run-shell','-b',copy])
+    configure(state)
+
+
+def configure(state):
+    target=name(state)
+    for option,value in [('remain-on-exit','off'),('history-limit','100000'),('mouse','on'),('mode-keys','vi')]:
+        subprocess.check_call(tmux(state)+['set-option','-t',target,option,value])
+    subprocess.check_call(tmux(state)+['set-option','-g','set-clipboard','on'])
+    subprocess.check_call(tmux(state)+['set-option','-as','terminal-overrides',',*:Ms=\\E]52;c;%p2%s\\007'])
+    copy=clipboard_command()
+    for table in ('copy-mode','copy-mode-vi'):
+        action=['copy-pipe-and-cancel',' '.join(shlex.quote(x) for x in copy)] if copy else ['copy-selection-and-cancel']
+        subprocess.check_call(tmux(state)+['bind-key','-T',table,'C-c','send-keys','-X',*action])
+        # Finish mouse selection immediately so subsequent typing reaches the agent.
+        subprocess.check_call(tmux(state)+['bind-key','-T',table,'MouseDragEnd1Pane','send-keys','-X',*action])
+        subprocess.call(tmux(state)+['unbind-key','-T',table,'C-v'],stderr=subprocess.DEVNULL)
+    # Let macOS terminal paste and application Ctrl+V handling pass through.
+    if sys.platform=='darwin':
+        subprocess.call(tmux(state)+['unbind-key','-n','C-v'],stderr=subprocess.DEVNULL)
+        return
+    paste=next((c for c in (['pbpaste'],['wl-paste','--no-newline'],['xclip','-selection','clipboard','-o']) if shutil.which(c[0])),None)
+    if paste:
+        base=' '.join(shlex.quote(x) for x in tmux(state))
+        script=' '.join(shlex.quote(x) for x in paste)+' | '+base+' load-buffer - && '+base+' paste-buffer -p -d -t '+shlex.quote('#{pane_id}')
+        subprocess.check_call(tmux(state)+['bind-key','-n','C-v','run-shell',script])
+    else:
+        subprocess.check_call(tmux(state)+['bind-key','-n','C-v','paste-buffer','-p'])
 
 
 def send(state,text):

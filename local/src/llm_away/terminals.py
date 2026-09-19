@@ -16,8 +16,7 @@ def ensure(path,data,selection):
     spec=dict(selection,token=data['token'],model=data['model'])
     if selection['location']=='local':
         spec.update(local=True,base_url='http://127.0.0.1:'+str(data['config']['server']['port']))
-        try:engine()['start'](path,spec)
-        except ValueError:selection['foreground']=True
+        engine()['start'](path,spec)
     else:
         remote(config(data['config']),data['token'],data['remote_port'],'terminal-start',spec=spec)
         for _ in range(30):
@@ -33,8 +32,8 @@ def attach(path,data,selection):
     from .resources import config,remote
     if selection['location']=='local':
         e=engine()
-        try:return subprocess.call(e['tmux'](path)+['attach-session','-t',e['name'](path)])
-        except ValueError:return run_foreground(path,data,selection)
+        e['configure'](path)
+        return subprocess.call(e['tmux'](path)+['attach-session','-t',e['name'](path)])
     cfg=config(data['config']);a=remote(cfg,data['token'],data['remote_port'],'status')
     command=['tmux','-L','llm-away-'+data['token'],'attach-session','-t','away-'+data['token']]
     if cfg.backend_type=='slurm_server':

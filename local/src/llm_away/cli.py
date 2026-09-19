@@ -101,7 +101,7 @@ def remote_model_catalog(model: str, context_window: int = 262000, settings: Cod
         "models": [
             {
                 "slug": model,
-                "display_name": {"glm-5.3-flash-q4":"GLM-5.3-Flash Q4", "qwen3.8-27b-q4km":"Qwen3.8 27B Q4_K_M"}.get(model,model),
+                "display_name": model,
                 "description": f"Use the selected remote model (currently {model}).",
                 "default_reasoning_level": settings.reasoning_effort,
                 "supported_reasoning_levels": [

@@ -379,7 +379,7 @@ def run_agent(args):
                   remote(config(data['config']),data['token'],data['remote_port'],'status').get('terminal',{}).get('status')=='TERMINAL')
         if existing:
             if args.model and args.model not in (data.get('model'),data['config']['llamacpp'].get('model_name')):raise ValueError('Exit the agent terminal before switching models')
-            if getattr(args,'agent_location','local')!=selection.get('location') or (args.cli and args.cli not in ('auto',selection.get('cli'))) or args.agent_workdir:
+            if getattr(args,'agent_location','local')!=selection.get('location') or (args.cli and args.cli not in ('auto',selection.get('cli'))) or (args.agent_workdir and args.agent_workdir!=selection.get('cwd')):
                 raise ValueError('An agent terminal already exists; exit it before changing its configuration')
             if not args.serve:terminals.attach(path,data,selection)
             else:print('Agent terminal is already running; F4 attaches, Ctrl+B then D detaches.')
@@ -487,7 +487,7 @@ def run_agent(args):
                        'instructions':cfg.claude.instructions or cfg.codex.instructions if selected_cli=='claude' else cfg.codex.instructions}
             if selected_cli=='codex' and cfg.codex.custom_metadata:
                 selection['codex_catalog_content']=json.dumps(remote_model_catalog(
-                    model,context_window=cfg.codex.context_window,settings=cfg.codex
+                    model['alias'],context_window=cfg.codex.context_window,settings=cfg.codex
                 ),indent=2)+'\n'
             write(path/'agent-selection.json',selection)
             current=json.loads((path/'session.json').read_text())
