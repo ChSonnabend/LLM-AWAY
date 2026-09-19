@@ -66,6 +66,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--session',type=int)
     parser.add_argument('--rag',action='append',metavar='FOLDER')
+    parser.add_argument('--log-helper',action='store_true')
     parser.add_argument('--watch',type=Path,help=argparse.SUPPRESS)
     args=parser.parse_args();os.umask(0o077)
     if args.watch:
@@ -73,12 +74,12 @@ def main():
         finally:args.watch.unlink(missing_ok=True)
         return
     if args.session is None:parser.error('--session is required')
-    register(args.session,args.rag)
+    register(args.session,args.rag,args.log_helper)
 
 
-def register(session,rag=None):
+def register(session,rag=None,log_helper=False):
     from argparse import Namespace
-    args=Namespace(session=session,rag=rag)
+    args=Namespace(session=session,rag=rag,log_helper=log_helper)
     os.umask(0o077)
     path=path_for(args.session);data=rpc(path,'status')
     if not data.get('model') or not alive(data):
@@ -97,6 +98,7 @@ def register(session,rag=None):
                     record=str(record_path),provider_pid=data['provider_pid'],provider_identity=data['provider_identity'])
         tool_args=['--session',str(args.session),'--registration',str(record_path)]
         for root in roots:tool_args+=['--rag',root]
+        if log_helper:tool_args+=['--log-helper']
         block=(f'[mcp_servers.session_helper_{args.session}]\n'
                f'command = {json.dumps(str(ROOT/"bin/session-tool"))}\n'
                f'args = {json.dumps(tool_args)}\nstartup_timeout_sec = 120\ntool_timeout_sec = 600\n')

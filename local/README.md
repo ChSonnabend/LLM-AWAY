@@ -17,7 +17,7 @@ res-alloc --restart                  # Reconfigure a host
 res-mon --list
 run --session 2                      # Choose model and start the agent
 run --session 2 --model glm-5.3-flash-q4 --mtp on
-run --session 2 --detach           # Load/keep the model, then return to the shell
+run --session 2 --detach             # Load and open the agent in background tmux
 run --session 2 --rag .              # Optional local project retrieval
 res-mon --logs 2                     # Ctrl+C only closes the log viewer
 res-mon --kill 2 --release
@@ -27,10 +27,11 @@ Use the session ID returned by `res-alloc`. Exiting the agent lets you keep the
 allocation (unloading the model) or release it. Independent sessions can use
 different hosts/models. No separate init script is needed.
 
-`run --session 2 --detach` is the non-interactive equivalent of choosing
-**Keep running in background**: it loads or reuses the model, keeps the
-allocation alive, and returns to the shell. Reattach later with
-`run --session 2` and choose **Reopen agent**.
+`run --session 2` starts model loading inside a retained tmux terminal, then
+opens the CLI automatically when ready. Press **Ctrl+B, D** to detach during
+loading; `run --session 2` or **4/F4** in `res-mon` reattaches.
+`run --session 2 --detach` starts the same process and returns immediately.
+Remote allocations use their custom model without asking about a native CLI.
 
 `res-mon` opens a full-screen monitor in the same terminal. Arrow keys select an
 allocation; **1/F1** exits, **2/F2** releases it (confirm with Enter; stops an attached
@@ -63,6 +64,16 @@ Supported modes: SSH/local connections; Slurm, Kubernetes or direct execution.
 Slurm/Kubernetes options are requested for each allocation.
 
 ## Models and agent behavior
+
+`res-alloc` asks for location (`local` / `ssh`), then `Native CLI` / `Custom model`.
+Native CLI asks for Claude or Codex and creates a numbered session using its
+existing configuration and login, with zero GPUs and no model server. Both local
+and SSH launches run in a retained local tmux terminal. Ctrl+B then D detaches;
+`res-mon` shows live output/state, F4 (or `run --session ID`) reattaches or reopens,
+and F2 releases the session. Exited sessions remain listed until released.
+SSH launches require the chosen CLI on the SSH host; tmux is needed locally.
+Custom model continues the allocation flow.
+For example: `res-alloc --connection local --mode native --cli codex`.
 
 `./bin/llm-away list-models` lists installed remote presets. `run` discovers models
 and selects MTP; GLM Flash uses embedded heads. Per-process model catalogs avoid
@@ -111,6 +122,10 @@ session model → short cited summary) and `summarize_text` (summarize supplied
 content). The primary model sees the summary, not all retrieved source excerpts.
 It can reduce primary-model input tokens; savings and summary accuracy depend
 on the task. This is focused retrieval, not an exhaustive repository analysis.
+Helper requests and responses are logged by default to
+`run/resources/ID/helper.log`; use `run --session 2 --helper --no-log-helper`
+to disable that. The log contains questions, retrieved excerpts, and model
+responses.
 
 After restarting Codex, tell the primary model: “Use session_helper_2 to
 summarize relevant code before broad file reads. Verify cited files before editing.”
@@ -253,9 +268,13 @@ The monitor shows captured terminal output. Existing headless tasks cannot be
 converted into a terminal mid-flight; let those complete, then reopen with run.
 
 `--agent-location local` remains the default. Local agents survive closing a
-terminal but need the computer awake. Remote agents continue on the compute
-host while the laptop sleeps, within the allocation's time limit. Both modes
-retain shell, file and network access. `--agent-workdir` selects the project.
+terminal but need the computer awake. When launching a local agent without a
+loaded model, `run` offers "Native CLI (own model/account)": this starts your
+installed `codex` or `claude` CLI unchanged (ChatGPT/Claude sign-in, no AWAY
+model, no GPU load). "Session model (AWAY inference)" keeps the previous
+behavior. Remote agents continue on the compute host while the laptop sleeps,
+within the allocation's time limit. Both modes retain shell, file and network
+access. `--agent-workdir` selects the project.
 
 Install tmux on the agent host (`brew install tmux` on macOS). This Mac also
 supports the repository-local binary at `local/run/tools/bin/tmux`. Remote
@@ -263,3 +282,18 @@ attachment uses SSH plus `srun --overlap --pty` for Slurm, `kubectl exec -it` fo
 Kubernetes, or direct SSH. The selected CLI must be installed on that host.
 Use a new allocation after updating the remote workers. Releasing/unloading
 stops its agent terminal; detaching does not release the allocation.
+
+`res-mon` shows **IS MASTER** (connected helper session IDs) and **IS HELPER**
+(session IDs using this helper), sorted and comma-separated; `—` means none.
+Both fields appear in session details and `--list`, plus table columns in wide
+terminals. These track live MCP connections between numbered sessions, not just
+global helper registrations. Restart existing helper MCP connections once to
+enable tracking; connections from clients outside `res-mon` have no session ID.
+
+**PS** in `res-mon` is the persistent allocation runner PID (native sessions: the
+CLI terminal runner PID). Killing that PID, including with `kill -9`, triggers
+an independent watchdog to stop the agent/provider and release its allocation.
+Cleanup failures remain visible and retry while the watchdog is running; SSH must
+be reachable for remote release. Existing live runners gain watchdogs when viewed
+in `res-mon`. Detaching tmux does not terminate the runner. Normal native CLI exit
+keeps its session available for reopening.

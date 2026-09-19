@@ -1,5 +1,0 @@
-Can you check that 4/F4 reconnects the session properly when there is no other session open?
-
-Can you also add the two download commands you gave me once for the download of the cuda and rocm .sif containers into a file on hydra to /lustre/alice/users/csonnab/LLM-AWAY/remote/containers/download_containers.txt?
-
---split-mode tensor works well on hydra

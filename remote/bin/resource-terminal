@@ -89,6 +89,14 @@ def send(state,text):
 def capture(state):
     if not alive(state):return {'status':'EXITED','text':'Agent terminal exited. Use F4 to reopen.'}
     text=subprocess.check_output(tmux(state)+['capture-pane','-p','-t',name(state),'-S','-2000'],universal_newlines=True)
+    # Codex's interactive prompt footer carries no reply content; drop it and
+    # everything after so status previews end with the model's actual output.
+    lines=text.splitlines()
+    marker='› Ask Codex to do anything'
+    for index in range(len(lines)-1,-1,-1):
+        if lines[index].strip()==marker:lines=lines[:index];break
+    while lines and not lines[-1].strip():lines.pop()
+    text='\n'.join(lines)+'\n' if lines else ''
     return {'status':'TERMINAL','text':text[-32768:]}
 
 
@@ -100,17 +108,43 @@ def stop(state):
 
 def worker(state):
     state=Path(state);spec=json.loads((state/'terminal.json').read_text())
-    lease=None;proxy=None;child=None
-    signal.signal(signal.SIGTERM,lambda *args:sys.exit(0))
-    signal.signal(signal.SIGHUP,lambda *args:sys.exit(0))
+    lease=None;proxy=None;child=None;guarded=False;terminated=False
+    def terminate(*args):
+        nonlocal terminated
+        terminated=True
+        sys.exit(0)
+    signal.signal(signal.SIGTERM,terminate)
+    signal.signal(signal.SIGHUP,terminate)
     signal.signal(signal.SIGINT,lambda *args:None)
     try:
         spec['state']=str(state)
+        if spec.get('resource_session_id') is not None:
+            os.environ['LLM_AWAY_SESSION_ID']=str(spec['resource_session_id'])
+            os.environ['LLM_AWAY_SESSION_TOKEN']=spec['token']
         if spec.get('local'):
             lease=(state/'client.lock').open('a')
             fcntl.flock(lease,fcntl.LOCK_EX)
+        if spec.get('native') and spec.get('local') and (state/'session.json').exists():
+            sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'local/src'))
+            from llm_away.session_guard import register
+            register(state);guarded=True
+        if spec.get('loading'):
+            sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'local/src'))
+            from llm_away.loading import prepare
+            if prepare(state,spec):return
         engine=runpy.run_path(str(Path(__file__).with_name('resource-agent')))
         base_url=spec['base_url']
+        if spec.get('native'):
+            command=[spec['cli']]+spec.get('extra_args',[])
+            if spec.get('native_host'):
+                command=['ssh','-tt',spec['native_host'],shlex.join(command)]
+            env=os.environ.copy()
+            cwd=Path(spec['cwd']) if spec.get('cwd') else state/'agent-workspace'
+            if not spec.get('cwd'):cwd.mkdir(exist_ok=True)
+            if not cwd.is_dir():raise ValueError('Working directory does not exist: '+str(cwd))
+            child=subprocess.Popen(command,cwd=str(cwd),env=env)
+            child.wait()
+            return
         if spec['cli']=='claude':
             proxy=engine['claude_proxy'](base_url);base_url='http://127.0.0.1:'+str(proxy.server_port)
         command,env=engine['agent_command'](spec,base_url)
@@ -141,6 +175,9 @@ def worker(state):
             except subprocess.TimeoutExpired:child.kill();child.wait()
         if proxy:proxy.shutdown();proxy.server_close()
         if lease:lease.close()
+        if guarded and not terminated:
+            from llm_away.session_guard import finished
+            finished(state)
 
 
 if __name__=='__main__':

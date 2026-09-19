@@ -31,5 +31,5 @@ class RunHelperTests(unittest.TestCase):
                 attach=stack.enter_context(patch('llm_away.terminals.attach'))
                 cli=stack.enter_context(patch.object(resources,'choose_cli'))
                 resources.run_agent(args)
-                register.assert_called_once_with(1,[temp])
+                register.assert_called_once_with(1,[temp],True)
                 ensure.assert_not_called();attach.assert_not_called();cli.assert_not_called()

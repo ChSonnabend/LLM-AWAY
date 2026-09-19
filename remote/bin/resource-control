@@ -30,6 +30,11 @@ else:
 kind=c['backend_type']; k=c['kubernetes']; sl=c['slurm']
 meta=state/'allocation.json'
 
+def job_label():
+    name=c['llamacpp'].get('model_name') or c['model'].get('name') or 'away'
+    cleaned=re.sub(r'[^A-Za-z0-9._-]+','-',str(name)).strip('-._')
+    return (cleaned[:63].strip('-._') or 'away')
+
 def write(path,value):
     temp=Path(str(path)+'.tmp'); temp.write_text(value); os.replace(str(temp),str(path))
 def call(args, data=None):
@@ -95,7 +100,7 @@ def reserve():
         call([sys.executable,str(root/'scripts/remote/ensure-container.py'),c['llamacpp']['container'],c['llamacpp']['container_source'],c['llamacpp']['container_runtime']])
     worker=['bash',str(root/'bin/resource-worker'),str(state)]
     if kind=='slurm_server':
-        args=['sbatch','--parsable','--nodes=1','--ntasks=1','--job-name=away-'+token[:10],
+        args=['sbatch','--parsable','--nodes=1','--ntasks=1','--job-name='+job_label(),
               '--chdir='+str(root),'--output='+str(state/'allocation.log')]
         if sl['partition']: args+=['--partition='+sl['partition']]
         if sl['gpus']: args+=['--gres=gpu:'+str(sl['gpus'])]
@@ -126,12 +131,13 @@ def reserve():
         script='#!/bin/bash\nexec '+' '.join(shlex.quote(x) for x in worker)+'\n'
         job=call(args+options,data=script).split(';')[0]
     elif kind=='kubernetes':
-        job='remote-'+token[:20]
+        # Kubernetes object names must be unique per namespace; Slurm permits duplicates.
+        job=job_label()+'-'+token[:6]
         volume={'name':'project'}
         volume.update({'persistentVolumeClaim':{'claimName':k['pvc']}} if k['pvc'] else {'hostPath':{'path':str(root),'type':'Directory'}})
         limits={'cpu':k['cpu'],'memory':k['memory']}
         if sl['gpus']: limits[k['gpu_resource']]=sl['gpus']
-        manifest={'apiVersion':'batch/v1','kind':'Job','metadata':{'name':job,'labels':{'llm-remote-resource':token}},'spec':{'backoffLimit':0,'template':{'spec':{'restartPolicy':'Never','automountServiceAccountToken':False,'securityContext':{'runAsUser':os.getuid(),'runAsGroup':os.getgid()},'containers':[{'name':'resource','image':k['image'],'command':worker,'workingDir':str(root),'resources':{'limits':limits},'volumeMounts':[{'name':'project','mountPath':str(root)}]}],'volumes':[volume]}}}}
+        manifest={'apiVersion':'batch/v1','kind':'Job','metadata':{'name':job,'labels':{'llm-remote-resource':token}},'spec':{'backoffLimit':0,'template':{'spec':{'restartPolicy':'Never','automountServiceAccountToken':False,'securityContext':{'runAsUser':os.getuid(),'runAsGroup':os.getgid()},'containers':[{'name':job_label(),'image':k['image'],'command':worker,'workingDir':str(root),'resources':{'limits':limits},'volumeMounts':[{'name':'project','mountPath':str(root)}]}],'volumes':[volume]}}}}
         pod=manifest['spec']['template']['spec']
         if resource_base:
             pod['volumes'].append({'name':'user-state','hostPath':{'path':str(base),'type':'Directory'}})

@@ -13,7 +13,7 @@ def engine():
 
 def ensure(path,data,selection):
     from .resources import remote,config
-    spec=dict(selection,token=data['token'],model=data['model'])
+    spec=dict(selection,token=data['token'],model=data['model'],resource_session_id=data.get('id'))
     if selection['location']=='local':
         spec.update(local=True,base_url='http://127.0.0.1:'+str(data['config']['server']['port']))
         engine()['start'](path,spec)

@@ -27,6 +27,13 @@ def snapshots(store):
         try:
             data=json.loads(path.read_text())
             if data.get('phase')=='RELEASED':continue
+            if data.get('native'):
+                from .native_sessions import status
+                data=status(path.parent,data)
+            try:
+                from .session_guard import ensure
+                data['ps']=ensure(path.parent,data)
+            except Exception:data['ps']=None
             data['_busy']=busy(path.parent)
             selection=path.parent/'agent-selection.json'
             data['agent_location']=json.loads(selection.read_text()).get('location','local') if selection.exists() else 'local'
@@ -38,14 +45,19 @@ def snapshots(store):
             result_path=path.parent/'agent-result.json'
             if not data['_terminal'] and data['agent_location']=='local' and result_path.exists():
                 data.setdefault('allocation',{})['prompt']=json.loads(result_path.read_text())
-            if not (path.parent/'control.sock').exists() or time.time()-path.stat().st_mtime>45:
+            if not data.get('native') and (not (path.parent/'control.sock').exists() or time.time()-path.stat().st_mtime>45):
                 data['_stale']=True
             rows.append(data)
         except (OSError,ValueError):continue
-    return sorted(rows,key=lambda d:int(d['id']))
+    from .helper_relations import annotate
+    return sorted(annotate(store,rows),key=lambda d:int(d['id']))
 
 
 def detail(data):
+    relations=['PS: '+str(data.get('ps') or '—'), 'IS MASTER: '+data.get('is_master','—'), 'IS HELPER: '+data.get('is_slave','—')]
+    if data.get('native'):
+        return relations+['Native CLI: '+data['native_cli'], 'Host: '+data['host'],
+                'State: '+data['phase'], 'No GPU allocation or model server.']+([data['error']] if data.get('error') else [])
     cfg=data.get('config',{});slurm=cfg.get('slurm',{});kind=cfg.get('backend_type','?')
     llama=cfg.get('llamacpp',{})
     if kind=='slurm_server':
@@ -73,7 +85,7 @@ def detail(data):
     if job:lines+=['Agent prompt: '+job.get('status','?')+(' | '+job['error'] if job.get('error') else '')]
     if data.get('_stale'):lines+=['Status may be stale: background daemon is offline or not updating.']
     if data.get('error'):lines+=['Error: '+str(data['error'])]
-    return lines
+    return relations+lines
 
 
 def show(store,release,attach,submit=None):
@@ -103,7 +115,7 @@ def show(store,release,attach,submit=None):
                 try:win.hline(y,0,curses.ACS_HLINE,w,color(1))
                 except curses.error:pass
         rows=[];selected=None;last=0;message='';pending=None;confirm=None
-        log_id=None;log_top=None;log_lines=[];detail_offset=0
+        log_id=None;log_top=None;log_lines=[];detail_offset=0;log_name='session.log'
         preview_id=None;preview_scroll=0;preview_lines=[];preview_lock=threading.Lock();preview_loading=False;last_refresh=0
         result=[]
         prompt_text=None
@@ -121,10 +133,13 @@ def show(store,release,attach,submit=None):
                 if selected not in [d['id'] for d in rows]:selected=rows[0]['id'] if rows else None
                 if log_id is not None:
                     try:
-                        with (store/str(log_id)/'session.log').open('rb') as f:
+                        with (store/str(log_id)/log_name).open('rb') as f:
                             size=f.seek(0,2);offset=max(0,size-262144);f.seek(offset)
                             if offset:f.readline()
                             log_lines=f.read().decode('utf-8','replace').splitlines()
+                    except FileNotFoundError:
+                        log_lines=(['No helper log yet. Helper logging may be disabled, or no query has run.']
+                                   if log_name=='helper.log' else ['No session log yet.'])
                     except OSError as exc:log_lines=[str(exc)]
                 def load_preview(number):
                     nonlocal preview_loading,preview_lines
@@ -150,7 +165,8 @@ def show(store,release,attach,submit=None):
                 put(0,'Enlarge terminal (minimum 45 columns × 10 rows).')
                 put(h-1,'1 / F1 / q: Exit' if not pending else 'Release in progress…')
             elif log_id is not None:
-                put(0,f' SESSION {log_id} — live allocation / provider traffic log',curses.A_BOLD|color(1))
+                log_title='helper log' if log_name=='helper.log' else 'allocation / provider traffic log'
+                put(0,f' SESSION {log_id} — live {log_title}',curses.A_BOLD|color(1))
                 count=h-3;top=max(0,len(log_lines)-count) if log_top is None else min(log_top,max(0,len(log_lines)-count))
                 for i,line in enumerate(log_lines[top:top+count],1):put(i,line)
                 put(h-2,'Following' if log_top is None else 'Scrollback paused',color(3))
@@ -159,17 +175,24 @@ def show(store,release,attach,submit=None):
                 pos=next((i for i,d in enumerate(rows) if d['id']==selected),0)
                 put(0,f' RESOURCE MONITOR  |  {len(rows)} allocations  |  refreshed every second',curses.A_BOLD|color(1))
                 if w>=95:
-                    fixed=[6, max(12,w//8),6,12,15,12,14]
+                    fixed=[5, max(10,w//9),5,10,14,9,11,8]
                     widths=fixed+[max(8,w-1-sum(fixed))]
-                    headers=['ID','HOST','GPUS','SCHEDULER','STATE','AGENT','JOB','MODEL / NODE']
+                    headers=['ID','HOST','GPUS','SCHEDULER','STATE','AGENT','JOB','PS','MODEL / NODE']
                     def cells(d):
                         cfg=d.get('config',{});a=d.get('allocation',{})
-                        return [d['id'],d.get('host','?'),d.get('gpus',0),cfg.get('backend_type','?').replace('_server',''),
-                                'STALE' if d.get('_stale') else d.get('phase','?'),'IN USE' if d['_busy'] else 'idle',a.get('job_id','—'),
-                                str(d.get('model') or 'no model')+' / '+str(a.get('host') or 'pending')]
+                        return [d['id'],d.get('host','?'),d.get('gpus',0),'native' if d.get('native') else cfg.get('backend_type','?').replace('_server',''),
+                                'STALE' if d.get('_stale') else d.get('phase','?'),'IN USE' if d['_busy'] else 'idle',a.get('job_id','—'),d.get('ps') or '—',
+                                str(d.get('model') or d.get('native_cli') or 'no model')+' / '+str(a.get('host') or 'pending')]
                 else:
-                    widths=[6,12,7,max(10,w-26)];headers=['ID','STATE','AGENT','HOST / MODEL']
-                    def cells(d):return [d['id'],d.get('phase','?'),'BUSY' if d['_busy'] else 'idle',str(d.get('host','?'))+' / '+str(d.get('model') or 'none')]
+                    widths=[5,10,7,8,max(10,w-31)];headers=['ID','STATE','AGENT','PS','HOST / MODEL']
+                    def cells(d):return [d['id'],d.get('phase','?'),'BUSY' if d['_busy'] else 'idle',d.get('ps') or '—',str(d.get('host','?'))+' / '+str(d.get('model') or d.get('native_cli') or 'none')]
+                if w>=125:
+                    relation_width=max(11,min(20,(w-100)//2))
+                    widths[-1]=max(8,widths[-1]-2*relation_width)
+                    widths += [relation_width,relation_width]
+                    headers += ['IS MASTER','IS HELPER']
+                    original_cells=cells
+                    def cells(d):return original_cells(d)+[d.get('is_master','—'),d.get('is_slave','—')]
                 def formatted(values):return ''.join(clean(v)[:max(1,n-1)].ljust(n) for v,n in zip(values,widths))
                 put(2,formatted(headers),curses.A_BOLD)
                 count=max(1,(h-8)//3);top=max(0,min(pos-count+1,max(0,len(rows)-count)))
@@ -200,7 +223,7 @@ def show(store,release,attach,submit=None):
                 status=f'Release allocation {confirm} and stop its agent? Enter/y confirms; Esc cancels.' if confirm is not None else ('Submitting operation…' if pending else message)
                 separator(h-3)
                 put(h-2,status,color(3))
-                put(h-1,'1/F1 Exit   2/F2 Release   3/F3 Logs   4/F4 Attach   Space Prompt   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
+                put(h-1,'1/F1 Exit   2/F2 Release   3/F3 Logs   4/F4 Attach   5/F5 Helper log   Space Prompt   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
             if prompt_text is not None:
                 put(h-3,' AGENT PROMPT — Enter submits; Esc cancels',curses.A_REVERSE)
                 put(h-2,'> '+prompt_text[-max(1,w-4):],curses.A_BOLD)
@@ -248,12 +271,15 @@ def show(store,release,attach,submit=None):
                 elif key in (curses.KEY_UP,curses.KEY_DOWN,ord('j'),ord('k')):
                     preview_scroll=max(0,preview_scroll+(1 if key in (curses.KEY_UP,ord('k')) else -1))
                 elif key in (ord('2'),curses.KEY_F2):confirm=selected
-                elif key in (ord('3'),curses.KEY_F3):log_id=selected;log_top=None;last=0
+                elif key in (ord('3'),curses.KEY_F3,ord('5'),curses.KEY_F5):
+                    log_name='helper.log' if key in (ord('5'),curses.KEY_F5) else 'session.log'
+                    log_id=selected;log_top=None;last=0
                 elif key==ord(' '):
                     d=rows[pos]
                     if not submit:message='Prompt submission unavailable.'
                     elif d.get('_busy') and not d.get('_terminal'):message='A legacy background task is still running.'
-                    elif not d.get('model'):message='Load a model first with 4/F4.'
+                    elif not d.get('model') and not d.get('native'):message='Load a model first with 4/F4.'
+                    elif d.get('native') and not d.get('_terminal'):message='Open the native CLI first with 4/F4.'
                     elif d.get('allocation',{}).get('prompt',{}).get('status') in ('QUEUED','RUNNING'):message='A remote prompt is already running.'
                     else:prompt_text=''
                 elif key in (ord('4'),curses.KEY_F4):

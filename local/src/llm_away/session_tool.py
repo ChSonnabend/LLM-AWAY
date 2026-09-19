@@ -1,6 +1,7 @@
 """Read-only MCP delegation to an already loaded allocation model."""
 from __future__ import annotations
 import argparse
+import datetime
 import fcntl
 import json
 import os
@@ -15,6 +16,7 @@ def main():
     parser.add_argument('--session',required=True,type=int)
     parser.add_argument('--rag',action='append',default=[],metavar='FOLDER')
     parser.add_argument('--registration',type=str,help=argparse.SUPPRESS)
+    parser.add_argument('--log-helper',action='store_true')
     args=parser.parse_args()
     os.umask(0o077)
     roots=roots_for(args.rag) if args.rag else []
@@ -68,12 +70,23 @@ def main():
                      'temperature':0.2,'reasoning_effort':'low',
                      'messages':[{'role':'system','content':system},
                                  {'role':'user','content':json.dumps({'question':question,'reference':source})}]}
+            log_path=path/'helper.log'
+            if args.log_helper:
+                entry={'time':datetime.datetime.now().isoformat(timespec='seconds'),
+                       'question':question,'source':source,
+                       'payload':payload}
+                with log_path.open('a') as log:
+                    log.write(json.dumps(entry)+'\n')
             # Use the existing tunnel so llama-server enforces the output token budget.
             url=f"http://127.0.0.1:{int(gateway['local_port'])}/v1/chat/completions"
             request=Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
             with opener.open(request,timeout=240) as response:
                 raw=response.read(1048577)
             if len(raw)>1048576:raise ValueError('Model response exceeded 1 MiB')
+            if args.log_helper:
+                with log_path.open('a') as log:
+                    log.write(json.dumps({'time':datetime.datetime.now().isoformat(timespec='seconds'),
+                                          'response':raw.decode(errors='replace')})+'\n')
             result=json.loads(raw);choice=result['choices'][0]
             answer=choice['message'].get('content')
             if not isinstance(answer,str) or not answer.strip():
@@ -98,7 +111,9 @@ def main():
             source=index.search(question,8)
             return summarize(question,source,max_chars)
 
-    server.run(transport='stdio')
+    from .helper_relations import connection
+    with connection(path):
+        server.run(transport='stdio')
 
 
 if __name__=='__main__':main()
