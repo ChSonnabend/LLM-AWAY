@@ -67,3 +67,34 @@ class LoadingTests(unittest.TestCase):
             self.assertEqual(ensure.call_args.args[2]['location'],'remote')
             self.assertNotIn('loading',ensure.call_args.args[2])
             attach.assert_called_once()
+
+    def test_reopen_preserves_picker_for_kept_and_changed_models(self):
+        for change,detached in ((False,False),(True,False),(False,True)):
+            with self.subTest(change=change,detached=detached), tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+                path=Path(tmp);cfg=AppConfig()
+                data={'config':asdict(cfg),'model':'loaded','token':'test','remote_port':123,
+                      'provider_pid':123,'provider_identity':'alive'}
+                (path/'session.json').write_text(json.dumps(data))
+                args=Namespace(session=1,helper=False,detach=detached,resume=not detached,
+                               model=None,agent_location='local',cli='codex',agent_workdir=tmp,
+                               agent_args=[],rag=[],mtp=None,quiet=detached)
+                for name,value in [('path_for',path),('rpc',data),('config',cfg),('load_config',cfg),
+                                   ('identity','alive'),('choose_option',int(change)),('discover_models',[]),
+                                   ('choose_model',{'name':'new','alias':'new','context_size':32768}),
+                                   ('choose_cli','codex'),('choose_mtp','auto'),('ask','')]:
+                    stack.enter_context(patch.object(resources,name,return_value=value))
+                stack.enter_context(patch('llm_away.terminals.engine',return_value={'tmux':MagicMock()}))
+                ensure=stack.enter_context(patch('llm_away.terminals.ensure'))
+                stack.enter_context(patch('llm_away.terminals.attach'))
+                resources.run_agent(args)
+                self.assertEqual(ensure.call_args.args[2]['resume'],not detached)
+                self.assertEqual(ensure.call_args.args[2]['loading']['reuse'],not change)
+
+    def test_terminal_launch_uses_conversation_picker_only_when_requested(self):
+        import runpy
+        engine=runpy.run_path(str(Path(__file__).resolve().parents[2]/'remote/bin/resource-terminal'))
+        for cli,option in [('codex','resume'),('claude','--resume')]:
+            command=[cli,'--model','test']
+            self.assertEqual(engine['resume_picker'](command.copy(),{'cli':cli,'resume':True}),
+                             [cli,option,'--model','test'])
+            self.assertEqual(engine['resume_picker'](command.copy(),{'cli':cli,'resume':False}),command)

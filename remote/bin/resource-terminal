@@ -106,6 +106,13 @@ def stop(state):
     if record.exists():record.write_text(json.dumps({'status':'EXITED','text':'Agent terminal stopped.'}))
 
 
+def resume_picker(command, spec):
+    """Select a saved conversation explicitly; never silently resume the latest."""
+    if spec.get('resume'):
+        command.insert(1, '--resume' if spec['cli']=='claude' else 'resume')
+    return command
+
+
 def worker(state):
     state=Path(state);spec=json.loads((state/'terminal.json').read_text())
     lease=None;proxy=None;child=None;guarded=False;terminated=False
@@ -154,6 +161,7 @@ def worker(state):
         else:
             for option in ('exec','--json','--skip-git-repo-check','-'):command.remove(option)
             command.insert(1,'--no-alt-screen')
+        command=resume_picker(command,spec)
         command+=spec.get('extra_args',[])
         if spec.get('rag_command'):
             rag=spec['rag_command']

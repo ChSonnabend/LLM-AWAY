@@ -443,7 +443,7 @@ def run_agent(args):
             current=load_config(settings)
             cfg=replace(cfg,codex=current.codex,agent=current.agent,claude=current.claude)
         location=getattr(args,'agent_location','local')
-        reuse=False;resume=False
+        reuse=False;resume=bool(getattr(args,'resume',False) and not args.detach and not helper)
         # Local agents can use their own native Codex/Claude account (no remote
         # model) instead of loading a session model.
         if (location=='local' and cfg.ssh.connection=='local' and not helper and not args.model and not reuse
@@ -513,7 +513,7 @@ def run_agent(args):
             if location=='remote' and agent_cwd and not agent_cwd.startswith('/'):
                 raise ValueError('--agent-workdir must be an absolute remote path')
             selection={'location':'local','target_location':location,'cli':selected_cli or preference,
-                       'cwd':agent_cwd,'extra_args':args.agent_args,'rag_command':rag_command,
+                       'cwd':agent_cwd,'extra_args':args.agent_args,'rag_command':rag_command,'resume':resume,
                        'instructions':cfg.claude.instructions or cfg.codex.instructions if selected_cli=='claude' else cfg.codex.instructions,
                        'context_window':cfg.codex.context_window,
                        'auto_compact_token_limit':min(cfg.codex.auto_compact_token_limit,int(cfg.codex.context_window*0.7)),
@@ -843,7 +843,7 @@ def main():
     run.add_argument('--helper',action='store_true',help='Load/reuse the model and register it as a Codex MCP helper; --rag selects folders, default current directory')
     run.add_argument('--log-helper',dest='log_helper',action='store_true',default=True,help='Log helper questions, excerpts, and responses to run/resources/ID/helper.log (default)')
     run.add_argument('--no-log-helper',dest='log_helper',action='store_false',help='Disable helper traffic logging')
-    run.add_argument('--resume',action='store_true',help='Reconnect directly to the saved agent conversation when a model is already loaded')
+    run.add_argument('--resume',action='store_true',help='Open the saved-conversation picker when reopening an exited agent')
     prompt=sub.add_parser('prompt');prompt.add_argument('--session','-s',required=True,type=int);prompt.add_argument('text')
     prompt.add_argument('--agent-location',choices=['local','remote']);prompt.add_argument('--cli',choices=['codex','claude']);prompt.add_argument('--agent-workdir')
     mon=sub.add_parser('monitor');mon.add_argument('--list',action='store_true');mon.add_argument('--logs',type=int);mon.add_argument('--kill',type=int);mon.add_argument('--release',action='store_true');mon.add_argument('--refresh',type=int);mon.add_argument('--model')
