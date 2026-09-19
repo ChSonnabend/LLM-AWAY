@@ -15,7 +15,7 @@ ROOT=Path(__file__).resolve().parents[2]
 
 class BackgroundPromptTests(unittest.TestCase):
     def test_monitor_returns_selected_session(self):
-        with patch('llm_away.monitor_ui.curses.wrapper',return_value=5):
+        with patch('llm_away.monitor_ui._terminal_screen',return_value=5):
             self.assertEqual(show(Path('/unused'),None,None),5)
 
     def test_prompt_survives_submitter_and_retains_history(self):

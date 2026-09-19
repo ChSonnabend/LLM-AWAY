@@ -29,13 +29,16 @@ different hosts/models. No separate init script is needed.
 
 `run --session 2` starts model loading inside a retained tmux terminal, then
 opens the CLI automatically when ready. Press **Ctrl+B, D** to detach during
-loading; `run --session 2` or **4/F4** in `res-mon` reattaches.
+loading; `run --session 2` or **2/F2** in `res-mon` reattaches.
 `run --session 2 --detach` starts the same process and returns immediately.
 Remote allocations use their custom model without asking about a native CLI.
 
 `res-mon` opens a full-screen monitor in the same terminal. Arrow keys select an
-allocation; **1/F1** exits, **2/F2** releases it (confirm with Enter; stops an attached
-agent first), and **3/F3** opens its live allocation/provider logs. Left/right selects
+allocation; **q/Esc** exits, **1/F1** opens Tools (bottom bar: **1/F1** Refresh, **2/F2** Set helper, **q/Esc** Back), **2/F2** attaches,
+and **3/F3** releases it (confirm with Enter; stops an attached agent first).
+**4/F4** opens an allocator menu (`res-alloc`, then model selection, with an
+option to keep resources only) or allocates a model to the selected resource.
+**5/F5** opens a logs menu for telemetry or helper logs. Left/right selects
 sessions; up/down scrolls logs and reply previews. Esc returns from
 logs without stopping anything; End resumes log following. PgUp/PgDn scroll logs
 or the selected allocation's details, including scheduler options. The display
@@ -69,8 +72,8 @@ Slurm/Kubernetes options are requested for each allocation.
 Native CLI asks for Claude or Codex and creates a numbered session using its
 existing configuration and login, with zero GPUs and no model server. Both local
 and SSH launches run in a retained local tmux terminal. Ctrl+B then D detaches;
-`res-mon` shows live output/state, F4 (or `run --session ID`) reattaches or reopens,
-and F2 releases the session. Exited sessions remain listed until released.
+`res-mon` shows live output/state, F2 (or `run --session ID`) reattaches or reopens,
+and F4 opens the allocator menu. Exited sessions remain listed until released.
 SSH launches require the chosen CLI on the SSH host; tmux is needed locally.
 Custom model continues the allocation flow.
 For example: `res-alloc --connection local --mode native --cli codex`.
@@ -256,14 +259,14 @@ offline. Update `remote/bin/resource-control` before using remote cleanup.
 terminal for the selected Codex/Claude agent. `run` attaches immediately;
 `run --detach` starts detached and returns to your shell.
 
-- **F4 in res-mon:** attach to the existing agent, including while it is working.
+- **F2 in res-mon:** attach to the existing agent, including while it is working.
 - **Ctrl+B, then D:** detach to your shell without stopping the agent.
 - **Mouse wheel / Ctrl+B then `[`:** scroll terminal history; press `q` to leave copy mode.
 - **Space in res-mon:** send a prompt to that same terminal/conversation.
 - Closing an attached terminal also detaches. Exiting the CLI itself ends the agent.
 
 Space pastes into the CLI's current input. If the CLI is asking a question or is
-busy, it follows that CLI's normal input/queue behavior; use F4 to inspect it.
+busy, it follows that CLI's normal input/queue behavior; use F2 to inspect it.
 The monitor shows captured terminal output. Existing headless tasks cannot be
 converted into a terminal mid-flight; let those complete, then reopen with run.
 
@@ -297,3 +300,18 @@ Cleanup failures remain visible and retry while the watchdog is running; SSH mus
 be reachable for remote release. Existing live runners gain watchdogs when viewed
 in `res-mon`. Detaching tmux does not terminate the runner. Normal native CLI exit
 keeps its session available for reopening.
+
+Terminal handoff restores the terminal settings before attaching or refreshing an
+agent. Tools → F1 starts a fresh conversation with the saved CLI and working directory;
+the loaded provider and helper registrations remain available.
+
+Session helpers registered with `run --session N --helper` are available to local
+Codex clients using the same `CODEX_HOME`. Reopen an existing agent to load newly
+registered helpers. Helper calls to the caller's own allocation are rejected;
+use a separate allocation for delegation. These local registrations are not
+automatically installed in a CLI running on a remote host.
+
+Agent context uses the configured `[codex].context_window`, capped by the model
+preset, rather than expanding to the preset maximum. Auto-compaction is passed
+explicitly to Codex at the smaller of the configured limit and 70% of that
+budget. Refresh the agent to apply changes; this starts a fresh conversation.

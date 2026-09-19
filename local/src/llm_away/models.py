@@ -97,7 +97,8 @@ def discover_models(config: AppConfig) -> list[dict]:
     raise ValueError("Remote model discovery failed")
 
 
-def choose_model(models: list[dict], current: str, requested: str | None = None) -> dict:
+def choose_model(models: list[dict], current: str, requested: str | None = None,
+                 allow_none: bool = False) -> dict | None:
     if not models:
         raise ValueError("No installed managed models found on the remote host")
     if requested is not None:
@@ -108,7 +109,10 @@ def choose_model(models: list[dict], current: str, requested: str | None = None)
     if interactive_available():
         default_index = next((i for i, model in enumerate(models) if model["name"] == current), 0)
         labels = [f"{m['name']} — {m['size_bytes'] / 1024**3:.1f} GiB; {mtp_label(m)}" for m in models]
-        return models[choose_option(labels, "model", default_index)]
+        if allow_none:
+            labels.append("No model — keep resource allocation only")
+        index = choose_option(labels, "model", default_index)
+        return None if allow_none and index == len(models) else models[index]
     for index, model in enumerate(models, 1):
         marker = " (current)" if model["name"] == current else ""
         print(f"  {index}. {model['name']} — {model['size_bytes'] / 1024**3:.1f} GiB{marker}; {mtp_label(model)}")

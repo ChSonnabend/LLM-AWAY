@@ -1,4 +1,4 @@
-"""Local/remote tmux routing for run, Space prompts, and F4."""
+"""Local/remote tmux routing for run, Space prompts, and F2."""
 import json
 from pathlib import Path
 import runpy

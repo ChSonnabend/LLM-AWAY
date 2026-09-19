@@ -77,7 +77,7 @@ def configure(state):
 
 
 def send(state,text):
-    if not alive(state):raise ValueError('Agent terminal has exited; reopen it with run or F4')
+    if not alive(state):raise ValueError('Agent terminal has exited; reopen it with run or F2')
     buffer='prompt-'+name(state)
     p=subprocess.Popen(tmux(state)+['load-buffer','-b',buffer,'-'],stdin=subprocess.PIPE)
     p.communicate(text.encode())
@@ -87,7 +87,7 @@ def send(state,text):
 
 
 def capture(state):
-    if not alive(state):return {'status':'EXITED','text':'Agent terminal exited. Use F4 to reopen.'}
+    if not alive(state):return {'status':'EXITED','text':'Agent terminal exited. Use F2 to reopen.'}
     text=subprocess.check_output(tmux(state)+['capture-pane','-p','-t',name(state),'-S','-2000'],universal_newlines=True)
     # Codex's interactive prompt footer carries no reply content; drop it and
     # everything after so status previews end with the model's actual output.

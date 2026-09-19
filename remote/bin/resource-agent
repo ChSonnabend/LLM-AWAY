@@ -35,6 +35,10 @@ def agent_command(request, base_url, session_id=None):
                  '-c','model_providers.away_agent.base_url='+json.dumps(base_url+'/v1'),
                  '-c','model_providers.away_agent.wire_api="responses"',
                  '-c','model_providers.away_agent.requires_openai_auth=false']
+        if request.get('context_window'):
+            command+=['-c','model_context_window='+str(int(request['context_window']))]
+        if request.get('auto_compact_token_limit'):
+            command+=['-c','model_auto_compact_token_limit='+str(int(request['auto_compact_token_limit']))]
         if request.get('codex_catalog_content'):
             state=Path(request.get('state') or '.')
             catalog=state/'codex-model-catalog.json'

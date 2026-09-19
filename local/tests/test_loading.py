@@ -19,7 +19,7 @@ class LoadingTests(unittest.TestCase):
                     data={'config':asdict(cfg),'model':'','token':'test','remote_port':123}
                     (path/'session.json').write_text(json.dumps(data))
                     args=Namespace(session=1,helper=False,detach=detached,model=None,agent_location=location,cli='codex',agent_workdir=None,agent_args=[],rag=None,mtp=None)
-                    for name,value in [('path_for',path),('rpc',data),('config',cfg),('load_config',cfg),('discover_models',[]),('choose_model',{'alias':'test','name':'test','context_size':0}),('choose_mtp','off'),('choose_cli','codex'),('ask','')]:
+                    for name,value in [('path_for',path),('rpc',data),('config',cfg),('load_config',cfg),('discover_models',[]),('choose_model',{'alias':'test','name':'test','context_size':750000}),('choose_mtp','off'),('choose_cli','codex'),('ask','')]:
                         stack.enter_context(patch.object(resources,name,return_value=value))
                     stack.enter_context(patch.object(resources.sys.stdin,'isatty',return_value=True))
                     menu=stack.enter_context(patch.object(resources,'choose_option',side_effect=AssertionError('Unexpected native CLI prompt')))
@@ -34,6 +34,8 @@ class LoadingTests(unittest.TestCase):
                     self.assertEqual(saved['loading']['model']['alias'],'test')
                     self.assertEqual(saved['target_location'],location)
                     self.assertEqual(saved['location'],'local')
+                    self.assertEqual(saved['context_window'],cfg.codex.context_window)
+                    self.assertEqual(saved['auto_compact_token_limit'],int(cfg.codex.context_window*0.7))
 
     def test_loading_then_ready_sets_agent_model(self):
         with tempfile.TemporaryDirectory() as tmp:

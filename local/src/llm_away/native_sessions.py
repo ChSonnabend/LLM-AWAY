@@ -39,7 +39,7 @@ def allocate(store, cli, host=None):
         write(path/'session.json',data)
         write(path/'agent-selection.json',selection)
         (path/'session.log').write_text(f'Native {cli} session on {host or "local"}.\n')
-    print(f'Session {number}: native {cli} on {host or "local"}. Ctrl+B then D detaches; res-mon / F4 reattaches.',flush=True)
+    print(f'Session {number}: native {cli} on {host or "local"}. Ctrl+B then D detaches; res-mon / F2 reattaches.',flush=True)
     run(path)
 
 

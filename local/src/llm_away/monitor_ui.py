@@ -7,6 +7,60 @@ import shlex
 import textwrap
 import threading
 import time
+from pathlib import Path
+
+
+_active_window = None
+_shell_mode = None
+
+def _terminal_screen(screen):
+    """Restore the actual entry TTY mode, including output newline translation.
+
+    Repeated curses sessions may retain an earlier shell-mode snapshot. Never
+    let that snapshot become the mode inherited by tmux or the next prompt.
+    """
+    import sys
+    import termios
+    global _active_window, _shell_mode
+    if _active_window is not None:
+        return screen(_active_window)
+    fd = sys.stdin.fileno()
+    previous = termios.tcgetattr(fd)
+    def enter(win):
+        global _active_window, _shell_mode
+        _active_window, _shell_mode = win, previous
+        return screen(win)
+    try:
+        return curses.wrapper(enter)
+    finally:
+        _active_window = _shell_mode = None
+        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+
+
+def terminal_operation(func, *args):
+    """Run non-UI work without exposing the shell or inheriting curses TTY modes."""
+    if _active_window is None:
+        return func(*args)
+    import os
+    import sys
+    import tempfile
+    import termios
+    fd = sys.stdin.fileno()
+    current = termios.tcgetattr(fd)
+    sys.stdout.flush();sys.stderr.flush()
+    saved = [os.dup(1), os.dup(2)]
+    try:
+        with tempfile.TemporaryFile() as output:
+            os.dup2(output.fileno(), 1);os.dup2(output.fileno(), 2)
+            termios.tcsetattr(fd, termios.TCSADRAIN, _shell_mode)
+            try:
+                return func(*args)
+            finally:
+                sys.stdout.flush();sys.stderr.flush()
+    finally:
+        for target, source in zip((1, 2), saved):
+            os.dup2(source, target);os.close(source)
+        termios.tcsetattr(fd, termios.TCSADRAIN, current)
 
 
 def busy(path):
@@ -88,7 +142,178 @@ def detail(data):
     return relations+lines
 
 
-def show(store,release,attach,submit=None):
+class AllocateSelected(Exception):pass
+
+
+class AttachSelected(Exception):pass
+
+
+class RefreshSelected(Exception):pass
+
+
+class HelperSelected(Exception):pass
+
+
+def model_select_win(models,loader,number,current=''):
+    """Curses dropdown for allocating a model (or none) to one resource."""
+    from .models import mtp_label
+    labels=[f"{m['name']} — {m['size_bytes'] / 1024**3:.1f} GiB; {mtp_label(m)}" for m in models]
+    labels.append('No model — keep resource allocation only')
+    default=next((i for i,m in enumerate(models) if m.get('name')==current),0)
+    def screen(win):
+        try:curses.curs_set(0)
+        except curses.error:pass
+        win.keypad(True);win.timeout(200)
+        index=default
+        while True:
+            h,w=win.getmaxyx();win.erase()
+            def put(y,text,attr=0):
+                if 0<=y<h:
+                    try:win.addnstr(y,0,text[:max(0,w-1)].ljust(w-1),max(0,w-1),attr)
+                    except curses.error:pass
+            put(0,f' RESOURCE {number} — ALLOCATE MODEL ',curses.A_BOLD)
+            count=min(len(labels),max(1,h-4))
+            top=max(0,min(index-count//2,len(labels)-count))
+            for i in range(top,top+count):
+                put(i-top+2,('▸ ' if i==index else '  ')+labels[i],curses.A_REVERSE if i==index else curses.A_NORMAL)
+            put(h-1,'↑↓ choose; Enter allocates; q/Esc keeps resources only',curses.A_REVERSE)
+            win.refresh();key=win.getch()
+            if key in (curses.KEY_UP,ord('k')):index=(index-1)%len(labels)
+            elif key in (curses.KEY_DOWN,ord('j')):index=(index+1)%len(labels)
+            elif key in (10,13,32):return models[index] if index<len(models) else None
+            elif 49<=key<=48+len(labels):return models[key-49] if key<=48+len(models) else None
+            elif key in (27,ord('q'),3):return None
+    return _terminal_screen(screen)
+
+
+def mtp_select_win(models,number,current=''):
+    """Model dropdown plus MTP choice; returns (model|None, mtp) with no terminal prompts."""
+    from .models import mtp_label
+    model=model_select_win(models,None,number,current)
+    if model is None:return None,'auto'
+    mtp=model.get('mtp',{})
+    if mtp.get('available') and mtp.get('toggle_supported'):
+        choice=dropdown_win('MTP — '+model['name'],['MTP on','MTP off'],'MTP on')
+        if choice is None:return model,'auto'
+        mtp='on' if choice=='MTP on' else 'off'
+    else:mtp='auto'
+    return model,mtp
+
+
+class Canceled(Exception):pass
+
+
+def _form_screen(title,rows,values):
+    """rows: list of (kind,label,options,default); returns values list, or None on Esc."""
+    def screen(win):
+        try:curses.curs_set(1)
+        except curses.error:pass
+        win.keypad(True);win.timeout(200)
+        index=0;editing=False;buffer=str(values[0])
+        while True:
+            h,w=win.getmaxyx();win.erase()
+            def put(y,text,attr=0):
+                if 0<=y<h:
+                    try:win.addnstr(y,0,text[:max(0,w-1)].ljust(w-1),max(0,w-1),attr)
+                    except curses.error:pass
+            put(0,f' {title} ',curses.A_BOLD|curses.A_REVERSE)
+            put(1,'↑↓ move; Enter edit/choose; Esc cancel',curses.A_DIM)
+            for i,(kind,label,options,default) in enumerate(rows):
+                value='['+buffer+']' if editing and i==index else str(values[i])
+                attr=curses.A_REVERSE if i==index else curses.A_NORMAL
+                put(3+i,f'{label}: {value}',attr)
+            confirm=len(rows)
+            attr=curses.A_REVERSE|curses.A_BOLD if index==confirm else curses.A_NORMAL
+            put(3+confirm,'  ▶ Start allocation  ',attr)
+            put(h-1,'Enter: select/edit   Esc: cancel',curses.A_REVERSE)
+            win.refresh();key=win.getch()
+            if editing:
+                if key in (10,13):
+                    values[index]=buffer if buffer.strip() else str(rows[index][3]);editing=False;buffer=''
+                elif key in (27,3):editing=False;buffer=''
+                elif key in (curses.KEY_BACKSPACE,127,8):buffer=buffer[:-1]
+                elif 32<=key<127:buffer+=chr(key)
+                continue
+            if key in (curses.KEY_UP,ord('k')):index=(index-1)%(len(rows)+1)
+            elif key in (curses.KEY_DOWN,ord('j')):index=(index+1)%(len(rows)+1)
+            elif key in (10,13):
+                if index==confirm:return values
+                kind,label,options,default=rows[index]
+                if kind=='text':
+                    editing=True;buffer=str(values[index])
+                else:
+                    pick=_sub_screen(lambda win:dropdown_win(label,options,values[index] if values[index] in options else 0,win))
+                    if pick is not None:values[index]=pick
+            elif key==27:return None
+    return _terminal_screen(screen)
+
+
+def _sub_screen(func):
+    """Run an inner screen on a fresh window without ending the outer curses session."""
+    win=curses.newwin(0,0)
+    try:return func(win)
+    finally:del win
+
+
+def dropdown_win(title,options,default=0,win=None):
+    """Full-screen dropdown; returns selected option string or None on Esc."""
+    if not options:return None
+    if win is None:
+        return _terminal_screen(lambda w:dropdown_win(title,options,default,w))
+    index=default if isinstance(default,int) else max(0,options.index(default) if default in options else 0)
+    def screen(win):
+        nonlocal index
+        try:curses.curs_set(0)
+        except curses.error:pass
+        win.keypad(True);win.timeout(200)
+        while True:
+            h,w=win.getmaxyx();win.erase()
+            def put(y,text,attr=0):
+                if 0<=y<h:
+                    try:win.addnstr(y,0,text[:max(0,w-1)].ljust(w-1),max(0,w-1),attr)
+                    except curses.error:pass
+            put(0,f' {title} — ↑↓ or number; Enter selects; Esc cancels ',curses.A_BOLD|curses.A_REVERSE)
+            count=min(len(options),max(1,h-3));top=max(0,min(index-count//2,len(options)-count))
+            for i in range(top,top+count):
+                put(i-top+2,('▸ ' if i==index else '  ')+f'{i+1}. {options[i]}',curses.A_REVERSE if i==index else curses.A_NORMAL)
+            win.refresh();key=win.getch()
+            if key in (curses.KEY_UP,ord('k')):index=(index-1)%len(options)
+            elif key in (curses.KEY_DOWN,ord('j')):index=(index+1)%len(options)
+            elif key in (10,13):return options[index]
+            elif 49<=key<=48+len(options):return options[key-49]
+            elif key in (27,ord('q'),3):return None
+    return screen(win) if win else _terminal_screen(screen)
+
+
+def allocation_wizard():
+    """Full-screen allocation form. Returns settings dict or None if canceled."""
+    import os as _os
+    from .config import load_config
+    cfg=load_config(_os.environ.get('LLM_REMOTE_CONFIG',str(Path(__file__).resolve().parents[2]/'config/model.toml')))
+    from .onboarding import ssh_hosts
+    aliases,_=ssh_hosts()
+    host_options=aliases or []
+    rows=[
+        ('choice','Location',['local','ssh'],'ssh'),
+        ('choice','Session type',['Custom model','Native CLI (own model/account)'],'Custom model'),
+        ('choice','SSH host',host_options,host_options[0] if host_options else ''),
+        ('text','GPUs',[str(cfg.slurm.gpus or 1)],str(cfg.slurm.gpus or 1)),
+        ('text','Additional Slurm options',None,shlex.join(cfg.slurm.custom_options)),
+    ]
+    values=[rows[0][3],rows[1][3],rows[2][3],rows[3][3],rows[4][3]]
+    result=_form_screen('ALLOCATE RESOURCES',rows,values)
+    if result is None:return None
+    connection,mode,host,gpus,slurm_options=result
+    settings=dict(connection=connection,native=mode.startswith('Native'),host=host,gpus=gpus,
+                  slurm_options=slurm_options)
+    if settings['native']:
+        cli=dropdown_win('Native CLI',['codex','claude'],'codex')
+        if cli is None:return None
+        settings['cli']=cli
+    return settings
+
+
+def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=None):
     """Release runs off the UI thread; terminal state is restored on every exit."""
     def screen(win):
         try:curses.curs_set(0)
@@ -119,6 +344,37 @@ def show(store,release,attach,submit=None):
         preview_id=None;preview_scroll=0;preview_lines=[];preview_lock=threading.Lock();preview_loading=False;last_refresh=0
         result=[]
         prompt_text=None
+        tools_open=False
+        menu=None;menu_index=0
+        menus={
+            'logs':['Session telemetry log','Helper log'],
+            'allocate':['Run res-alloc (allocate new resources)','Allocate a model to selected resource'],
+        }
+        def close_menu():nonlocal menu,menu_index;menu=None;menu_index=0
+        def draw_menu(title,options,index):
+            h,w=win.getmaxyx();height=len(options)+2
+            top=max(0,h-height-2)
+            for y in range(top,top+height):
+                put(y,' '*(w-1),curses.A_REVERSE)
+            put(top,f' {title} — ↑↓ choose; Enter selects; Esc cancels ',curses.A_REVERSE|curses.A_BOLD)
+            for i,label in enumerate(options):
+                attr=curses.A_REVERSE if i==index else curses.A_NORMAL
+                put(top+i+1,f'  {i+1}. {label}  ',attr)
+        def menu_pick(index):
+            nonlocal log_name,log_id,log_top,last,message
+            current=menu
+            close_menu()
+            if current=='logs':
+                if selected is None:message='No allocation selected.'
+                else:
+                    log_name='helper.log' if index==1 else 'session.log'
+                    log_id=selected;log_top=None;last=0
+            elif current=='allocate':
+                if index==0:
+                    if not allocate:message='Allocator unavailable.'
+                    else:raise AllocateSelected()
+                elif selected is None:message='No allocation selected.'
+                else:raise AttachSelected(selected)
         def prompt_worker(number,text):
             try:
                 answer=submit(number,text);result.append('Agent task '+answer['id'][:8]+' queued; safe to close this terminal.')
@@ -163,14 +419,16 @@ def show(store,release,attach,submit=None):
             h,w=win.getmaxyx();win.erase()
             if h<10 or w<45:
                 put(0,'Enlarge terminal (minimum 45 columns × 10 rows).')
-                put(h-1,'1 / F1 / q: Exit' if not pending else 'Release in progress…')
+                put(h-1,'q / Esc: Exit' if not pending else 'Release in progress…')
             elif log_id is not None:
                 log_title='helper log' if log_name=='helper.log' else 'allocation / provider traffic log'
                 put(0,f' SESSION {log_id} — live {log_title}',curses.A_BOLD|color(1))
                 count=h-3;top=max(0,len(log_lines)-count) if log_top is None else min(log_top,max(0,len(log_lines)-count))
                 for i,line in enumerate(log_lines[top:top+count],1):put(i,line)
                 put(h-2,'Following' if log_top is None else 'Scrollback paused',color(3))
-                put(h-1,'Esc / 1 / F1: Back   ↑↓ / PgUp/PgDn: Scroll   ←→: Session   End: Follow',curses.A_REVERSE)
+                put(h-1,'Esc / q: Back   ↑↓ / PgUp/PgDn: Scroll   ←→: Session   End: Follow',curses.A_REVERSE)
+            elif menu is not None:
+                draw_menu('Choose log to view' if menu=='logs' else 'Allocator',menus[menu],menu_index)
             else:
                 pos=next((i for i,d in enumerate(rows) if d['id']==selected),0)
                 put(0,f' RESOURCE MONITOR  |  {len(rows)} allocations  |  refreshed every second',curses.A_BOLD|color(1))
@@ -223,7 +481,9 @@ def show(store,release,attach,submit=None):
                 status=f'Release allocation {confirm} and stop its agent? Enter/y confirms; Esc cancels.' if confirm is not None else ('Submitting operation…' if pending else message)
                 separator(h-3)
                 put(h-2,status,color(3))
-                put(h-1,'1/F1 Exit   2/F2 Release   3/F3 Logs   4/F4 Attach   5/F5 Helper log   Space Prompt   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
+                put(h-1,'q/Esc Exit   1/F1 Tools   2/F2 Attach   3/F3 Release   4/F4 Allocator   5/F5 Logs   Space Prompt   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
+            if tools_open:
+                put(h-1,'q/Esc Back to res-mon   1/F1 Refresh   2/F2 Set helper',curses.A_REVERSE)
             if prompt_text is not None:
                 put(h-3,' AGENT PROMPT — Enter submits; Esc cancels',curses.A_REVERSE)
                 put(h-2,'> '+prompt_text[-max(1,w-4):],curses.A_BOLD)
@@ -242,9 +502,17 @@ def show(store,release,attach,submit=None):
             if pending:
                 # Do not abandon an in-flight release when exiting the UI.
                 continue
+            if menu is not None:
+                count=len(menus[menu])
+                if key in (27,ord('q'),3):close_menu()
+                elif key in (curses.KEY_UP,ord('k')):menu_index=(menu_index-1)%count
+                elif key in (curses.KEY_DOWN,ord('j')):menu_index=(menu_index+1)%count
+                elif key in (10,13):menu_pick(menu_index)
+                elif 49<=key<=48+count:menu_pick(key-49)
+                continue
             if log_id is not None:
                 count=max(1,h-3)
-                if key in (27,ord('q'),ord('1'),curses.KEY_F1,3):log_id=None;last=0
+                if key in (27,ord('q'),3):log_id=None;last=0
                 elif key in (curses.KEY_LEFT,curses.KEY_RIGHT) and rows:
                     pos=next((i for i,d in enumerate(rows) if d['id']==log_id),0)
                     pos=max(0,min(len(rows)-1,pos+(-1 if key==curses.KEY_LEFT else 1)))
@@ -261,7 +529,23 @@ def show(store,release,attach,submit=None):
                     pending=threading.Thread(target=release_worker,args=(confirm,),daemon=False);pending.start();confirm=None
                 elif key in (27,ord('n'),ord('q')):confirm=None
                 continue
-            if key in (ord('1'),curses.KEY_F1,ord('q'),27,3):return
+            if tools_open:
+                if key in (ord('q'),27,3):tools_open=False
+                elif key in (ord('1'),curses.KEY_F1,ord('2'),curses.KEY_F2):
+                    d=next((d for d in rows if d['id']==selected),{})
+                    if selected is None:message='No allocation selected.'
+                    elif d.get('native'):message='Native sessions have no helper model; exit and reopen the CLI to refresh.'
+                    elif key in (ord('2'),curses.KEY_F2):
+                        if set_helper:raise HelperSelected(selected)
+                        else:message='Helper registration unavailable.'
+                    elif not refresh:message='Refresh unavailable.'
+                    elif d.get('_busy') and not d.get('_terminal'):message='Wait for the current agent task before refreshing.'
+                    else:raise RefreshSelected(selected)
+                continue
+            if key in (ord('q'),27,3):return
+            if key in (ord('4'),curses.KEY_F4):
+                menu='allocate';menu_index=0
+                continue
             if rows:
                 pos=next((i for i,d in enumerate(rows) if d['id']==selected),0)
                 if key in (curses.KEY_LEFT,ord('h')):selected=rows[max(0,pos-1)]['id'];detail_offset=0;preview_id=None
@@ -270,24 +554,50 @@ def show(store,release,attach,submit=None):
                 elif key==curses.KEY_NPAGE:detail_offset+=3
                 elif key in (curses.KEY_UP,curses.KEY_DOWN,ord('j'),ord('k')):
                     preview_scroll=max(0,preview_scroll+(1 if key in (curses.KEY_UP,ord('k')) else -1))
-                elif key in (ord('2'),curses.KEY_F2):confirm=selected
-                elif key in (ord('3'),curses.KEY_F3,ord('5'),curses.KEY_F5):
-                    log_name='helper.log' if key in (ord('5'),curses.KEY_F5) else 'session.log'
-                    log_id=selected;log_top=None;last=0
-                elif key==ord(' '):
-                    d=rows[pos]
-                    if not submit:message='Prompt submission unavailable.'
-                    elif d.get('_busy') and not d.get('_terminal'):message='A legacy background task is still running.'
-                    elif not d.get('model') and not d.get('native'):message='Load a model first with 4/F4.'
-                    elif d.get('native') and not d.get('_terminal'):message='Open the native CLI first with 4/F4.'
-                    elif d.get('allocation',{}).get('prompt',{}).get('status') in ('QUEUED','RUNNING'):message='A remote prompt is already running.'
-                    else:prompt_text=''
-                elif key in (ord('4'),curses.KEY_F4):
+                elif key in (ord('1'),curses.KEY_F1):tools_open=True
+                elif key in (ord('2'),curses.KEY_F2):
                     d=next((d for d in rows if d['id']==selected),{})
                     if d.get('_terminal'):return selected
                     elif d.get('allocation',{}).get('prompt',{}).get('status') in ('QUEUED','RUNNING'):
                         message='An agent task is running; wait before attaching.'
                     elif not d.get('_busy'):return selected
                     else:message='Another run command owns this session.'
-    try:return curses.wrapper(screen)
+                elif key in (ord('3'),curses.KEY_F3):
+                    if selected is None:message='No allocation selected.'
+                    else:confirm=selected
+                elif key in (ord('4'),curses.KEY_F4):
+                    menu='allocate';menu_index=0
+                elif key in (ord('5'),curses.KEY_F5):
+                    if selected is None:message='No allocation selected.'
+                    else:menu='logs';menu_index=0
+                elif key==ord(' '):
+                    d=rows[pos]
+                    if not submit:message='Prompt submission unavailable.'
+                    elif d.get('_busy') and not d.get('_terminal'):message='A legacy background task is still running.'
+                    elif not d.get('model') and not d.get('native'):message='Load a model first with 4/F4.'
+                    elif d.get('native') and not d.get('_terminal'):message='Open the native CLI first with 2/F2.'
+                    elif d.get('allocation',{}).get('prompt',{}).get('status') in ('QUEUED','RUNNING'):message='A remote prompt is already running.'
+                    else:prompt_text=''
+                elif key in (ord('r'),ord('R')):
+                    d=rows[pos]
+                    if not refresh:message='Refresh unavailable.'
+                    elif d.get('native'):message='Native sessions refresh by exiting and reopening with F2.'
+                    elif d.get('_busy') and not d.get('_terminal'):message='Wait for the current agent task before refreshing.'
+                    else:raise RefreshSelected(selected)
+    def navigate(win):
+        while True:
+            try:return screen(win)
+            except HelperSelected as exc:
+                try:
+                    terminal_operation(set_helper,exc.args[0])
+                    dropdown_win('Helper registered — refresh consuming sessions to load it',['Back to monitor'])
+                except (OSError,ValueError,RuntimeError) as error:
+                    dropdown_win('Helper registration failed: '+str(error),['Back to monitor'])
+            except RefreshSelected as exc:
+                if callable(refresh):terminal_operation(refresh,exc.args[0])
+            except AllocateSelected:
+                if callable(allocate):allocate('allocate')
+            except AttachSelected as exc:
+                if callable(allocate):allocate('model',exc.args[0] if exc.args else None)
+    try:return _terminal_screen(navigate)
     except KeyboardInterrupt:pass

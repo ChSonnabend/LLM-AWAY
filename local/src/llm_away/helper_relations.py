@@ -66,3 +66,10 @@ def annotate(store, rows):
         row['is_master']=', '.join(map(str,sorted(masters[key]))) or '—'
         row['is_slave']=', '.join(map(str,sorted(slaves[key]))) or '—'
     return rows
+
+
+def ensure_other_session(helper_path):
+    """Reject self-delegation before issuing inference to the same model slot."""
+    master=master_session(helper_path.parent)
+    if master is not None and str(master['id'])==helper_path.name:
+        raise ValueError('Cannot use this allocation as its own helper; choose another session')

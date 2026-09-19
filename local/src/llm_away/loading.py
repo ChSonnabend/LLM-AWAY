@@ -12,7 +12,7 @@ def prepare(path, spec):
     from . import terminals
     loading=spec['loading'];cfg=config(loading['config'])
     model=loading['model']
-    print('Loading '+model['alias']+'. Ctrl+B then D detaches; F4 reattaches.',flush=True)
+    print('Loading '+model['alias']+'. Ctrl+B then D detaches; F2 reattaches.',flush=True)
     write(path/'attachment.json',dict(client_pid=os.getpid(),client_identity=identity(os.getpid())))
     try:
         if not loading['reuse']:

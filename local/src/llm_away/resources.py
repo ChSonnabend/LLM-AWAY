@@ -1,6 +1,7 @@
 """Numbered background allocations with isolated providers and foreground agents."""
 from __future__ import annotations
 import argparse
+from argparse import Namespace
 import contextlib
 from dataclasses import asdict, is_dataclass, replace
 import fcntl
@@ -415,7 +416,7 @@ def run_agent(args):
             if getattr(args,'agent_location','local')!=selection.get('target_location',selection.get('location')) or (args.cli and args.cli not in ('auto',selection.get('cli'))) or (args.agent_workdir and args.agent_workdir!=selection.get('cwd')):
                 raise ValueError('An agent terminal already exists; exit it before changing its configuration')
             if not args.detach:terminals.attach(path,data,selection)
-            else:print('Agent terminal is already running; F4 attaches, Ctrl+B then D detaches.')
+            else:print('Agent terminal is already running; F2 attaches, Ctrl+B then D detaches.')
             return
     # Advisory lease prevents two foreground clients from sharing one model slot.
     with open(path/'client.lock','a') as lease:
@@ -446,7 +447,7 @@ def run_agent(args):
         # Local agents can use their own native Codex/Claude account (no remote
         # model) instead of loading a session model.
         if (location=='local' and cfg.ssh.connection=='local' and not helper and not args.model and not reuse
-                and sys.stdin.isatty()
+                and sys.stdin.isatty() and not getattr(args,'quiet',False)
                 and not (data.get('model') and data.get('provider_exit') is None)):
             choice=choose_option(['Session model (AWAY inference)','Native CLI (own model/account)'],
                                  'Local agent model',default=0)
@@ -484,14 +485,18 @@ def run_agent(args):
         # Explicit preset context also applies to allocations created before the preset.
         if model.get('context_size',0)>0:
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=model['context_size']),
-                        codex=replace(cfg.codex,context_window=model['context_size']))
+                        codex=replace(cfg.codex,context_window=min(cfg.codex.context_window,model['context_size'])))
         location=getattr(args,'agent_location','local')
         if not helper and location=='remote' and (args.rag or args.agent_args):
             raise ValueError('Remote mode accepts prompts via its console or res-mon; local --rag and extra CLI arguments are not supported')
         preference=getattr(args,'cli',None) or os.environ.get('LLM_AWAY_CLI') or cfg.agent.cli
-        selected_cli=choose_cli(preference) if location=='local' and not helper else None
-        mtp=cfg.llamacpp.mtp if reuse else choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
-        if not reuse and sys.stdin.isatty():
+        selected_cli=None
+        if location=='local' and not helper:
+            if getattr(args,'quiet',False) and preference=='auto':
+                preference=next((cli for cli in ('codex','claude') if shutil.which(cli)), 'codex')
+            selected_cli=choose_cli(preference)
+        mtp=cfg.llamacpp.mtp if reuse else args.mtp if getattr(args,'mtp_prompted',False) else choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
+        if not reuse and sys.stdin.isatty() and not getattr(args,'quiet',False):
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=shlex.split(
                 ask('Additional llama.cpp server options (blank uses saved options)',
                     shlex.join(cfg.llamacpp.server_extra_args)))))
@@ -510,6 +515,8 @@ def run_agent(args):
             selection={'location':'local','target_location':location,'cli':selected_cli or preference,
                        'cwd':agent_cwd,'extra_args':args.agent_args,'rag_command':rag_command,
                        'instructions':cfg.claude.instructions or cfg.codex.instructions if selected_cli=='claude' else cfg.codex.instructions,
+                       'context_window':cfg.codex.context_window,
+                       'auto_compact_token_limit':min(cfg.codex.auto_compact_token_limit,int(cfg.codex.context_window*0.7)),
                        'loading':{'config':asdict(cfg),'model':model,'reuse':reuse,'mtp':mtp}}
             if (selected_cli or preference) in ('codex','auto') and cfg.codex.custom_metadata:
                 selection['codex_catalog_content']=json.dumps(remote_model_catalog(
@@ -518,7 +525,7 @@ def run_agent(args):
             current=json.loads((path/'session.json').read_text())
             terminals.ensure(path,current,selection)
             fcntl.flock(lease,fcntl.LOCK_UN)
-            print('Model loading in tmux. Ctrl+B then D detaches; run --session '+str(args.session)+' or F4 reattaches.',flush=True)
+            print('Model loading in tmux. Ctrl+B then D detaches; run --session '+str(args.session)+' or F2 reattaches.',flush=True)
             if not args.detach:terminals.attach(path,current,selection)
             return
         started=False
@@ -626,9 +633,138 @@ def submit_prompt(number, text, location=None, cli=None, cwd=None):
     return terminals.send(path,data,text)
 
 
+def refresh_session(number, model=None):
+    """Restart the session agent as a fresh Codex conversation, keeping helpers."""
+    path=path_for(number)
+    data=json.loads((path/'session.json').read_text())
+    if data.get('native'):
+        raise ValueError('Native sessions refresh by exiting the CLI and reopening with F2')
+    saved=path/'agent-selection.json'
+    if not saved.exists():raise ValueError('Open the agent first with run')
+    selection=json.loads(saved.read_text())
+    from . import terminals
+    engine=terminals.engine()
+    if engine['alive'](path):
+        engine['stop'](path)
+        deadline=time.monotonic()+5
+        while engine['alive'](path) and time.monotonic()<deadline:time.sleep(0.2)
+    args=Namespace(session=number,detach=True,model=model,mtp=None,rag=[],helper=False,quiet=True,resume=False,
+                   log_helper=True,agent_location=selection.get('target_location',selection.get('location','local')),
+                   cli=selection.get('cli'),agent_workdir=selection.get('cwd'),
+                   agent_args=selection.get('extra_args',[]))
+    run_agent(args)
+
+
+def allocate_and_run(mode,session=None):
+    """Allocate resources and/or a model, then return control to res-mon."""
+    from argparse import Namespace
+    from .monitor_ui import terminal_operation, dropdown_win
+    def report(text):
+        dropdown_win(text, ['Back to monitor'])
+    if mode=='model':
+        if session is not None:
+            try:
+                data=json.loads((path_for(session)/'session.json').read_text())
+                if data.get('phase')=='RELEASED' or data.get('native'):session=None
+            except (OSError,ValueError):session=None
+        if session is None:
+            chosen=[]
+            for p in sorted(STORE.glob('*/session.json'),key=lambda p:int(p.parent.name)):
+                data=json.loads(p.read_text())
+                if data.get('phase')!='RELEASED' and not data.get('native'):chosen.append(int(p.parent.name))
+            if not chosen:
+                report('No eligible resource allocation.');return
+            session=max(chosen)
+        number=session
+    if mode=='allocate':
+        from .monitor_ui import allocation_wizard
+        settings=allocation_wizard()
+        if settings is None:return
+        try:number=terminal_operation(allocate_from_wizard,settings)
+        except (ValueError,RuntimeError,OSError,subprocess.SubprocessError) as exc:
+            report('Allocation failed: '+str(exc));return
+    path=path_for(number)
+    data=json.loads((path/'session.json').read_text())
+    if data.get('native') or data.get('phase')=='RELEASED':return
+    from .monitor_ui import model_select_win
+    cfg=config(data['config'])
+    try:models=terminal_operation(discover_models,cfg)
+    except Exception as exc:report('Model discovery failed: '+str(exc));return
+    from .monitor_ui import mtp_select_win
+    try:
+        model,mtp=mtp_select_win(models,number,current=str(data.get('model') or cfg.llamacpp.model_name))
+    except KeyboardInterrupt:return
+    if model is None:return
+    args=Namespace(session=number,model=model['name'],mtp=mtp,rag=[],helper=False,quiet=True,
+                   mtp_prompted=True,
+                   log_helper=True,agent_location='local',cli=None,agent_workdir=None,
+                   agent_args=[],resume=False,detach=True)
+    try:terminal_operation(run_agent,args)
+    except (ValueError,RuntimeError,OSError,subprocess.SubprocessError) as exc:
+        report('Model allocation failed: '+str(exc))
+
+
+def allocate_from_wizard(settings):
+    """Create the allocation from wizard settings, without terminal prompts."""
+    from dataclasses import asdict
+    from .config import AppConfig, load_config, replace
+    if settings.get('native'):
+        cli=settings['cli'];host=None
+        if settings['connection']=='ssh':
+            host=settings.get('host') or None
+            if not host:raise ValueError('SSH host required for a native SSH session')
+        elif not shutil.which(cli):
+            raise ValueError(f'{cli} is not available on PATH')
+        from .native_sessions import allocate as allocate_native
+        return allocate_native(STORE,cli,host)
+    config_path=os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml'))
+    STORE.mkdir(parents=True,exist_ok=True,mode=0o700)
+    with open(STORE/'registry.lock','a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        cfg=load_config(config_path)
+        if settings['connection']=='ssh':
+            host=settings.get('host') or cfg.ssh.host
+            from .host_store import read_store, apply_profile
+            store=read_store(config_path)
+            profile=store['hosts'].get(host)
+            if profile is None:
+                raise ValueError(f'No saved settings for host {host}; run res-alloc once to set it up')
+            cfg=apply_profile(cfg,profile)
+            cfg=replace(cfg,ssh=replace(cfg.ssh,connection='ssh',host=host),active_host='')
+        else:
+            cfg=replace(cfg,ssh=replace(cfg.ssh,connection='local',host='localhost'))
+        gpus=int(settings.get('gpus') or 0)
+        if gpus<0 or (cfg.llamacpp.backend!='cpu' and gpus<1):raise ValueError('Invalid GPU count')
+        cfg=replace(cfg,slurm=replace(cfg.slurm,gpus=gpus,nodes=1,
+            custom_options=shlex.split(settings.get('slurm_options') or '')))
+        number=1+max([int(p.name) for p in STORE.iterdir() if p.name.isdigit()]+released_ids()+[0])
+        path=STORE/str(number);path.mkdir(mode=0o700)
+        ports=set()
+        for saved in STORE.glob('*/session.json'):
+            old=json.loads(saved.read_text())
+            ports.update([old['remote_port'],old['config']['server']['port'],old['config']['gateway']['local_port']])
+        remote_port=free_port()
+        while remote_port in ports:remote_port=free_port()
+        provider_port=free_port()
+        while provider_port in ports or provider_port==remote_port:provider_port=free_port()
+        tunnel_port=free_port()
+        while tunnel_port in ports or tunnel_port in (remote_port,provider_port):tunnel_port=free_port()
+        cfg=replace(cfg,server=replace(cfg.server,host='127.0.0.1',port=provider_port),
+            gateway=replace(cfg.gateway,server_port=remote_port,local_port=tunnel_port,cancel_on_exit=False,cancel_reused_on_exit=False),
+            hosts={},saved_hosts={},active_host='')
+        write(path/'session.json',dict(id=number,token=uuid.uuid4().hex,config=asdict(cfg),remote_port=remote_port,
+              host=cfg.ssh.destination,gpus=gpus,phase='STARTING',model=''))
+        with (path/'session.log').open('a') as log:
+            subprocess.Popen([sys.executable,'-m','llm_away.resources','daemon',str(path)],stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
+    print(f'Session {number} allocating in background.')
+    return number
+
+
 def monitor(args):
     if args.logs:
         path=path_for(args.logs);subprocess.call(['tail','-n','60','-f',str(path/'session.log')]);return
+    if getattr(args,'refresh',None):
+        refresh_session(args.refresh,getattr(args,'model',None));return
     if not args.list and not args.kill and sys.stdin.isatty():
         if not sys.stdout.isatty():
             # Some terminal wrappers leave stdout piped while stdin remains the
@@ -638,7 +774,10 @@ def monitor(args):
             except OSError:pass
         if not sys.stdout.isatty():return
         from .monitor_ui import show
-        chosen=show(STORE,release_session,run_agent,submit_prompt)
+        from .serve_registration import register as set_helper
+        while True:
+            chosen=show(STORE,release_session,run_agent,submit_prompt,refresh_session,allocate_and_run,lambda number:set_helper(number,log_helper=True))
+            if chosen!='monitor':break
         if chosen is not None:
             # Re-exec the run wrapper: guarantees a clean terminal handoff to Codex.
             selection=path_for(chosen)/'agent-selection.json'
@@ -707,7 +846,7 @@ def main():
     run.add_argument('--resume',action='store_true',help='Reconnect directly to the saved agent conversation when a model is already loaded')
     prompt=sub.add_parser('prompt');prompt.add_argument('--session','-s',required=True,type=int);prompt.add_argument('text')
     prompt.add_argument('--agent-location',choices=['local','remote']);prompt.add_argument('--cli',choices=['codex','claude']);prompt.add_argument('--agent-workdir')
-    mon=sub.add_parser('monitor');mon.add_argument('--list',action='store_true');mon.add_argument('--logs',type=int);mon.add_argument('--kill',type=int);mon.add_argument('--release',action='store_true')
+    mon=sub.add_parser('monitor');mon.add_argument('--list',action='store_true');mon.add_argument('--logs',type=int);mon.add_argument('--kill',type=int);mon.add_argument('--release',action='store_true');mon.add_argument('--refresh',type=int);mon.add_argument('--model')
     for name in ('daemon','provider'):sub.add_parser(name).add_argument('path',type=Path)
     args=parser.parse_args()
     try:

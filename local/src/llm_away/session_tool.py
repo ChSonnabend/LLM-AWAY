@@ -43,6 +43,8 @@ def main():
     opener=build_opener(ProxyHandler({}))
 
     def summarize(question,source,max_chars):
+        from .helper_relations import ensure_other_session
+        ensure_other_session(path)
         if not question.strip() or len(question)>2000:
             raise ValueError('Question must contain 1–2000 characters')
         if not source.strip() or len(source)>60000:
