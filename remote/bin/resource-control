@@ -60,12 +60,18 @@ def status():
         else:
             # Missing from squeue is not proof of termination (accounting may lag).
             s['slurm_state']='UNKNOWN'
-            accounting=call(['sacct','-n','-P','-j',s['job_id'],'--format=JobIDRaw,State'])
-            for line in accounting.splitlines():
-                fields=line.split('|')
-                if len(fields)>1 and fields[0].strip()==str(s['job_id']):
-                    s['slurm_state']=fields[1].strip().split()[0].rstrip('+')
-                    break
+            try:
+                accounting=call(['sacct','-n','-P','-j',s['job_id'],'--format=JobIDRaw,State'])
+            except RuntimeError:
+                # Clusters without accounting: an unknown job that no longer
+                # appears in squeue is treated as ended.
+                s['slurm_state']='CANCELLED'
+            else:
+                for line in accounting.splitlines():
+                    fields=line.split('|')
+                    if len(fields)>1 and fields[0].strip()==str(s['job_id']):
+                        s['slurm_state']=fields[1].strip().split()[0].rstrip('+')
+                        break
     elif kind=='kubernetes':
         raw=kubectl(['get','job',s['job_id'],'--ignore-not-found','-o','json'])
         if raw:

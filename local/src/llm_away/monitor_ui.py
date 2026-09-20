@@ -91,6 +91,19 @@ def snapshots(store):
             data['_busy']=busy(path.parent)
             selection=path.parent/'agent-selection.json'
             data['agent_location']=json.loads(selection.read_text()).get('location','local') if selection.exists() else 'local'
+            if selection.exists():
+                try:
+                    loading=json.loads(selection.read_text()).get('loading')
+                    if loading:
+                        cfg=loading.get('config',{}).get('llamacpp',{})
+                        model=loading.get('model',{})
+                        data['loading']={
+                            'model':model.get('alias') or model.get('name'),
+                            'mtp':loading.get('mtp'),
+                            'context_size':cfg.get('context_size'),
+                            'server_extra_args':cfg.get('server_extra_args',[]),
+                        }
+                except (OSError,ValueError):pass
             from .terminals import engine
             terminal=(engine()['capture'](path.parent) if data['agent_location']=='local' and engine()['alive'](path.parent)
                       else data.get('allocation',{}).get('terminal',{}))
@@ -358,7 +371,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
         menus={
             'logs':['Session telemetry log','Helper log'],
             'release':['Unload model — keep resources','Reload a different model','Release resources — kill job'],
-            'monitor':['Agent reply terminal','Telemetry logs','Helper log','Resource monitor'],
+            'monitor':['Agent reply terminal','Telemetry logs','Helper log','Resource monitor','Model loading options'],
             'allocate':['Run res-alloc (allocate new resources)','Allocate a model to selected resource'],
         }
         def close_menu():nonlocal menu,menu_index;menu=None;menu_index=0
@@ -497,6 +510,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 shown=([part for line in (job.get('text','') or job.get('error','') or 'Waiting for model…').splitlines() for part in (textwrap.wrap(line,max(1,w-2)) or [''])] if job and monitor_mode=='Agent reply terminal' else preview_lines)
                 if monitor_mode=='Agent reply terminal' and not job:shown=['No agent reply yet.']
                 if monitor_mode=='Resource monitor':shown=gpu_lines(rows[pos] if rows else {})
+                elif monitor_mode=='Model loading options':shown=loading_options(rows[pos] if rows else {})
                 ptop=max(0,len(shown)-pcount-preview_scroll)
                 if monitor_mode in ('Telemetry logs','Helper log') and preview_id==selected and not preview_lines:
                     put(preview_y+2,'Loading recent log…',color(3))
@@ -656,7 +670,7 @@ def gpu_lines(data):
     age=max(0,int(time.time()-telemetry.get('timestamp',0)))
     lines=[f'GPU VRAM / utilization — sampled {age}s ago'+(' (STALE)' if age>20 else '')]
     raw=telemetry.get('lines',[])
-    if raw and raw[0].startswith('index, uuid,'):
+    if raw and raw[0].startswith('index'):
         import csv
         for fields in csv.reader(raw[1:]):
             if len(fields)==6:
@@ -664,4 +678,19 @@ def gpu_lines(data):
                 lines.append(f'GPU {index}  {name}  VRAM {used} / {total}  GPU utilization {util}')
     else:lines.extend(raw)
     if telemetry.get('error'):lines.append(telemetry['error'])
+    return lines
+
+
+def loading_options(data):
+    if data.get('native'):
+        return ['Native CLI session — no model server or loading options.']
+    loading=data.get('loading')
+    if not loading:
+        return ['No saved loading options. Load a model with F2/F4 first.']
+    lines=['Model: '+str(loading.get('model') or 'unknown'),
+           'MTP: '+str(loading.get('mtp') or 'auto')]
+    if loading.get('context_size'):
+        lines.append('Context size: '+str(loading['context_size']))
+    args=loading.get('server_extra_args') or []
+    lines.append('Server flags: '+(shlex.join(args) if args else '(none — preset defaults only)'))
     return lines
