@@ -57,6 +57,15 @@ def status():
             phase,host,reason=out.splitlines()[0].split('|',2)
             s.update(active=phase in ('PENDING','RUNNING','CONFIGURING','COMPLETING'),slurm_state=phase,reason=reason)
             if phase=='RUNNING': s['host']=host
+        else:
+            # Missing from squeue is not proof of termination (accounting may lag).
+            s['slurm_state']='UNKNOWN'
+            accounting=call(['sacct','-n','-P','-j',s['job_id'],'--format=JobIDRaw,State'])
+            for line in accounting.splitlines():
+                fields=line.split('|')
+                if len(fields)>1 and fields[0].strip()==str(s['job_id']):
+                    s['slurm_state']=fields[1].strip().split()[0].rstrip('+')
+                    break
     elif kind=='kubernetes':
         raw=kubectl(['get','job',s['job_id'],'--ignore-not-found','-o','json'])
         if raw:

@@ -315,3 +315,16 @@ Agent context uses the configured `[codex].context_window`, capped by the model
 preset, rather than expanding to the preset maximum. Auto-compaction is passed
 explicitly to Codex at the smaller of the configured limit and 70% of that
 budget. Refresh the agent to apply changes; this starts a fresh conversation.
+
+Confirmed terminal Slurm states (including TIMEOUT, CANCELLED, FAILED and
+COMPLETED) automatically stop the local agent, provider and tunnel and remove
+helper registration. The ended entry, logs and conversation metadata remain;
+Release dismisses the entry. Missing scheduler records or SSH failures never
+trigger cleanup; accounting must confirm the job's terminal state. Cleanup
+failures are retried. This applies to allocation daemons started after updating;
+already-running daemons continue their previous behavior.
+
+Tools → **3/F3 Restart** retries a failed allocation using current saved host
+settings, retaining its session number, logs and conversation files. Confirmed
+ended allocations receive a fresh reservation; active or uncertain allocations
+are refused. After restart, use F4 to load a model, then F2 to attach.

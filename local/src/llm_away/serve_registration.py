@@ -101,7 +101,7 @@ def register(session,rag=None,log_helper=False):
         if log_helper:tool_args+=['--log-helper']
         block=(f'[mcp_servers.session_helper_{args.session}]\n'
                f'command = {json.dumps(str(ROOT/"bin/session-tool"))}\n'
-               f'args = {json.dumps(tool_args)}\nstartup_timeout_sec = 120\ntool_timeout_sec = 600\n')
+               f'args = {json.dumps(tool_args)}\nenv_vars = ["LLM_AWAY_SESSION_ID", "LLM_AWAY_SESSION_TOKEN", "TMUX"]\nstartup_timeout_sec = 120\ntool_timeout_sec = 600\n')
         record_path.write_text(json.dumps(record));record_path.chmod(0o600)
         edit(record,block)
         # Watch an immutable generation: replacing a registration cannot retarget its watcher.

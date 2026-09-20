@@ -99,7 +99,7 @@ def snapshots(store):
             result_path=path.parent/'agent-result.json'
             if not data['_terminal'] and data['agent_location']=='local' and result_path.exists():
                 data.setdefault('allocation',{})['prompt']=json.loads(result_path.read_text())
-            if not data.get('native') and (not (path.parent/'control.sock').exists() or time.time()-path.stat().st_mtime>45):
+            if not data.get('native') and not data.get('allocation_cleaned') and (not (path.parent/'control.sock').exists() or time.time()-path.stat().st_mtime>45):
                 data['_stale']=True
             rows.append(data)
         except (OSError,ValueError):continue
@@ -148,10 +148,16 @@ class AllocateSelected(Exception):pass
 class AttachSelected(Exception):pass
 
 
+class SelectModelThenAttach(Exception):pass
+
+
 class RefreshSelected(Exception):pass
 
 
 class HelperSelected(Exception):pass
+
+
+class RestartSelected(Exception):pass
 
 
 def model_select_win(models,loader,number,current=''):
@@ -313,7 +319,7 @@ def allocation_wizard():
     return settings
 
 
-def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=None):
+def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=None,restart=None):
     """Release runs off the UI thread; terminal state is restored on every exit."""
     def screen(win):
         try:curses.curs_set(0)
@@ -483,7 +489,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 put(h-2,status,color(3))
                 put(h-1,'q/Esc Exit   1/F1 Tools   2/F2 Attach   3/F3 Release   4/F4 Allocator   5/F5 Logs   Space Prompt   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
             if tools_open:
-                put(h-1,'q/Esc Back to res-mon   1/F1 Refresh   2/F2 Set helper',curses.A_REVERSE)
+                put(h-1,'q/Esc Back to res-mon   1/F1 Refresh   2/F2 Set helper   3/F3 Restart',curses.A_REVERSE)
             if prompt_text is not None:
                 put(h-3,' AGENT PROMPT — Enter submits; Esc cancels',curses.A_REVERSE)
                 put(h-2,'> '+prompt_text[-max(1,w-4):],curses.A_BOLD)
@@ -531,10 +537,13 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 continue
             if tools_open:
                 if key in (ord('q'),27,3):tools_open=False
-                elif key in (ord('1'),curses.KEY_F1,ord('2'),curses.KEY_F2):
+                elif key in (ord('1'),curses.KEY_F1,ord('2'),curses.KEY_F2,ord('3'),curses.KEY_F3):
                     d=next((d for d in rows if d['id']==selected),{})
                     if selected is None:message='No allocation selected.'
                     elif d.get('native'):message='Native sessions have no helper model; exit and reopen the CLI to refresh.'
+                    elif key in (ord('3'),curses.KEY_F3):
+                        if restart:raise RestartSelected(selected)
+                        else:message='Restart unavailable.'
                     elif key in (ord('2'),curses.KEY_F2):
                         if set_helper:raise HelperSelected(selected)
                         else:message='Helper registration unavailable.'
@@ -560,7 +569,11 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                     if d.get('_terminal'):return selected
                     elif d.get('allocation',{}).get('prompt',{}).get('status') in ('QUEUED','RUNNING'):
                         message='An agent task is running; wait before attaching.'
-                    elif not d.get('_busy'):return selected
+                    elif not d.get('_busy'):
+                        if not d.get('native') and not d.get('model'):
+                            if callable(allocate):raise SelectModelThenAttach(selected)
+                            message='Model selection unavailable.'
+                        else:return selected
                     else:message='Another run command owns this session.'
                 elif key in (ord('3'),curses.KEY_F3):
                     if selected is None:message='No allocation selected.'
@@ -587,6 +600,12 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
     def navigate(win):
         while True:
             try:return screen(win)
+            except RestartSelected as exc:
+                try:
+                    terminal_operation(restart,exc.args[0])
+                    dropdown_win('Allocation restarting — use F4 to load a model when ready',['Back to monitor'])
+                except (OSError,ValueError,RuntimeError) as error:
+                    dropdown_win('Restart failed: '+str(error),['Back to monitor'])
             except HelperSelected as exc:
                 try:
                     terminal_operation(set_helper,exc.args[0])
@@ -597,6 +616,9 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 if callable(refresh):terminal_operation(refresh,exc.args[0])
             except AllocateSelected:
                 if callable(allocate):allocate('allocate')
+            except SelectModelThenAttach as exc:
+                chosen=allocate('model',exc.args[0])
+                if chosen is not None:return chosen
             except AttachSelected as exc:
                 if callable(allocate):allocate('model',exc.args[0] if exc.args else None)
     try:return _terminal_screen(navigate)

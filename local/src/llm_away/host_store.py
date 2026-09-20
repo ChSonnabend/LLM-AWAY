@@ -40,6 +40,12 @@ def apply_profile(cfg, profile):
         if key not in profile:
             continue
         values = dict(profile[key])
+        # Older profiles omit these fields. Do not inherit another host's paths.
+        if key == 'remote':
+            values.setdefault('resource_state_dir', '')
+        elif key == 'llamacpp':
+            values.setdefault('models_dir', '')
+            values.setdefault('installation_dir', '')
         if key == 'ssh':
             values.setdefault('connection', 'ssh')  # Profiles saved before local transport existed.
         changes[key] = replace(getattr(cfg, key), **values)

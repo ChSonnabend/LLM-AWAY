@@ -94,13 +94,15 @@ print('FIRST\\nSECOND',flush=True)
         import curses
         for keys,action in [([ord('1'),ord('q'),ord('q')],None),
                             ([curses.KEY_F1,curses.KEY_F1,ord('q')],'refresh'),
-                            ([ord('1'),curses.KEY_F2,ord('q')],'helper')]:
+                            ([ord('1'),curses.KEY_F2,ord('q')],'helper'),
+                            ([ord('1'),curses.KEY_F3,ord('q')],'restart')]:
             win=MagicMock();win.getmaxyx.return_value=(24,100);win.getch.side_effect=keys
-            refresh=MagicMock();helper=MagicMock()
+            refresh=MagicMock();helper=MagicMock();restart=MagicMock()
             with patch.object(monitor_ui,'_terminal_screen',side_effect=lambda f:f(win)), patch.object(monitor_ui,'snapshots',return_value=[{'id':1,'_busy':False}]), patch.object(monitor_ui.curses,'curs_set'), patch.object(monitor_ui.curses,'has_colors',return_value=False), patch.object(monitor_ui.curses,'ACS_HLINE',ord('-'),create=True), patch.object(monitor_ui,'dropdown_win'):
-                monitor_ui.show(Path('/unused'),None,None,refresh=refresh,set_helper=helper)
+                monitor_ui.show(Path('/unused'),None,None,refresh=refresh,set_helper=helper,restart=restart)
             self.assertEqual(refresh.call_count,int(action=='refresh'))
             self.assertEqual(helper.call_count,int(action=='helper'))
+            self.assertEqual(restart.call_count,int(action=='restart'))
             self.assertTrue(any('2/F2 Set helper' in str(c) for c in win.addnstr.call_args_list))
 
     def test_agent_command_applies_context_and_compaction_budget(self):
@@ -110,3 +112,41 @@ print('FIRST\\nSECOND',flush=True)
             command,_=engine['agent_command']({'cli':'codex','model':'glm','context_window':128000,'auto_compact_token_limit':89600},'http://localhost:1')
         self.assertIn('model_context_window=128000',command)
         self.assertIn('model_auto_compact_token_limit=89600',command)
+
+    def test_filtered_mcp_environment_still_tracks_caller(self):
+        import runpy
+        from llm_away import terminals
+        engine=runpy.run_path(str(Path(__file__).resolve().parents[2]/'remote/bin/resource-terminal'))
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);rows=[{'id':12,'token':'master','model':'test','config':{'server':{'port':1}}},{'id':24,'token':'helper'}]
+            for row in rows:
+                path=root/str(row['id']);path.mkdir();(path/'session.json').write_text(json.dumps(row))
+            (root/'24'/'serve-registration.json').write_text(json.dumps({'session':24}))
+            start=MagicMock()
+            with patch.object(terminals,'engine',return_value={'start':start}), patch('llm_away.serve_registration.registered',return_value=True):
+                terminals.ensure(root/'12',rows[0],{'location':'local','cli':'codex'})
+            spec=start.call_args.args[1]
+            command=engine['helper_environment'](['codex'],spec)
+            env={}
+            for arg in command:
+                if '.env.' in arg:
+                    key,value=arg.split('.env.',1)[1].split('=',1);env[key]=json.loads(value)
+            with patch.dict(os.environ,env,clear=True):
+                with helper_relations.connection(root/'24'):
+                    helper_relations.annotate(root,rows)
+                    self.assertEqual(rows[0]['is_master'],'24')
+                    self.assertEqual(rows[1]['is_slave'],'12')
+                helper_relations.annotate(root,rows)
+                self.assertEqual(rows[0]['is_master'],'—')
+                self.assertEqual(rows[1]['is_slave'],'—')
+
+    def test_idle_attach_selects_model_before_leaving_screen(self):
+        import curses
+        for chosen in (7,None):
+            win=MagicMock();win.getmaxyx.return_value=(24,100)
+            win.getch.side_effect=[curses.KEY_F2,ord('q')]
+            allocate=MagicMock(return_value=chosen)
+            with patch.object(monitor_ui,'_terminal_screen',side_effect=lambda f:f(win)) as screen, patch.object(monitor_ui,'snapshots',return_value=[{'id':7,'_busy':False,'model':''}]), patch.object(monitor_ui.curses,'curs_set'), patch.object(monitor_ui.curses,'has_colors',return_value=False), patch.object(monitor_ui.curses,'ACS_HLINE',ord('-'),create=True):
+                self.assertEqual(monitor_ui.show(Path('/unused'),None,None,allocate=allocate),chosen)
+                allocate.assert_called_once_with('model',7)
+                screen.assert_called_once()

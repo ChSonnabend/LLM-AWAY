@@ -15,6 +15,16 @@ def ensure(path,data,selection):
     from .resources import remote,config
     spec=dict(selection,token=data['token'],model=data['model'],resource_session_id=data.get('id'))
     if selection['location']=='local':
+        # MCP clients filter inherited environment variables. Pass the caller's
+        # identity explicitly to each registered helper through CLI overrides.
+        from .serve_registration import registered
+        helpers=[]
+        for record_path in path.parent.glob('*/serve-registration.json'):
+            try:
+                record=json.loads(record_path.read_text())
+                if registered(record):helpers.append(int(record['session']))
+            except (OSError,ValueError,KeyError):continue
+        spec['helper_session_ids']=sorted(set(helpers))
         spec.update(local=True,base_url='http://127.0.0.1:'+str(data['config']['server']['port']))
         engine()['start'](path,spec)
     else:

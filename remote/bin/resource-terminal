@@ -106,6 +106,18 @@ def stop(state):
     if record.exists():record.write_text(json.dumps({'status':'EXITED','text':'Agent terminal stopped.'}))
 
 
+def helper_environment(command, spec):
+    """Carry allocation identity across Codex's filtered MCP environment."""
+    if spec.get('cli')!='codex' or spec.get('native_host') or spec.get('resource_session_id') is None:
+        return command
+    for helper in spec.get('helper_session_ids',[]):
+        prefix='mcp_servers.session_helper_'+str(int(helper))+'.env.'
+        for key,value in [('LLM_AWAY_SESSION_ID',str(spec['resource_session_id'])),
+                          ('LLM_AWAY_SESSION_TOKEN',spec['token'])]:
+            command+=['-c',prefix+key+'='+json.dumps(value)]
+    return command
+
+
 def resume_picker(command, spec):
     """Select a saved conversation explicitly; never silently resume the latest."""
     if spec.get('resume'):
@@ -142,7 +154,7 @@ def worker(state):
         engine=runpy.run_path(str(Path(__file__).with_name('resource-agent')))
         base_url=spec['base_url']
         if spec.get('native'):
-            command=[spec['cli']]+spec.get('extra_args',[])
+            command=helper_environment([spec['cli']]+spec.get('extra_args',[]),spec)
             if spec.get('native_host'):
                 command=['ssh','-tt',spec['native_host'],shlex.join(command)]
             env=os.environ.copy()
@@ -161,7 +173,7 @@ def worker(state):
         else:
             for option in ('exec','--json','--skip-git-repo-check','-'):command.remove(option)
             command.insert(1,'--no-alt-screen')
-        command=resume_picker(command,spec)
+        command=helper_environment(resume_picker(command,spec),spec)
         command+=spec.get('extra_args',[])
         if spec.get('rag_command'):
             rag=spec['rag_command']

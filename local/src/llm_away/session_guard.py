@@ -67,6 +67,7 @@ def finished(path):
 def ensure(path, data):
     """Adopt existing runners when res-mon is opened after an upgrade."""
     from .resources import identity
+    if data.get('allocation_cleaned'):return None
     try:
         record=read(path/'runner.json')
         if record.get('token')==data['token']:
@@ -144,7 +145,7 @@ def watch(path, generation):
         with locked(path):
             record=read(path/'runner.json');data=read(path/'session.json')
             if (record['generation']!=generation or record['token']!=data['token']
-                    or record.get('finished') or data.get('phase')=='RELEASED'):return
+                    or record.get('finished') or data.get('allocation_cleaned') or data.get('phase')=='RELEASED'):return
             dead=not live(record['pid'],record['identity'])
             if dead:
                 try:cleanup(path,data);return

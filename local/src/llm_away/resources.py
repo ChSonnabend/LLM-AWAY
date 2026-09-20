@@ -182,8 +182,42 @@ def provider(path):
     finally: backend.close()
 
 
+SLURM_ENDED = {'COMPLETED','CANCELLED','TIMEOUT','FAILED','OUT_OF_MEMORY',
+               'NODE_FAIL','BOOT_FAIL','DEADLINE','REVOKED'}
+
+
+def allocation_ended(cfg, status):
+    phase=str(status.get('slurm_state','')).split(' ',1)[0].rstrip('+')
+    return cfg.backend_type=='slurm_server' and status.get('active') is False and phase in SLURM_ENDED
+
+
+def cleanup_ended_allocation(path, data):
+    """Retire local dependents, keeping scheduler state, logs and conversations."""
+    from .terminals import engine
+    from .serve_registration import remove
+    from .session_guard import stop_process
+    errors=[]
+    def attempt(fn):
+        try:fn()
+        except Exception as exc:errors.append(str(exc))
+    attempt(lambda:engine()['stop'](path))
+    attempt(lambda:remove(path))
+    for filename,pid_key,born_key in [('attachment.json','client_pid','client_identity'),
+                                      ('tunnel.json','pid','identity')]:
+        try:record=json.loads((path/filename).read_text())
+        except FileNotFoundError:continue
+        except (OSError,ValueError) as exc:errors.append(str(exc));continue
+        attempt(lambda:stop_process(record.get(pid_key),record.get(born_key)))
+    attempt(lambda:stop_process(data.get('provider_pid'),data.get('provider_identity')))
+    if errors:raise RuntimeError('Allocation ended; cleanup will retry: '+'; '.join(errors))
+    data.update(allocation_cleaned=True,client_pid=None,client_identity='',provider_pid=None,
+                provider_identity='',provider_exit=0,error='')
+    write(path/'session.json',data)
+
+
 def daemon(path):
     data=json.loads((path/'session.json').read_text());cfg=config(data['config'])
+    if data.get('allocation_cleaned'):return
     token=data['token'];port=data['remote_port'];child=None;offset=0;last=None
     if cfg.ssh.connection!='local':
         os.environ['LLM_AWAY_SSH_CONTROL']=str((path/'ssh.sock').resolve())
@@ -246,7 +280,10 @@ def daemon(path):
     remote_pool=ThreadPoolExecutor(max_workers=1)
     def poll_remote():
         s=remote(cfg,token,port,'status')
-        logs=remote(cfg,token,port,'log',offset=offset)
+        try:logs=remote(cfg,token,port,'log',offset=offset)
+        except Exception:
+            if not allocation_ended(cfg,s):raise
+            logs={'offset':offset,'data':''}
         return s,logs['offset'],logs['data']
     def provider_ready():
         # The scheduler only knows "model process started" (LOADING). Confirm the
@@ -310,6 +347,10 @@ def daemon(path):
                     summary=(s['slurm_state'],s.get('model_state'),s.get('host'))
                     if summary!=last:print('Resource state:',summary,flush=True);last=summary
                     if new_logs:print(new_logs,end='',flush=True)
+                    if allocation_ended(cfg,s):
+                        cleanup_ended_allocation(path,data)
+                        print('Allocation ended; local processes cleaned up. History retained.',flush=True)
+                        break
                 except Exception as exc:state(error=str(exc));print('Monitor:',exc,flush=True)
     finally:
         if child is not None and child.poll() is None:child.terminate()
@@ -397,6 +438,8 @@ def run_agent(args):
     helper=getattr(args,'helper',False)
     if helper:args.detach=True
     path=path_for(args.session)
+    if json.loads((path/'session.json').read_text()).get('allocation_cleaned'):
+        raise ValueError('Allocation ended; allocate new resources to run a model')
     if json.loads((path/'session.json').read_text()).get('native'):
         from .native_sessions import run
         return run(path,args)
@@ -590,6 +633,8 @@ def run_agent(args):
 def release_session(number):
     path=path_for(number)
     data=json.loads((path/'session.json').read_text())
+    if data.get('allocation_cleaned'):
+        data['phase']='RELEASED';write(path/'session.json',data);return
     if data.get('native'):
         return rpc(path,'release')
     # Stop the foreground run wrapper (which terminates its Codex child) first.
@@ -631,6 +676,68 @@ def submit_prompt(number, text, location=None, cli=None, cwd=None):
         raise ValueError('Use the existing terminal settings, or exit the agent before reconfiguring')
     if not text.strip():raise ValueError('Prompt is empty')
     return terminals.send(path,data,text)
+
+
+def restart_session(number):
+    """Retry failed/cleaned allocations with current host settings, retaining history."""
+    from .host_store import apply_profile, read_store
+    from .session_guard import locked, stop_process
+    path=path_for(number)
+    with locked(path):
+        data=json.loads((path/'session.json').read_text())
+        if data.get('native') or data.get('phase')=='RELEASED':
+            raise ValueError('Restart is for failed or ended resource allocations')
+        if data.get('provider_pid') or data.get('model') and not data.get('allocation_cleaned'):
+            raise ValueError('A model may still be running; release it before restarting')
+        if data.get('allocation') and not data.get('allocation_cleaned'):
+            raise ValueError('Allocation may still be active; wait for confirmed cleanup before restarting')
+        config_path=os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml'))
+        old=config(data['config']);cfg=load_config(config_path)
+        if old.ssh.connection=='ssh':
+            profile=read_store(config_path)['hosts'].get(old.ssh.host)
+            if profile is None:raise ValueError('No saved settings for '+old.ssh.host)
+            cfg=apply_profile(cfg,profile)
+        else:
+            cfg=replace(old,codex=cfg.codex,agent=cfg.agent,claude=cfg.claude)
+        cfg=replace(cfg,ssh=old.ssh,server=old.server,gateway=old.gateway,
+                    slurm=replace(cfg.slurm,gpus=data['gpus'],nodes=old.slurm.nodes,
+                                  custom_options=old.slurm.custom_options),
+                    hosts={},saved_hosts={},active_host='')
+        # Stop only the verified local runner. Mark its watchdog finished first,
+        # preventing it from releasing a replacement allocation.
+        runner_path=path/'runner.json'
+        runner=json.loads(runner_path.read_text()) if runner_path.exists() else {}
+        pid=data.get('pid');born=runner.get('identity')
+        if pid:
+            current=identity(pid)
+            if not current:
+                try:os.kill(pid,0)
+                except ProcessLookupError:pass
+                else:raise ValueError('Cannot verify the old daemon identity; restart from an unrestricted terminal')
+            elif current==born and runner.get('pid')==pid and runner.get('token')==data['token']:
+                runner['finished']=True;write(runner_path,runner)
+                try:stop_process(pid,born)
+                except Exception:
+                    runner['finished']=False;write(runner_path,runner);raise
+                if identity(pid)==born:raise RuntimeError('Old daemon has not stopped; retry later')
+            else:raise ValueError('Runner identity changed; refusing to stop an unrelated process')
+        data=json.loads((path/'session.json').read_text())
+        history=data.setdefault('restart_history',[])
+        history.append({k:data.get(k) for k in ('token','phase','error','allocation')})
+        # Never allocate a second job while recovering an unacknowledged reserve:
+        # reuse its token. A confirmed ended job needs a fresh token.
+        if data.get('allocation_cleaned'):data['token']=uuid.uuid4().hex
+        data.update(config=asdict(cfg),phase='STARTING',error='',model='',pid=None,
+                    allocation_cleaned=False,provider_pid=None,provider_identity='',provider_exit=None,
+                    client_pid=None,client_identity='')
+        data.pop('allocation',None)
+        write(path/'session.json',data)
+        (path/'control.sock').unlink(missing_ok=True)
+        with (path/'session.log').open('a') as log:
+            log.write('Restart requested using current host settings.\n');log.flush()
+            subprocess.Popen([sys.executable,'-m','llm_away.resources','daemon',str(path)],
+                             stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
+    return number
 
 
 def refresh_session(number, model=None):
@@ -701,7 +808,8 @@ def allocate_and_run(mode,session=None):
                    agent_args=[],resume=False,detach=True)
     try:terminal_operation(run_agent,args)
     except (ValueError,RuntimeError,OSError,subprocess.SubprocessError) as exc:
-        report('Model allocation failed: '+str(exc))
+        report('Model allocation failed: '+str(exc));return
+    return number
 
 
 def allocate_from_wizard(settings):
@@ -776,7 +884,7 @@ def monitor(args):
         from .monitor_ui import show
         from .serve_registration import register as set_helper
         while True:
-            chosen=show(STORE,release_session,run_agent,submit_prompt,refresh_session,allocate_and_run,lambda number:set_helper(number,log_helper=True))
+            chosen=show(STORE,release_session,run_agent,submit_prompt,refresh_session,allocate_and_run,lambda number:set_helper(number,log_helper=True),restart_session)
             if chosen!='monitor':break
         if chosen is not None:
             # Re-exec the run wrapper: guarantees a clean terminal handoff to Codex.
@@ -792,7 +900,8 @@ def monitor(args):
         data=json.loads(p.read_text())
         if data.get('phase')=='RELEASED':continue
         try:data=rpc(p.parent,'status')
-        except (OSError,RuntimeError):data['phase']='DAEMON OFFLINE'
+        except (OSError,RuntimeError):
+            if not data.get('allocation_cleaned'):data['phase']='DAEMON OFFLINE'
         try:
             from .session_guard import ensure
             data['ps']=ensure(p.parent,data)
