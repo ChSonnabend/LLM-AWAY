@@ -160,6 +160,9 @@ class HelperSelected(Exception):pass
 class RestartSelected(Exception):pass
 
 
+class ReloadSelected(Exception):pass
+
+
 def model_select_win(models,loader,number,current=''):
     """Curses dropdown for allocating a model (or none) to one resource."""
     from .models import mtp_label
@@ -319,7 +322,7 @@ def allocation_wizard():
     return settings
 
 
-def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=None,restart=None):
+def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=None,restart=None,unload=None):
     """Release runs off the UI thread; terminal state is restored on every exit."""
     def screen(win):
         try:curses.curs_set(0)
@@ -346,7 +349,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 try:win.hline(y,0,curses.ACS_HLINE,w,color(1))
                 except curses.error:pass
         rows=[];selected=None;last=0;message='';pending=None;confirm=None
-        log_id=None;log_top=None;log_lines=[];detail_offset=0;log_name='session.log'
+        log_id=None;log_top=None;log_lines=[];detail_offset=0;log_name='session.log';monitor_mode='Agent reply terminal'
         preview_id=None;preview_scroll=0;preview_lines=[];preview_lock=threading.Lock();preview_loading=False;last_refresh=0
         result=[]
         prompt_text=None
@@ -354,6 +357,8 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
         menu=None;menu_index=0
         menus={
             'logs':['Session telemetry log','Helper log'],
+            'release':['Unload model — keep resources','Reload a different model','Release resources — kill job'],
+            'monitor':['Agent reply terminal','Telemetry logs','Helper log','Resource monitor'],
             'allocate':['Run res-alloc (allocate new resources)','Allocate a model to selected resource'],
         }
         def close_menu():nonlocal menu,menu_index;menu=None;menu_index=0
@@ -367,7 +372,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 attr=curses.A_REVERSE if i==index else curses.A_NORMAL
                 put(top+i+1,f'  {i+1}. {label}  ',attr)
         def menu_pick(index):
-            nonlocal log_name,log_id,log_top,last,message
+            nonlocal log_name,log_id,log_top,last,message,confirm,pending,monitor_mode,preview_id,preview_scroll
             current=menu
             close_menu()
             if current=='logs':
@@ -375,6 +380,14 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 else:
                     log_name='helper.log' if index==1 else 'session.log'
                     log_id=selected;log_top=None;last=0
+            elif current=='monitor':
+                monitor_mode=menus['monitor'][index];preview_id=None;preview_scroll=0;last=0
+            elif current=='release':
+                if index==2:confirm=selected
+                elif unload is None:message='Unload unavailable.'
+                elif index==1:raise ReloadSelected(selected)
+                else:
+                    pending=threading.Thread(target=unload_worker,args=(selected,),daemon=False);pending.start()
             elif current=='allocate':
                 if index==0:
                     if not allocate:message='Allocator unavailable.'
@@ -385,6 +398,9 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
             try:
                 answer=submit(number,text);result.append('Agent task '+answer['id'][:8]+' queued; safe to close this terminal.')
             except Exception as exc:result.append('Prompt failed: '+str(exc))
+        def unload_worker(number):
+            try:unload(number);result.append(f'Model unloaded; allocation {number} retained.')
+            except Exception as exc:result.append('Unload failed: '+str(exc))
         def release_worker(number):
             try:release(number);result.append(f'Allocation {number} released.')
             except Exception as exc:result.append('Release failed: '+str(exc))
@@ -406,7 +422,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 def load_preview(number):
                     nonlocal preview_loading,preview_lines
                     try:
-                        with (store/str(number)/'session.log').open('rb') as f:
+                        with (store/str(number)/('helper.log' if monitor_mode=='Helper log' else 'session.log')).open('rb') as f:
                             size=f.seek(0,2);offset=max(0,size-4194304);f.seek(offset)
                             if offset:f.readline()
                             data=f.read().decode('utf-8','replace').splitlines()
@@ -434,7 +450,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 put(h-2,'Following' if log_top is None else 'Scrollback paused',color(3))
                 put(h-1,'Esc / q: Back   ↑↓ / PgUp/PgDn: Scroll   ←→: Session   End: Follow',curses.A_REVERSE)
             elif menu is not None:
-                draw_menu('Choose log to view' if menu=='logs' else 'Allocator',menus[menu],menu_index)
+                draw_menu({'logs':'Choose log to view','allocate':'Allocator','release':'Release / unload','monitor':'Change monitor'}[menu],menus[menu],menu_index)
             else:
                 pos=next((i for i,d in enumerate(rows) if d['id']==selected),0)
                 put(0,f' RESOURCE MONITOR  |  {len(rows)} allocations  |  refreshed every second',curses.A_BOLD|color(1))
@@ -475,19 +491,21 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                     put(y,wrapped);y+=1
                 separator(preview_y)
                 job=rows[pos].get('allocation',{}).get('prompt',{}) if rows else {}
-                title=' AGENT REPLY — '+job.get('status','') if job else ' LOG PREVIEW  ←/→ scroll'+('' if preview_scroll else '  (following)')
+                title=' '+monitor_mode.upper()+' — '+(job.get('status','') if monitor_mode=='Agent reply terminal' else '')
                 put(preview_y+1,title,curses.A_BOLD|color(1))
                 pcount=h-4-(preview_y+2)
-                shown=([part for line in (job.get('text','') or job.get('error','') or 'Waiting for model…').splitlines() for part in (textwrap.wrap(line,max(1,w-2)) or [''])] if job else preview_lines)
+                shown=([part for line in (job.get('text','') or job.get('error','') or 'Waiting for model…').splitlines() for part in (textwrap.wrap(line,max(1,w-2)) or [''])] if job and monitor_mode=='Agent reply terminal' else preview_lines)
+                if monitor_mode=='Agent reply terminal' and not job:shown=['No agent reply yet.']
+                if monitor_mode=='Resource monitor':shown=gpu_lines(rows[pos] if rows else {})
                 ptop=max(0,len(shown)-pcount-preview_scroll)
-                if preview_id==selected and not preview_lines:
+                if monitor_mode in ('Telemetry logs','Helper log') and preview_id==selected and not preview_lines:
                     put(preview_y+2,'Loading recent log…',color(3))
                 for i,line in enumerate(shown[ptop:ptop+pcount],preview_y+2):
                     put(i,line)
                 status=f'Release allocation {confirm} and stop its agent? Enter/y confirms; Esc cancels.' if confirm is not None else ('Submitting operation…' if pending else message)
                 separator(h-3)
                 put(h-2,status,color(3))
-                put(h-1,'q/Esc Exit   1/F1 Tools   2/F2 Attach   3/F3 Release   4/F4 Allocator   5/F5 Logs   Space Prompt   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
+                put(h-1,'q/Esc Exit   1/F1 Tools   2/F2 Attach   3/F3 Release   4/F4 Allocator   5/F5 Logs   6/F6 Change monitor   Space Prompt   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
             if tools_open:
                 put(h-1,'q/Esc Back to res-mon   1/F1 Refresh   2/F2 Set helper   3/F3 Restart',curses.A_REVERSE)
             if prompt_text is not None:
@@ -570,19 +588,20 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                     elif d.get('allocation',{}).get('prompt',{}).get('status') in ('QUEUED','RUNNING'):
                         message='An agent task is running; wait before attaching.'
                     elif not d.get('_busy'):
-                        if not d.get('native') and not d.get('model'):
+                        if not d.get('native') and (not d.get('model') or d.get('provider_exit') is not None or d.get('allocation',{}).get('model_state') in ('EXITED','IDLE')):
                             if callable(allocate):raise SelectModelThenAttach(selected)
                             message='Model selection unavailable.'
                         else:return selected
                     else:message='Another run command owns this session.'
                 elif key in (ord('3'),curses.KEY_F3):
                     if selected is None:message='No allocation selected.'
-                    else:confirm=selected
+                    else:menu='release';menu_index=0
                 elif key in (ord('4'),curses.KEY_F4):
                     menu='allocate';menu_index=0
                 elif key in (ord('5'),curses.KEY_F5):
                     if selected is None:message='No allocation selected.'
                     else:menu='logs';menu_index=0
+                elif key in (ord('6'),curses.KEY_F6):menu='monitor';menu_index=0
                 elif key==ord(' '):
                     d=rows[pos]
                     if not submit:message='Prompt submission unavailable.'
@@ -600,6 +619,12 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
     def navigate(win):
         while True:
             try:return screen(win)
+            except ReloadSelected as exc:
+                try:
+                    terminal_operation(unload,exc.args[0])
+                    if callable(allocate):allocate('model',exc.args[0])
+                except (OSError,ValueError,RuntimeError) as error:
+                    dropdown_win('Reload failed: '+str(error),['Back to monitor'])
             except RestartSelected as exc:
                 try:
                     terminal_operation(restart,exc.args[0])
@@ -623,3 +648,20 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 if callable(allocate):allocate('model',exc.args[0] if exc.args else None)
     try:return _terminal_screen(navigate)
     except KeyboardInterrupt:pass
+
+
+def gpu_lines(data):
+    telemetry=data.get('allocation',{}).get('gpu_telemetry',{})
+    if not telemetry:return ['GPU telemetry unavailable — start the updated telemetry worker on this allocation.']
+    age=max(0,int(time.time()-telemetry.get('timestamp',0)))
+    lines=[f'GPU VRAM / utilization — sampled {age}s ago'+(' (STALE)' if age>20 else '')]
+    raw=telemetry.get('lines',[])
+    if raw and raw[0].startswith('index, uuid,'):
+        import csv
+        for fields in csv.reader(raw[1:]):
+            if len(fields)==6:
+                index,uuid,name,used,total,util=[x.strip() for x in fields]
+                lines.append(f'GPU {index}  {name}  VRAM {used} / {total}  GPU utilization {util}')
+    else:lines.extend(raw)
+    if telemetry.get('error'):lines.append(telemetry['error'])
+    return lines

@@ -39,6 +39,7 @@ class BackendTests(unittest.TestCase):
 
         self.assertEqual(payload["messages"][0]["content"], "Reply with OK.")
         self.assertEqual(payload["max_tokens"], 1)
+        self.assertTrue(payload["cache_prompt"])
 
     def test_server_backend_readiness_uses_configured_model(self):
         config = AppConfig(model=ModelConfig(name="qwen3-coder-next-f16-1m"))

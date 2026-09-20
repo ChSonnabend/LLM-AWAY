@@ -42,6 +42,8 @@ def start(state,spec):
     state=Path(state)
     if alive(state):return
     tmux()
+    for marker in ('agent-ready','resume-requested'):
+        if (state/marker).exists():(state/marker).unlink()
     error=state/'terminal-error.txt'
     if error.exists():error.unlink()
     path=state/'terminal.json';tmp=state/'terminal.tmp';tmp.write_text(json.dumps(spec));os.chmod(str(tmp),0o600);os.replace(str(tmp),str(path))
@@ -151,6 +153,8 @@ def worker(state):
             sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'local/src'))
             from llm_away.loading import prepare
             if prepare(state,spec):return
+        (state/'agent-ready').touch()
+        if (state/'resume-requested').exists():spec['resume']=True
         engine=runpy.run_path(str(Path(__file__).with_name('resource-agent')))
         base_url=spec['base_url']
         if spec.get('native'):

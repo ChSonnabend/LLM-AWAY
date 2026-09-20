@@ -328,3 +328,19 @@ Tools → **3/F3 Restart** retries a failed allocation using current saved host
 settings, retaining its session number, logs and conversation files. Confirmed
 ended allocations receive a fresh reservation; active or uncertain allocations
 are refused. After restart, use F4 to load a model, then F2 to attach.
+
+
+### Release and monitor views
+
+**3/F3 Release** opens a menu: unload the model while keeping the allocation,
+unload and select another model, or release the resources (kill the scheduler job).
+Only releasing resources asks for final confirmation. **6/F6 Change monitor** selects
+the lower pane: Agent reply terminal, Telemetry logs, Helper log, or Resource monitor.
+GPU telemetry reports VRAM used/total and GPU utilization every five seconds;
+samples older than 20 seconds are marked stale. NVIDIA uses `nvidia-smi`; AMD uses
+`rocm-smi`. Updated allocations start the sampler automatically. Older allocations
+need the sampler started inside their job or a new allocation.
+
+Model selection, MTP, and server options use separate screens. Failed launches return
+to model selection with F2. Explicit server options override preset defaults; large
+context sizes still require memory in addition to model weights and compute buffers.

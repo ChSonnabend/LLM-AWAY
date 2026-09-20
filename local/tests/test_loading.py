@@ -21,6 +21,8 @@ class LoadingTests(unittest.TestCase):
                     args=Namespace(session=1,helper=False,detach=detached,model=None,agent_location=location,cli='codex',agent_workdir=None,agent_args=[],rag=None,mtp=None)
                     for name,value in [('path_for',path),('rpc',data),('config',cfg),('load_config',cfg),('discover_models',[]),('choose_model',{'alias':'test','name':'test','context_size':750000}),('choose_mtp','off'),('choose_cli','codex'),('ask','')]:
                         stack.enter_context(patch.object(resources,name,return_value=value))
+                    stack.enter_context(patch('llm_away.monitor_ui.mtp_select_win',return_value=({'alias':'test','name':'test','context_size':750000},'off')))
+                    stack.enter_context(patch('llm_away.monitor_ui._form_screen',return_value=['']))
                     stack.enter_context(patch.object(resources.sys.stdin,'isatty',return_value=True))
                     menu=stack.enter_context(patch.object(resources,'choose_option',side_effect=AssertionError('Unexpected native CLI prompt')))
                     health=stack.enter_context(patch.object(resources,'urlopen'))
@@ -75,8 +77,8 @@ class LoadingTests(unittest.TestCase):
                 data={'config':asdict(cfg),'model':'loaded','token':'test','remote_port':123,
                       'provider_pid':123,'provider_identity':'alive'}
                 (path/'session.json').write_text(json.dumps(data))
-                args=Namespace(session=1,helper=False,detach=detached,resume=not detached,
-                               model=None,agent_location='local',cli='codex',agent_workdir=tmp,
+                args=Namespace(session=1,helper=False,detach=detached,resume=True,
+                               model='new' if change else None,agent_location='local',cli='codex',agent_workdir=tmp,
                                agent_args=[],rag=[],mtp=None,quiet=detached)
                 for name,value in [('path_for',path),('rpc',data),('config',cfg),('load_config',cfg),
                                    ('identity','alive'),('choose_option',int(change)),('discover_models',[]),
@@ -87,7 +89,7 @@ class LoadingTests(unittest.TestCase):
                 ensure=stack.enter_context(patch('llm_away.terminals.ensure'))
                 stack.enter_context(patch('llm_away.terminals.attach'))
                 resources.run_agent(args)
-                self.assertEqual(ensure.call_args.args[2]['resume'],not detached)
+                self.assertTrue(ensure.call_args.args[2]['resume'])
                 self.assertEqual(ensure.call_args.args[2]['loading']['reuse'],not change)
 
     def test_terminal_launch_uses_conversation_picker_only_when_requested(self):

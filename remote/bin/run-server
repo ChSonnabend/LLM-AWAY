@@ -31,9 +31,9 @@ done < <(llamacpp_common_run_args "$BACKEND" "$GPU_COUNT")
 
 # Native build directories may have moved since compilation.
 export LD_LIBRARY_PATH="$(dirname "${LLAMA_SERVER}")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-# Model-specific compatibility flags take precedence over saved host defaults.
+# Presets provide defaults; explicit session options take precedence.
 MODEL_SERVER_ARGS=()
 if [[ -n ${LLAMACPP_SERVER_EXTRA_ARGS:-} ]]; then
   read -r -a MODEL_SERVER_ARGS <<< "$LLAMACPP_SERVER_EXTRA_ARGS"
 fi
-exec "$LLAMA_SERVER" "${ARGS[@]}" "$@" "${MODEL_SERVER_ARGS[@]}"
+exec "$LLAMA_SERVER" "${ARGS[@]}" "${MODEL_SERVER_ARGS[@]}" "$@"

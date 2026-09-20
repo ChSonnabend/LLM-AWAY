@@ -5,6 +5,7 @@ state=$1
 child=''
 seen=''
 prompt_pid=''
+telemetry_pid=''
 stop_model() {
     python3 "$(dirname "${BASH_SOURCE[0]}")/resource-terminal" stop "$state" 2>/dev/null || true
     if [[ -n "$prompt_pid" ]]; then
@@ -27,10 +28,13 @@ report() {
     printf '%s %s %s\n' "$seen" "$1" "$(hostname)" > "$state/worker.tmp"
     mv "$state/worker.tmp" "$state/worker.state"
 }
-cleanup() { stop_model; report STOPPED; }
+cleanup() { stop_model; [[ -z "$telemetry_pid" ]] || kill "$telemetry_pid" 2>/dev/null || true; report STOPPED; }
 trap cleanup EXIT
 trap 'exit 0' TERM INT HUP
 report IDLE
+touch "$state/heartbeat"
+python3 "$(dirname "${BASH_SOURCE[0]}")/resource-telemetry" "$state" >> "$state/allocation.log" 2>&1 &
+telemetry_pid=$!
 python3 "$(dirname "${BASH_SOURCE[0]}")/resource-prompts" "$state" >> "$state/model.log" 2>&1 &
 prompt_pid=$!
 while [[ ! -f "$state/release" ]]; do

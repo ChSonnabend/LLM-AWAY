@@ -264,7 +264,7 @@ def daemon(path):
     state(pid=os.getpid(),phase='RUNNING',error='')
     if child is None:
         try:
-            allocation=remote(cfg,token,port,'reserve');state(allocation=allocation,phase=allocation['slurm_state'])
+            allocation=remote(cfg,token,port,'reserve',session_id=data['id']);state(allocation=allocation,phase=allocation['slurm_state'])
             print('Allocation:',allocation,flush=True)
         except Exception as exc:
             state(phase='ERROR',error=str(exc));print(exc,flush=True)
@@ -319,7 +319,8 @@ def daemon(path):
                             if request['mtp']=='on' and not request['model'].get('mtp',{}).get('configured'):
                                 request=dict(request);request['mtp']='off'
                                 cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,mtp='off'))
-                            state(config=asdict(cfg),model=cfg.model.name,provider_exit=None,client_pid=request.get('client_pid'),client_identity=identity(request.get('client_pid')))
+                            allocation=remote(cfg,token,port,'start')
+                            state(allocation=allocation,config=asdict(cfg),model=cfg.model.name,provider_exit=None,client_pid=request.get('client_pid'),client_identity=identity(request.get('client_pid')))
                             child=subprocess.Popen([sys.executable,'-m','llm_away.resources','provider',str(path)],stdin=subprocess.DEVNULL)
                             state(provider_pid=child.pid,provider_identity=identity(child.pid))
                             answer={'port':cfg.server.port}
@@ -486,7 +487,7 @@ def run_agent(args):
             current=load_config(settings)
             cfg=replace(cfg,codex=current.codex,agent=current.agent,claude=current.claude)
         location=getattr(args,'agent_location','local')
-        reuse=False;resume=bool(getattr(args,'resume',False) and not args.detach and not helper)
+        reuse=False;resume=bool(getattr(args,'resume',False) and not helper)
         # Local agents can use their own native Codex/Claude account (no remote
         # model) instead of loading a session model.
         if (location=='local' and cfg.ssh.connection=='local' and not helper and not args.model and not reuse
@@ -512,8 +513,12 @@ def run_agent(args):
                     data.get('provider_identity') and identity(data.get('provider_pid'))==data['provider_identity'])
         if loaded:
             reuse=(not args.model or args.model in (data['model'],cfg.llamacpp.model_name))
-            if not args.model and not args.detach:
-                reuse=choose_option([f"Keep loaded model: {data['model']}",'Load a different model'],'Model already running')==0
+            if not args.model and not args.detach and not getattr(args,'resume',False):
+                from .monitor_ui import dropdown_win
+                keep=f"Keep loaded model: {data['model']}"
+                choice=dropdown_win('Model already running',[keep,'Load a different model'])
+                if choice is None:return
+                reuse=choice==keep
             if reuse:
                 if args.detach:pass
                 elif getattr(args,'resume',False):resume=True
@@ -524,7 +529,13 @@ def run_agent(args):
         if reuse:
             model=dict(alias=data['model'],name=cfg.llamacpp.model_name,context_size=cfg.llamacpp.context_size)
         else:
-            model=choose_model(discover_models(cfg),cfg.llamacpp.model_name,args.model)
+            models=discover_models(cfg)
+            if not args.model and sys.stdin.isatty() and not getattr(args,'quiet',False):
+                from .monitor_ui import mtp_select_win
+                model,args.mtp=mtp_select_win(models,args.session,cfg.llamacpp.model_name)
+                if model is None:return
+                args.mtp_prompted=True
+            else:model=choose_model(models,cfg.llamacpp.model_name,args.model)
         # Explicit preset context also applies to allocations created before the preset.
         if model.get('context_size',0)>0:
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=model['context_size']),
@@ -540,9 +551,13 @@ def run_agent(args):
             selected_cli=choose_cli(preference)
         mtp=cfg.llamacpp.mtp if reuse else args.mtp if getattr(args,'mtp_prompted',False) else choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
         if not reuse and sys.stdin.isatty() and not getattr(args,'quiet',False):
-            cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=shlex.split(
-                ask('Additional llama.cpp server options (blank uses saved options)',
-                    shlex.join(cfg.llamacpp.server_extra_args)))))
+            from .monitor_ui import _form_screen
+            saved_options=shlex.join(cfg.llamacpp.server_extra_args)
+            options=_form_screen('Model server options',[('text','Options',None,saved_options)],[saved_options])
+            if options is None:return
+            cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=shlex.split(options[0])))
+        if getattr(args,'server_extra_args',None) is not None:
+            cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=args.server_extra_args))
         rag_command=None
         if args.rag and not helper:
             from .rag import prepare
@@ -802,10 +817,15 @@ def allocate_and_run(mode,session=None):
         model,mtp=mtp_select_win(models,number,current=str(data.get('model') or cfg.llamacpp.model_name))
     except KeyboardInterrupt:return
     if model is None:return
-    args=Namespace(session=number,model=model['name'],mtp=mtp,rag=[],helper=False,quiet=True,
+    from .monitor_ui import _form_screen
+    options=_form_screen('Model server options', [('text','Options',None,shlex.join(cfg.llamacpp.server_extra_args))], [shlex.join(cfg.llamacpp.server_extra_args)])
+    if options is None:return
+    try:extra=shlex.split(options[0])
+    except ValueError as exc:report(str(exc));return
+    args=Namespace(session=number,model=model['name'],mtp=mtp,rag=[],helper=False,quiet=True,server_extra_args=extra,
                    mtp_prompted=True,
                    log_helper=True,agent_location='local',cli=None,agent_workdir=None,
-                   agent_args=[],resume=False,detach=True)
+                   agent_args=[],resume=True,detach=True)
     try:terminal_operation(run_agent,args)
     except (ValueError,RuntimeError,OSError,subprocess.SubprocessError) as exc:
         report('Model allocation failed: '+str(exc));return
@@ -884,7 +904,7 @@ def monitor(args):
         from .monitor_ui import show
         from .serve_registration import register as set_helper
         while True:
-            chosen=show(STORE,release_session,run_agent,submit_prompt,refresh_session,allocate_and_run,lambda number:set_helper(number,log_helper=True),restart_session)
+            chosen=show(STORE,release_session,run_agent,submit_prompt,refresh_session,allocate_and_run,lambda number:set_helper(number,log_helper=True),restart_session,lambda number:rpc(path_for(number),'stop'))
             if chosen!='monitor':break
         if chosen is not None:
             # Re-exec the run wrapper: guarantees a clean terminal handoff to Codex.

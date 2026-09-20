@@ -391,6 +391,7 @@ class SlurmServerBackend(Backend):
             max_tokens = self.config.llamacpp.max_tokens
         data = {
                 "model": self.config.model.name,
+                "cache_prompt": True,
                 "messages": normalize_chat_messages(messages) if messages is not None else [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
             }

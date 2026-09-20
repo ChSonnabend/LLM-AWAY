@@ -26,8 +26,9 @@ def prepare(path, spec):
                     if response.status==200:break
             except OSError:pass
             data=rpc(path,'status');allocation=data.get('allocation',{})
-            if (data.get('provider_exit') is not None or not allocation.get('active',True)
-                    or allocation.get('model_state')=='EXITED'):
+            # Only the provider owns startup failure: allocation snapshots can
+            # still describe the previous generation immediately after start.
+            if data.get('provider_exit') is not None or not allocation.get('active',True):
                 raise RuntimeError('Backend stopped; inspect res-mon logs')
             progress=allocation.get('model_state') or data.get('phase') or 'Waiting for model'
             if progress!=previous:print(progress,flush=True);previous=progress
@@ -43,6 +44,8 @@ def prepare(path, spec):
             spec['instructions']=cfg.claude.instructions or cfg.codex.instructions if spec['cli']=='claude' else cfg.codex.instructions
             selection=json.loads((path/'agent-selection.json').read_text())
             selection['cli']=spec['cli'];write(path/'agent-selection.json',selection)
+            (path/'agent-ready').touch()
+            if (path/'resume-requested').exists():spec['resume']=True
             remote_selection={k:v for k,v in spec.items() if k not in ('loading','local','state','target_location')}
             remote_selection['location']='remote'
             terminals.ensure(path,data,remote_selection)

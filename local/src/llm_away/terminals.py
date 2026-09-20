@@ -40,6 +40,8 @@ def ensure(path,data,selection):
 
 def attach(path,data,selection):
     from .resources import config,remote
+    if selection.get('loading') and not (path/'agent-ready').exists():
+        (path/'resume-requested').touch()
     if selection['location']=='local':
         e=engine()
         e['configure'](path)

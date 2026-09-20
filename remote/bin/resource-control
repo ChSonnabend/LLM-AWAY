@@ -31,9 +31,9 @@ kind=c['backend_type']; k=c['kubernetes']; sl=c['slurm']
 meta=state/'allocation.json'
 
 def job_label():
-    name=c['llamacpp'].get('model_name') or c['model'].get('name') or 'away'
-    cleaned=re.sub(r'[^A-Za-z0-9._-]+','-',str(name)).strip('-._')
-    return (cleaned[:63].strip('-._') or 'away')
+    number=p.get('session_id')
+    return 'model-'+(str(int(number)) if number is not None else token[:8])
+
 
 def write(path,value):
     temp=Path(str(path)+'.tmp'); temp.write_text(value); os.replace(str(temp),str(path))
@@ -89,6 +89,15 @@ def status():
         if len(fields)==3: s.update(generation=fields[0],model_state=fields[1])
         if len(fields)==2: s['model_state']=fields[0] # initial IDLE before first request
     if kind=='direct' and s.get('model_state')=='STOPPED': s.update(active=False,slurm_state='STOPPED')
+    desired=state/'desired'
+    if desired.exists():
+        requested=desired.read_text().strip()
+        if requested and requested!=s.get('generation'):
+            s.update(model_state='STARTING' if (state/(requested+'.sh')).exists() else 'STOPPING',generation=requested)
+    telemetry=state/'gpu.json'
+    if telemetry.exists():
+        try:s['gpu_telemetry']=json.loads(telemetry.read_text())
+        except (OSError,ValueError):pass
     latest=state/'prompt-latest'
     if latest.exists():
         prompt_id=latest.read_text().strip()
@@ -167,7 +176,7 @@ def reserve():
 def start():
     s=status()
     if not s['active']: raise ValueError('Allocation ended; create a new resource session')
-    if s.get('model_state')=='LOADING': return s
+    if s.get('model_state') in ('STARTING','LOADING'): return s
     l=c['llamacpp']
     if l['model_path'] or l['server_command']: raise ValueError('Resource sessions require managed model presets')
     env={'MODEL_NAME':l['model_name'] or c['model']['name'],'LLAMACPP_BACKEND':l['backend'],
