@@ -191,9 +191,15 @@ def start():
     write(state/(generation+'.sh'),script);write(state/'desired',generation)
     return status()
 
-with open(state/'lock','a') as lock:
+lock_dir=state.parent/'.locks'
+lock_dir.mkdir(mode=0o700,exist_ok=True)
+with open(lock_dir/(token+'.lock'),'a') as lock:
     fcntl.flock(lock,fcntl.LOCK_EX)
-    if action=='reserve': result=reserve()
+    if action=='cleanup' and not any(state.iterdir()):
+        # An earlier cleanup may have removed its metadata before NFS released
+        # the old in-directory lock. Empty directories need no further proof.
+        state.rmdir();result={'cleaned':True,'already_empty':True}
+    elif action=='reserve': result=reserve()
     elif action=='status': result=status()
     elif action=='start': result=start()
     elif action=='stop':

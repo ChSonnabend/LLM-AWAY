@@ -25,3 +25,22 @@ class RemoteCleanupTests(unittest.TestCase):
                 cleanup.main()
                 self.assertEqual(session.exists(),fails)
                 self.assertEqual(remote.call_args.args[3],'cleanup')
+
+    def test_remote_cleanup_handles_empty_retry_and_lock_outside_state(self):
+        import subprocess,sys
+        script=Path(__file__).resolve().parents[2]/'remote/bin/resource-control'
+        for empty in (False,True):
+            with tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);token='a'*32;state=root/'resources'/token;state.mkdir(parents=True)
+                if not empty:
+                    (state/'allocation.json').write_text('{}')
+                    (state/'release').touch()
+                    (state/'worker.state').write_text('STOPPED host')
+                cfg=asdict(AppConfig());cfg['remote']['resource_state_dir']=tmp;cfg['backend_type']='direct'
+                payload=json.dumps({'config':cfg,'token':token,'port':1})
+                for _ in range(2):
+                    result=subprocess.run([sys.executable,str(script),'cleanup'],input=payload,text=True,capture_output=True)
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    self.assertTrue(json.loads(result.stdout)['cleaned'])
+                    self.assertFalse(state.exists())
+                self.assertTrue((root/'resources/.locks'/ (token+'.lock')).exists())
