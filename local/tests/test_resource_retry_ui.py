@@ -119,3 +119,17 @@ llamacpp_common_run_args() { :; }
         with patch.object(monitor_ui,'dropdown_win'):
             self.screen([curses.KEY_F1,curses.KEY_F6,ord('q')],reconnect=reconnect)
         reconnect.assert_called_once_with(5)
+
+    def test_log_view_shows_its_full_local_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Path(tmp);session=store/'5';session.mkdir()
+            long_line='x'*100
+            log=session/'session.log';log.write_text(long_line+'\n')
+            win=MagicMock();win.getmaxyx.return_value=(30,60)
+            win.getch.side_effect=[curses.KEY_F5,10,ord('q'),ord('q')]
+            row={'id':5,'model':'test','_busy':False,'allocation':{}}
+            with patch.object(monitor_ui,'_terminal_screen',side_effect=lambda f:f(win)),patch.object(monitor_ui,'snapshots',return_value=[row]),patch.object(monitor_ui.curses,'curs_set'),patch.object(monitor_ui.curses,'has_colors',return_value=False),patch.object(monitor_ui.curses,'ACS_HLINE',45,create=True):
+                monitor_ui.show(store,None,None)
+            self.assertTrue(any(str(log) in str(call) for call in win.addnstr.call_args_list))
+            self.assertTrue(any('x'*59 in str(call) for call in win.addnstr.call_args_list))
+            self.assertTrue(any('x'*41 in str(call) for call in win.addnstr.call_args_list))

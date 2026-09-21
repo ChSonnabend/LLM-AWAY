@@ -458,14 +458,22 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
             if pending and not pending.is_alive():
                 message=result.pop() if result else 'Operation finished.';pending=None;last=0
             h,w=win.getmaxyx();win.erase()
+            def wrapped_log_lines():
+                result=[]
+                for line in log_lines:
+                    result.extend(textwrap.wrap(clean(line),max(1,w-1),replace_whitespace=False,
+                                               drop_whitespace=False) or [''])
+                return result
             if h<10 or w<45:
                 put(0,'Enlarge terminal (minimum 45 columns × 10 rows).')
                 put(h-1,'q / Esc: Exit' if not pending else 'Release in progress…')
             elif log_id is not None:
                 log_title='helper log' if log_name=='helper.log' else 'allocation / provider traffic log'
                 put(0,f' SESSION {log_id} — live {log_title}',curses.A_BOLD|color(1))
-                count=h-3;top=max(0,len(log_lines)-count) if log_top is None else min(log_top,max(0,len(log_lines)-count))
-                for i,line in enumerate(log_lines[top:top+count],1):put(i,line)
+                put(1,str(store/str(log_id)/log_name),color(3))
+                visible=wrapped_log_lines()
+                count=h-4;top=max(0,len(visible)-count) if log_top is None else min(log_top,max(0,len(visible)-count))
+                for i,line in enumerate(visible[top:top+count],2):put(i,line)
                 put(h-2,'Following' if log_top is None else 'Scrollback paused',color(3))
                 put(h-1,'Esc / q: Back   ↑↓ / PgUp/PgDn: Scroll   ←→: Session   End: Follow',curses.A_REVERSE)
             elif menu is not None:
@@ -555,7 +563,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 elif 49<=key<=48+count:menu_pick(key-49)
                 continue
             if log_id is not None:
-                count=max(1,h-3)
+                count=max(1,h-4)
                 if key in (27,ord('q'),3):log_id=None;last=0
                 elif key in (curses.KEY_LEFT,curses.KEY_RIGHT) and rows:
                     pos=next((i for i,d in enumerate(rows) if d['id']==log_id),0)
@@ -564,9 +572,10 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 elif key==curses.KEY_END:log_top=None
                 elif key==curses.KEY_HOME:log_top=0
                 elif key in (curses.KEY_UP,curses.KEY_PPAGE,curses.KEY_DOWN,curses.KEY_NPAGE):
-                    if log_top is None:log_top=max(0,len(log_lines)-count)
+                    visible=wrapped_log_lines()
+                    if log_top is None:log_top=max(0,len(visible)-count)
                     delta=(-1 if key in (curses.KEY_UP,curses.KEY_PPAGE) else 1)*(count if key in (curses.KEY_PPAGE,curses.KEY_NPAGE) else 1)
-                    log_top=max(0,min(log_top+delta,max(0,len(log_lines)-count)))
+                    log_top=max(0,min(log_top+delta,max(0,len(visible)-count)))
                 continue
             if confirm is not None:
                 if key in (10,13,ord('y'),ord('Y')):
