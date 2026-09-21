@@ -86,3 +86,36 @@ llamacpp_common_run_args() { :; }
             args=p.stdout.splitlines()
             for flag in ('--batch-size','--ubatch-size'):
                 self.assertEqual([args[i+1] for i,x in enumerate(args[:-1]) if x==flag][-1],'1024')
+
+    def test_model_batch_defaults_replace_both_flag_forms(self):
+        cfg=AppConfig();cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=['--batch-size=8192','-ub','8192','--flash-attn','on']))
+        for name,ub in [('glm-5.3-flash-q4','1024'),('glm-5.3-flash-q8','512')]:
+            self.assertEqual(resources.model_server_options(cfg,name),['--flash-attn','on','--batch-size','2048','--ubatch-size',ub])
+
+    def test_monitor_returns_after_attached_agent_exits(self):
+        from argparse import Namespace
+        with tempfile.TemporaryDirectory() as tmp,patch.object(resources.sys.stdin,'isatty',return_value=True),patch.object(resources.sys.stdout,'isatty',return_value=True),patch.object(monitor_ui,'show',side_effect=[5,None]) as show,patch.object(resources,'path_for',return_value=Path(tmp)),patch.object(resources.subprocess,'call',return_value=0) as launch:
+            resources.monitor(Namespace(logs=None,list=False,kill=None,release=False))
+            self.assertEqual(show.call_count,2);launch.assert_called_once()
+
+    def test_refresh_keeps_running_and_uncertain_jobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for n in range(1,4):
+                p=root/str(n);p.mkdir();(p/'session.json').write_text(json.dumps({'id':n,'config':asdict(AppConfig()),'token':'a','remote_port':1}))
+            with patch.object(resources,'STORE',root),patch.object(resources,'remote',side_effect=[{'active':True,'slurm_state':'RUNNING'},{'active':False,'slurm_state':'CANCELLED'},RuntimeError('SSH down')]),patch.object(resources,'release_session') as release:
+                message=resources.refresh_monitor()
+                release.assert_called_once_with(2);self.assertIn('SSH down',message)
+
+    def test_tools_maintenance_actions(self):
+        for key,kind in [(curses.KEY_F4,'refresh'),(curses.KEY_F5,'cleanup')]:
+            callback=MagicMock(return_value='Done')
+            with patch.object(monitor_ui,'dropdown_win'):
+                self.screen([curses.KEY_F1,key,ord('q')],**{kind+'_monitor':callback})
+            callback.assert_called_once()
+
+    def test_tools_reconnects_selected_session(self):
+        reconnect=MagicMock(return_value='Reconnected')
+        with patch.object(monitor_ui,'dropdown_win'):
+            self.screen([curses.KEY_F1,curses.KEY_F6,ord('q')],reconnect=reconnect)
+        reconnect.assert_called_once_with(5)

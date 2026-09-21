@@ -144,6 +144,8 @@ class LlamaCppConfig:
     model_path: str = ""
     context_size: int = 100000
     server_extra_args: list[str] = field(default_factory=list)
+    model_batch_defaults: dict[str, list[int]] = field(default_factory=lambda: {
+        'glm-5.3-flash-q4': [2048, 1024], 'glm-5.3-flash-q8': [2048, 512]})
     server_command: list[str] = field(default_factory=list)
     mtp: str = "auto"
 

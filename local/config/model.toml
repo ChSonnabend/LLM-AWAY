@@ -154,3 +154,7 @@ server_extra_args = ["--reasoning", "off", "--flash-attn", "on", "--cache-type-k
 # Optional full server command, relative to remote.workdir if not absolute.
 # When set, this replaces server_cli/server_extra_args.
 server_command = []
+
+[llamacpp.model_batch_defaults]
+"glm-5.3-flash-q4" = [2048, 1024]
+"glm-5.3-flash-q8" = [2048, 512]

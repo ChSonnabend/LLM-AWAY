@@ -176,6 +176,12 @@ class RestartSelected(Exception):pass
 class ReloadSelected(Exception):pass
 
 
+class MaintenanceSelected(Exception):pass
+
+
+class ReconnectSelected(Exception):pass
+
+
 def model_select_win(models,loader,number,current=''):
     """Curses dropdown for allocating a model (or none) to one resource."""
     from .models import mtp_label
@@ -335,7 +341,7 @@ def allocation_wizard():
     return settings
 
 
-def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=None,restart=None,unload=None):
+def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=None,restart=None,unload=None,refresh_monitor=None,cleanup_monitor=None,reconnect=None):
     """Release runs off the UI thread; terminal state is restored on every exit."""
     def screen(win):
         try:curses.curs_set(0)
@@ -521,7 +527,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 put(h-2,status,color(3))
                 put(h-1,'q/Esc Exit   1/F1 Tools   2/F2 Attach   3/F3 Release   4/F4 Allocator   5/F5 Logs   6/F6 Change monitor   Space Prompt   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
             if tools_open:
-                put(h-1,'q/Esc Back to res-mon   1/F1 Refresh   2/F2 Set helper   3/F3 Restart',curses.A_REVERSE)
+                put(h-1,'q/Esc Back   1/F1 Refresh   2/F2 Set helper   3/F3 Restart   4/F4 Refresh res-mon   5/F5 Cleanup   6/F6 Reconnect',curses.A_REVERSE)
             if prompt_text is not None:
                 put(h-3,' AGENT PROMPT — Enter submits; Esc cancels',curses.A_REVERSE)
                 put(h-2,'> '+prompt_text[-max(1,w-4):],curses.A_BOLD)
@@ -569,6 +575,12 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 continue
             if tools_open:
                 if key in (ord('q'),27,3):tools_open=False
+                elif key in (ord('4'),curses.KEY_F4):raise MaintenanceSelected('refresh')
+                elif key in (ord('5'),curses.KEY_F5):raise MaintenanceSelected('cleanup')
+                elif key in (ord('6'),curses.KEY_F6):
+                    if selected is None:message='No allocation selected.'
+                    elif not reconnect:message='Reconnect unavailable.'
+                    else:raise ReconnectSelected(selected)
                 elif key in (ord('1'),curses.KEY_F1,ord('2'),curses.KEY_F2,ord('3'),curses.KEY_F3):
                     d=next((d for d in rows if d['id']==selected),{})
                     if selected is None:message='No allocation selected.'
@@ -633,6 +645,15 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
     def navigate(win):
         while True:
             try:return screen(win)
+            except MaintenanceSelected as exc:
+                try:
+                    operation=refresh_monitor if exc.args[0]=='refresh' else cleanup_monitor
+                    result=(terminal_operation(operation) if exc.args[0]=='refresh' else operation()) if operation else 'Unavailable'
+                    dropdown_win(result or 'Done',['Back to monitor'])
+                except Exception as error:dropdown_win(str(error),['Back to monitor'])
+            except ReconnectSelected as exc:
+                try:dropdown_win(terminal_operation(reconnect,exc.args[0]),['Back to monitor'])
+                except Exception as error:dropdown_win('Reconnect failed: '+str(error),['Back to monitor'])
             except ReloadSelected as exc:
                 try:
                     terminal_operation(unload,exc.args[0])

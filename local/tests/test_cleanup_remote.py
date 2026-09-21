@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from contextlib import ExitStack
 from dataclasses import asdict
 
@@ -44,3 +44,39 @@ class RemoteCleanupTests(unittest.TestCase):
                     self.assertTrue(json.loads(result.stdout)['cleaned'])
                     self.assertFalse(state.exists())
                 self.assertTrue((root/'resources/.locks'/ (token+'.lock')).exists())
+
+    def test_stale_tunnel_record_is_removed_even_when_its_process_is_gone(self):
+        with tempfile.TemporaryDirectory() as temp:
+            session=Path(temp)/'1';session.mkdir()
+            (session/'session.json').write_text(json.dumps({'phase':'RELEASED'}))
+            tunnel=session/'tunnel.json'
+            tunnel.write_text(json.dumps({'pid':12345,'identity':'old'}))
+            with patch.object(cleanup,'busy',return_value=False),patch.object(cleanup,'identity',return_value=''):
+                cleanup.execute([('ssh',session,'remove tunnel')],[0])
+            self.assertFalse(tunnel.exists())
+
+    def test_dead_control_socket_is_unlinked_even_when_ssh_refuses_it(self):
+        with tempfile.TemporaryDirectory() as temp:
+            session=Path(temp)/'1';session.mkdir()
+            (session/'session.json').write_text(json.dumps({'phase':'RELEASED'}))
+            socket=session/'ssh.sock';socket.touch()
+            failed=MagicMock(returncode=255,stderr=b'connection refused')
+            with patch.object(cleanup,'busy',return_value=False),patch.object(cleanup.subprocess,'run',return_value=failed):
+                cleanup.execute([('socket',socket,'remove socket')],[0])
+            self.assertFalse(socket.exists())
+
+    def test_released_timed_out_job_repairs_missing_remote_release_marker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            session=Path(temp)/'1';session.mkdir()
+            (session/'session.json').write_text(json.dumps({'phase':'RELEASED','config':asdict(AppConfig()),'token':'a'*32,'remote_port':8080}))
+            calls=[]
+            def call(_cfg,_token,_port,action):
+                calls.append(action)
+                if action=='cleanup' and calls.count('cleanup') < 4:
+                    raise RuntimeError('not explicitly released')
+                if action=='status':return {'active':False}
+                return {'cleaned':True} if action=='cleanup' else {'released':True}
+            with patch.object(cleanup,'busy',return_value=False),patch.object(cleanup,'remote',side_effect=call),patch.object(cleanup.time,'sleep'):
+                cleanup.execute([('remote',session,'remove remote state')],[0])
+            self.assertEqual(calls,['cleanup','cleanup','cleanup','status','release','cleanup'])
+            self.assertTrue(json.loads((session/'session.json').read_text())['remote_cleanup_done'])

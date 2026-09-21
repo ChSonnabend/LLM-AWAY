@@ -17,7 +17,7 @@ import sys
 import time
 import threading
 import uuid
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from .config import AppConfig, load_config
 from .backends import SlurmServerBackend, KubernetesBackend, BackendError
@@ -485,7 +485,8 @@ def run_agent(args):
         settings=Path(os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
         if settings.exists():
             current=load_config(settings)
-            cfg=replace(cfg,codex=current.codex,agent=current.agent,claude=current.claude)
+            cfg=replace(cfg,codex=current.codex,agent=current.agent,claude=current.claude,
+                        llamacpp=replace(cfg.llamacpp,model_batch_defaults=current.llamacpp.model_batch_defaults))
         location=getattr(args,'agent_location','local')
         reuse=False;resume=bool(getattr(args,'resume',False) and not helper)
         # Local agents can use their own native Codex/Claude account (no remote
@@ -550,6 +551,8 @@ def run_agent(args):
                 preference=next((cli for cli in ('codex','claude') if shutil.which(cli)), 'codex')
             selected_cli=choose_cli(preference)
         mtp=cfg.llamacpp.mtp if reuse else args.mtp if getattr(args,'mtp_prompted',False) else choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
+        if not reuse:
+            cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=model_server_options(cfg,model['name'])))
         if not reuse and sys.stdin.isatty() and not getattr(args,'quiet',False):
             from .monitor_ui import _form_screen
             saved_options=shlex.join(cfg.llamacpp.server_extra_args)
@@ -777,6 +780,72 @@ def refresh_session(number, model=None):
     run_agent(args)
 
 
+def reconnect_session(number):
+    """Repair the selected provider's SSH tunnel without running an inference."""
+    path=path_for(number)
+    data=rpc(path,'status')
+    if data.get('native'):
+        raise ValueError('Native sessions do not use a model SSH tunnel')
+    if not data.get('model') or data.get('provider_exit') is not None:
+        raise ValueError('Load a model before reconnecting')
+    server=data['config']['server']
+    payload={'model':data['model'],'messages':[{'role':'user','content':'.'}]}
+    request=Request(f"http://127.0.0.1:{int(server['port'])}/v1/messages/count_tokens",
+                    data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+    with urlopen(request,timeout=60) as response:
+        if response.status!=200:raise RuntimeError('Provider did not acknowledge reconnect')
+        response.read(4096)
+    gateway=data['config']['gateway']
+    with urlopen(f"http://127.0.0.1:{int(gateway['local_port'])}/health",timeout=5) as response:
+        if response.status!=200:raise RuntimeError('Tunnel did not become ready')
+    return f'Session {number} tunnel reconnected.'
+
+
+def model_server_options(cfg, name):
+    options=list(cfg.llamacpp.server_extra_args)
+    defaults=cfg.llamacpp.model_batch_defaults.get(name)
+    if not defaults:return options
+    result=[];skip=False
+    for value in options:
+        if skip:skip=False;continue
+        if value in ('--batch-size','-b','--ubatch-size','-ub'):skip=True;continue
+        if value.split('=',1)[0] in ('--batch-size','--ubatch-size','-b','-ub'):continue
+        result.append(value)
+    return result+['--batch-size',str(defaults[0]),'--ubatch-size',str(defaults[1])]
+
+
+def refresh_monitor():
+    removed=[];kept=[]
+    for saved in sorted(STORE.glob('[0-9]*/session.json'),key=lambda p:int(p.parent.name)):
+        data=json.loads(saved.read_text())
+        if data.get('phase')=='RELEASED' or data.get('native'):continue
+        try:
+            status=remote(config(data['config']),data['token'],data['remote_port'],'status')
+            if allocation_ended(config(data['config']),status) or data.get('allocation_cleaned'):
+                release_session(data['id']);removed.append(str(data['id']))
+        except Exception as exc:kept.append(str(data['id'])+': '+str(exc))
+    return 'Removed ended sessions: '+(', '.join(removed) or 'none')+('; retained uncertain sessions: '+'; '.join(kept) if kept else '')
+
+
+def cleanup_monitor():
+    from . import cleanup
+    from .monitor_ui import dropdown_win, terminal_operation
+    items=[]
+    for saved in sorted(STORE.glob('[0-9]*/session.json'),key=lambda p:int(p.parent.name)):
+        data=json.loads(saved.read_text())
+        if data.get('phase')=='RELEASED' and not cleanup.busy(saved.parent):
+            cleanup.add_session_items(items,saved.parent,False)
+    if not items:return 'No inactive released-session leftovers.'
+    choice=dropdown_win('Clean '+str(len(items))+' released-session leftovers (logs, cache, managed connections)?', ['Cancel','Clean released-session leftovers'])
+    if choice!='Clean released-session leftovers':return 'Cleanup canceled.'
+    import io
+    def perform():
+        output=io.StringIO()
+        with contextlib.redirect_stdout(output):cleanup.execute(items,list(range(len(items))))
+        return output.getvalue()
+    return terminal_operation(perform)
+
+
 def allocate_and_run(mode,session=None):
     """Allocate resources and/or a model, then return control to res-mon."""
     from argparse import Namespace
@@ -817,6 +886,7 @@ def allocate_and_run(mode,session=None):
         model,mtp=mtp_select_win(models,number,current=str(data.get('model') or cfg.llamacpp.model_name))
     except KeyboardInterrupt:return
     if model is None:return
+    cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=model_server_options(cfg,model['name'])))
     from .monitor_ui import _form_screen
     options=_form_screen('Model server options', [('text','Options',None,shlex.join(cfg.llamacpp.server_extra_args))], [shlex.join(cfg.llamacpp.server_extra_args)])
     if options is None:return
@@ -904,16 +974,16 @@ def monitor(args):
         from .monitor_ui import show
         from .serve_registration import register as set_helper
         while True:
-            chosen=show(STORE,release_session,run_agent,submit_prompt,refresh_session,allocate_and_run,lambda number:set_helper(number,log_helper=True),restart_session,lambda number:rpc(path_for(number),'stop'))
-            if chosen!='monitor':break
-        if chosen is not None:
+            chosen=show(STORE,release_session,run_agent,submit_prompt,refresh_session,allocate_and_run,lambda number:set_helper(number,log_helper=True),restart_session,lambda number:rpc(path_for(number),'stop'),refresh_monitor,cleanup_monitor,reconnect_session)
+            if chosen=='monitor':continue
+            if chosen is None:break
             # Re-exec the run wrapper: guarantees a clean terminal handoff to Codex.
             selection=path_for(chosen)/'agent-selection.json'
             saved=json.loads(selection.read_text()) if selection.exists() else {}
             command=[sys.executable,'-m','llm_away.resources','run','--resume','--session',str(chosen),'--agent-location',saved.get('target_location',saved.get('location','local'))]
             if saved.get('cli'):command+=['--cli',saved['cli']]
             if saved.get('cwd'):command+=['--agent-workdir',saved['cwd']]
-            raise SystemExit(subprocess.call(command))
+            subprocess.call(command)
         return
     entries=[]
     for p in sorted(STORE.glob('*/session.json'),key=lambda p:int(p.parent.name)):

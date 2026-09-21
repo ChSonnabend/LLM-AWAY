@@ -7,8 +7,30 @@ import json
 import os
 import threading
 from urllib.request import Request, build_opener, ProxyHandler
+from urllib.error import URLError
 from .resources import path_for, rpc, identity
 from .rag import Index, roots_for
+
+
+
+def helper_endpoint(data, opener):
+    """Ask the owning provider to repair a lost tunnel without generating text."""
+    gateway=data['config']['gateway']
+    base=f"http://127.0.0.1:{int(gateway['local_port'])}"
+    try:
+        with opener.open(base+'/health',timeout=5) as response:
+            if response.status==200:return base
+    except (URLError,OSError):pass
+    # The provider owns/reaps the tunnel. Its token-count route runs ensure_ready
+    # and preserves the direct inference endpoint's strict output-token budget.
+    provider=f"http://127.0.0.1:{int(data['config']['server']['port'])}"
+    request=Request(provider+'/v1/messages/count_tokens',
+                    data=json.dumps({'model':data['model'],'messages':[{'role':'user','content':'.'}]}).encode(),
+                    headers={'Content-Type':'application/json'})
+    with opener.open(request,timeout=60) as response:response.read(4096)
+    with opener.open(base+'/health',timeout=5) as response:
+        if response.status!=200:raise ValueError('Session tunnel is not ready')
+    return base
 
 
 def main():
@@ -80,7 +102,7 @@ def main():
                 with log_path.open('a') as log:
                     log.write(json.dumps(entry)+'\n')
             # Use the existing tunnel so llama-server enforces the output token budget.
-            url=f"http://127.0.0.1:{int(gateway['local_port'])}/v1/chat/completions"
+            url=helper_endpoint(data,opener)+'/v1/chat/completions'
             request=Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
             with opener.open(request,timeout=240) as response:
                 raw=response.read(1048577)

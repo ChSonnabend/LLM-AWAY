@@ -93,7 +93,9 @@ See [initialization](docs/initialization.md), [Codex integration](docs/codex.md)
 Cleanup: `res-clean` previews identifiable local leftovers, lets you select item
 numbers (or `all`), and asks for confirmation. `res-clean --preview` only lists;
 `res-clean --session 3` limits cleanup to one session. Active or uncertain sessions
-are preserved. Candidates include inactive-session logs, tool-error dumps,
+are preserved. For a confirmed ended or released session, cleanup retries remote
+cleanup three times and always removes local logs plus stale recorded SSH tunnels
+and control sockets. Candidates include inactive-session logs, tool-error dumps,
 generated catalogs, tracked temporary folders, stale managed MCP registrations,
 and recorded orphan tunnel processes (PID and start time must match). Shared
 framework SSH masters are offered only when no allocation processes are alive.
@@ -344,3 +346,10 @@ need the sampler started inside their job or a new allocation.
 Model selection, MTP, and server options use separate screens. Failed launches return
 to model selection with F2. Explicit server options override preset defaults; large
 context sizes still require memory in addition to model weights and compute buffers.
+
+F2 attachments return to `res-mon` when the agent exits or detaches. In **Tools**,
+**4/F4 Refresh res-mon** removes confirmed ended scheduler jobs from the screen;
+uncertain or running jobs are retained. **5/F5 Cleanup** removes released-session
+logs, caches and managed connections after confirmation, retaining session IDs.
+GLM defaults in `[llamacpp.model_batch_defaults]` are Q4: 2048/1024 and Q8:
+2048/512 (batch/microbatch); the model options screen allows overrides.

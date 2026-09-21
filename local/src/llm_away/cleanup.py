@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import time
 from .resources import STORE, identity, released_ids, remote, config, write
 from .serve_registration import remove
 
@@ -34,15 +35,13 @@ def add_session_items(items, path, delete_folders=False):
     registration=path/'serve-registration.json'
     if registration.exists():items.append(('mcp',path,f'Remove managed MCP registration for session {path.name}; attached helpers exit'))
     tunnel=path/'tunnel.json'
-    if tunnel.exists():
-        try:
-            record=json.loads(tunnel.read_text())
-            if record.get('identity') and identity(record['pid'])==record['identity']:
-                items.append(('ssh',path,f"Stop recorded session {path.name} tunnel PID {record['pid']}"))
-        except (OSError,ValueError,KeyError):pass
+    if tunnel.exists() and not tunnel.is_symlink():
+        items.append(('ssh',path,f"Stop/remove session {path.name} SSH tunnel"))
+    if (path/'ssh.sock').exists():
+        items.append(('socket',path/'ssh.sock',f'Close released session {path.name} SSH control connection'))
     # Keep session.json and lock files: IDs must never be reused, locks must
     # retain their inode. Never infer ownership of arbitrary /tmp directories.
-    for name in ('session.log','agent.log','tool-errors','models.json','tmp'):
+    for name in ('session.log','agent.log','helper.log','control.sock','tool-errors','models.json','tmp'):
         target=path/name
         if target.exists() and not target.is_symlink():items.append(('file',target,f'Delete {target}'))
     for target in path.glob('serve-watch-*.json'):
@@ -64,8 +63,11 @@ def main():
     for state in sessions:
         path=state.parent
         if args.session is not None and path.name!=str(args.session):continue
+        data=json.loads(state.read_text())
         if busy(path):
             print(f'Keep session {path.name}: active or uncertain state');continue
+        if data.get('phase') != 'RELEASED' and not data.get('allocation_cleaned'):
+            print(f'Keep session {path.name}: allocation has not confirmed cleanup');continue
         add_session_items(items,path,delete_folders)
     if args.session is None and not any(busy(p.parent) for p in sessions):
         for sock in Path('/tmp').glob('llm-away-ssh-*'):
@@ -80,6 +82,10 @@ def main():
     if any(i<0 or i>=len(items) for i in selected):raise ValueError('Invalid item number; nothing changed')
     print('Selected:\n'+'\n'.join(items[i][2] for i in selected))
     if input('Proceed? [y/N] ').strip().lower()!='y':return
+    execute(items,selected)
+
+
+def execute(items,selected):
     for i in selected:
         kind,target,label=items[i]
         try:
@@ -87,9 +93,10 @@ def main():
                 if any(busy(p.parent) for p in STORE.glob('[0-9]*/session.json')):
                     print('Skipped SSH master: sessions became active');continue
                 result=subprocess.run(['ssh','-S',str(target),'-O','exit','unused'],capture_output=True,timeout=5)
-                # Only unlink a refused/missing master; preserve ambiguous errors.
-                if result.returncode and b'Connection refused' in result.stderr:target.unlink(missing_ok=True)
-                elif result.returncode:raise RuntimeError(result.stderr.decode(errors='replace').strip())
+                # This socket was discovered under our private name and no
+                # session is active. Remove it even when ssh's control command
+                # cannot identify the already-dead master.
+                target.unlink(missing_ok=True)
             else:
                 session=target if kind in ('mcp','ssh','folder','remote') else target.parent
                 with (session/'client.lock').open('a') as lease:
@@ -98,20 +105,48 @@ def main():
                     if kind=='remote':
                         data=json.loads((session/'session.json').read_text())
                         if data.get('phase')!='RELEASED':raise ValueError('Session is no longer released')
-                        result=remote(config(data['config']),data['token'],data['remote_port'],'cleanup')
+                        error=None
+                        for _ in range(3):
+                            try:
+                                result=remote(config(data['config']),data['token'],data['remote_port'],'cleanup')
+                                error=None;break
+                            except Exception as exc:
+                                error=exc;time.sleep(1)
+                        # A timed-out job from an older controller can leave
+                        # local RELEASED state without the remote release file.
+                        # Confirm it is inactive, mark it released remotely,
+                        # then make one final ownership-checked cleanup attempt.
+                        if error and 'not explicitly released' in str(error):
+                            status=remote(config(data['config']),data['token'],data['remote_port'],'status')
+                            if status.get('active'):
+                                raise RuntimeError('Remote allocation is active; preserving its state')
+                            remote(config(data['config']),data['token'],data['remote_port'],'release')
+                            result=remote(config(data['config']),data['token'],data['remote_port'],'cleanup')
+                            error=None
+                        if error:raise error
                         if not result.get('cleaned'):raise ValueError('Remote cleanup was not confirmed')
                         data['remote_cleanup_done']=True
                         write(session/'session.json',data)
                     elif kind=='mcp':remove(session)
                     elif kind=='ssh':
-                        record=json.loads((session/'tunnel.json').read_text())
-                        if record.get('identity') and identity(record['pid'])==record['identity']:
-                            os.kill(record['pid'],signal.SIGTERM)
+                        tunnel=session/'tunnel.json'
+                        try:record=json.loads(tunnel.read_text())
+                        except (OSError,ValueError):record={}
+                        pid=record.get('pid');born=record.get('identity')
+                        if pid and born and identity(pid)==born:
+                            os.kill(pid,signal.SIGTERM)
+                            deadline=time.monotonic()+5
+                            while identity(pid)==born and time.monotonic()<deadline:time.sleep(.1)
+                            if identity(pid)==born:os.kill(pid,signal.SIGKILL)
+                        tunnel.unlink(missing_ok=True)
                     elif kind=='folder':
                         data=json.loads((session/'session.json').read_text())
                         if data.get('phase')!='RELEASED' or not data.get('remote_cleanup_done'):
                             raise ValueError('Clean remote state first; retaining session record for retry')
                         shutil.rmtree(target)
+                    elif kind=='socket':
+                        result=subprocess.run(['ssh','-S',str(target),'-O','exit','unused'],capture_output=True,timeout=5)
+                        target.unlink(missing_ok=True)
                     elif target.is_symlink():raise ValueError('Path became a symlink; preserved')
                     elif target.is_dir():shutil.rmtree(target)
                     else:target.unlink(missing_ok=True)
