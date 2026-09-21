@@ -98,7 +98,13 @@ def register(session,rag=None,log_helper=False):
                     record=str(record_path),provider_pid=data['provider_pid'],provider_identity=data['provider_identity'])
         tool_args=['--session',str(args.session),'--registration',str(record_path)]
         for root in roots:tool_args+=['--rag',root]
-        if log_helper:tool_args+=['--log-helper']
+        if log_helper:
+            tool_args+=['--log-helper']
+            # Make the monitor's helper-log view available immediately, before
+            # the first MCP request has something to append.
+            log_path=path/'helper.log'
+            log_path.touch(exist_ok=True)
+            log_path.chmod(0o600)
         block=(f'[mcp_servers.session_helper_{args.session}]\n'
                f'command = {json.dumps(str(ROOT/"bin/session-tool"))}\n'
                f'args = {json.dumps(tool_args)}\nenv_vars = ["LLM_AWAY_SESSION_ID", "LLM_AWAY_SESSION_TOKEN", "TMUX"]\nstartup_timeout_sec = 120\ntool_timeout_sec = 600\n')

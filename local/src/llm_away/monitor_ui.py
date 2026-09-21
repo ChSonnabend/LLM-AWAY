@@ -440,12 +440,17 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                     except OSError as exc:log_lines=[str(exc)]
                 def load_preview(number):
                     nonlocal preview_loading,preview_lines
+                    preview_name='helper.log' if monitor_mode=='Helper log' else 'session.log'
                     try:
-                        with (store/str(number)/('helper.log' if monitor_mode=='Helper log' else 'session.log')).open('rb') as f:
+                        with (store/str(number)/preview_name).open('rb') as f:
                             size=f.seek(0,2);offset=max(0,size-4194304);f.seek(offset)
                             if offset:f.readline()
                             data=f.read().decode('utf-8','replace').splitlines()
                         with preview_lock:preview_lines=data
+                    except FileNotFoundError:
+                        message=('No helper log yet. Helper logging is enabled after the first helper request.'
+                                 if preview_name=='helper.log' else 'No session log yet.')
+                        with preview_lock:preview_lines=[message]
                     except OSError as exc:
                         with preview_lock:preview_lines=[str(exc)]
                     finally:preview_loading=False
