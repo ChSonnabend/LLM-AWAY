@@ -19,6 +19,17 @@ class RetryAndMenus(unittest.TestCase):
         self.assertTrue(resources.allocation_pending({'slurm_state':'CONFIGURING','host':'node'}))
         self.assertFalse(resources.allocation_pending({'slurm_state':'RUNNING','host':'node','model_state':'LOADED'}))
 
+    def test_release_falls_back_when_daemon_rejects_model_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp);data={'id':6,'token':'token','remote_port':1234,'phase':'PENDING','model':'test',
+                'config':asdict(AppConfig()),'allocation':{'active':True,'slurm_state':'PENDING','model_state':'STOPPING'}}
+            (path/'session.json').write_text(json.dumps(data))
+            with patch.object(resources,'path_for',return_value=path),patch.object(resources,'rpc') as rpc,patch.object(resources,'remote',return_value={'released':True}) as remote:
+                result=resources.release_session(6)
+            self.assertTrue(result['fallback']);rpc.assert_not_called();remote.assert_called_once()
+            saved=json.loads((path/'session.json').read_text())
+            self.assertEqual(saved['phase'],'RELEASED');self.assertFalse(saved['allocation']['active'])
+
     def test_new_generation_masks_previous_failure_and_start_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg=AppConfig();cfg=replace(cfg,backend_type='direct',remote=replace(cfg.remote,workdir=tmp),llamacpp=replace(cfg.llamacpp,container=''))

@@ -685,21 +685,40 @@ def release_session(number):
         deadline=time.monotonic()+7
         while time.monotonic()<deadline and identity(pid)==born:time.sleep(0.2)
         if identity(pid)==born:raise RuntimeError('Agent did not stop; allocation retained. Stop the agent and retry.')
-    try:rpc(path,'release')
-    except (ConnectionRefusedError,FileNotFoundError):
+    try:
+        if allocation_pending(data.get('allocation') or {}):
+            raise RuntimeError('Pending allocation has no model process; bypassing daemon model stop')
+        return rpc(path,'release')
+    except Exception as rpc_exc:
+        # Release is stronger than model stop. An old/stuck daemon may reject
+        # model shutdown even though the scheduler job can still be cancelled.
+        # Fall back to the remote release primitive for every RPC failure.
         pid=data.get('provider_pid');born=data.get('provider_identity')
         if pid and born and identity(pid)==born:
             try:os.kill(pid,signal.SIGTERM)
             except ProcessLookupError:pass
         release_error=''
         try:remote(config(data['config']),data['token'],data['remote_port'],'release')
-        except Exception as exc:
-            # The user explicitly asked to release this session and the local
-            # daemon is gone. Preserve the remote error, but do not leave a
-            # daemon-less allocation stuck in the monitor when SSH is flaky.
-            release_error=str(exc)
-        data['phase']='RELEASED';data['model']='';write(path/'session.json',data)
-        if release_error:raise RuntimeError('Remote release failed; local session released. '+release_error) from None
+        except Exception as exc:release_error=str(exc)
+        if release_error:
+            data.update(phase='RELEASE FAILED',error='Daemon release failed: '+str(rpc_exc)+'; remote cancellation failed: '+release_error)
+            write(path/'session.json',data)
+            raise RuntimeError(data['error']) from None
+        runner_path=path/'runner.json'
+        try:
+            runner=json.loads(runner_path.read_text());runner['finished']=True;write(runner_path,runner)
+            from .session_guard import stop_process
+            stop_process(data.get('pid'),runner.get('identity'))
+        except (OSError,ValueError):pass
+        latest=data
+        try:latest=json.loads((path/'session.json').read_text())
+        except (OSError,ValueError):pass
+        allocation=dict(latest.get('allocation') or {})
+        allocation.update(active=False,model_state='STOPPED')
+        latest.update(phase='RELEASED',model='',error='',allocation=allocation,
+                      provider_pid=None,provider_identity='',client_pid=None,client_identity='')
+        write(path/'session.json',latest);(path/'control.sock').unlink(missing_ok=True)
+        return {'released':True,'fallback':True}
 
 
 def submit_prompt(number, text, location=None, cli=None, cwd=None):
