@@ -22,16 +22,9 @@
   <nav class="toolbar monitoring-view" aria-label="Resource monitor tools">
     <button class="primary" id="allocate"><span>＋</span> Allocate</button>
     <button id="attach-menu" class="session-action primary">Attach…</button>
-    <span class="toolbar-divider"></span>
-    <button data-action="refresh-monitor" data-description="Remove ended allocations while preserving uncertain sessions.">Refresh res-mon</button>
-    <button data-action="cleanup" data-danger="true" data-description="Clean verified inactive logs, caches, sockets and managed connections.">Cleanup</button>
-    <span class="toolbar-divider"></span>
-    <button data-action="refresh-session" data-description="Restart the selected agent as a fresh conversation while keeping its helper relationships." class="session-action">Refresh session</button>
-    <button data-action="set-helper" data-description="Register the selected session as a helper and create its helper log." class="session-action">Set helper</button>
-    <button data-action="restart" data-description="Retry a failed or ended allocation using its current host settings." class="session-action">Restart</button>
-    <button data-action="reconnect" data-description="Repair the selected session's model SSH tunnel." class="session-action">Reconnect</button>
     <button id="release-menu" class="session-action">Release…</button>
-    <button id="open-terminal">Terminal</button>
+    <span class="toolbar-divider"></span>
+    <button id="tools-menu">Tools…</button>
   </nav>
 
   <main class="workspace monitoring-view">
@@ -72,6 +65,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
-  <script src="/app.js?v=10"></script>
+  <script src="/app.js?v=11"></script>
 </body>
 </html>

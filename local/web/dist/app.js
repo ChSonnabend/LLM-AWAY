@@ -272,6 +272,26 @@ function actionDialog(button) {
   }]);
 }
 
+function toolsDialog() {
+  const sessionId = selected?.id;
+  const run = (label, description, action, danger = false) => ({
+    label, description, danger,
+    run: () => runOperation(label, `${description}…`, '/api/actions', {action, session: sessionId, confirmed: true})
+  });
+  const options = [
+    run('Refresh res-mon', 'Remove ended allocations while preserving uncertain sessions', 'refresh-monitor'),
+    run('Cleanup', 'Clean verified inactive logs, caches, sockets and managed connections', 'cleanup', true),
+  ];
+  if (sessionId != null) options.push(
+    run('Refresh session', 'Restart the selected agent as a fresh conversation', 'refresh-session'),
+    run('Set helper', 'Register the selected session as a helper', 'set-helper'),
+    run('Restart', 'Retry the selected failed or ended allocation', 'restart'),
+    run('Reconnect', 'Repair the selected model SSH tunnel', 'reconnect'),
+  );
+  options.push({label: 'Terminal', description: 'Open the integrated command terminal.', run: () => terminalWindow('Integrated terminal')});
+  menu('Tools', options);
+}
+
 function field(label, control, help = '', full = false) {
   const wrapper = node('div', `field${full ? ' full' : ''}`);
   wrapper.append(node('label', '', label), control);
@@ -474,7 +494,7 @@ document.querySelector('[data-view="terminal"]').addEventListener('click', showP
 $('allocate').addEventListener('click', allocationDialog);
 $('attach-menu').addEventListener('click', modelDialog);
 $('release-menu').addEventListener('click', releaseDialog);
-$('open-terminal').addEventListener('click', () => terminalWindow('Integrated terminal'));
+$('tools-menu').addEventListener('click', toolsDialog);
 $('modal-close').addEventListener('click', closeDialog);
 $('modal').addEventListener('click', event => { if (event.target === $('modal')) closeDialog(); });
 window.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('modal').hidden) closeDialog(); });
