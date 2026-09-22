@@ -145,7 +145,7 @@ function renderChats(rows) {
     const status = card.querySelector('.chat-status'); status.className = `chat-status ${ready ? 'ready' : ''}`; status.textContent = ready ? 'Terminal' : row.model_state || row.phase || 'Unavailable';
     const screen = card.querySelector('.chat-terminal');
     if (!ready && !chatTerminals.has(key)) screen.textContent = 'Load the model and attach its agent to open this terminal.';
-    if (ready && !$('chats-view').hidden) ensureChatTerminal(row, screen);
+    if (ready) ensureChatTerminal(row, screen);
   }
 }
 
@@ -160,13 +160,15 @@ async function ensureChatTerminal(row, host) {
     const created = await api('/api/terminal', {method: 'POST', body: '{}'}); item.id = created.id;
     xterm.onData(data => api('/api/terminal/input', {method: 'POST', body: JSON.stringify({id: item.id, data})}).catch(error => notice(error.message, true)));
     const resize = () => { const cols = Math.max(50, Math.floor(host.clientWidth / 8.1)); const rows = 28; xterm.resize(cols, rows); api('/api/terminal/resize', {method: 'POST', body: JSON.stringify({id: item.id, cols, rows})}).catch(() => {}); };
+    item.resize = resize;
     resize();
     await api('/api/terminal/input', {method: 'POST', body: JSON.stringify({id: item.id, data: `run --session ${Number(row.id)} --resume\n`})});
-    item.poll = window.setInterval(async () => { try { const data = await api(`/api/terminal/output?id=${encodeURIComponent(item.id)}&offset=${item.offset}`); item.offset = data.offset; if (data.data) xterm.write(data.data); } catch {} }, 120);
+    item.poll = window.setInterval(async () => { try { const data = await api(`/api/terminal/output?id=${encodeURIComponent(item.id)}&offset=${item.offset}`); item.offset = data.offset; if (data.data) { xterm.write(data.data); xterm.scrollToBottom(); } } catch {} }, 120);
   } catch (error) { chatTerminals.delete(key); xterm.write(`\r\nCould not open terminal: ${error.message}\r\n`); }
 }
 
 function connectReadyChats() {
+  for (const item of chatTerminals.values()) item.resize?.();
   for (const card of $('chat-cards').children) {
     if (card.querySelector('.chat-status')?.classList.contains('ready')) ensureChatTerminal({id: card.dataset.session}, card.querySelector('.chat-terminal'));
   }
