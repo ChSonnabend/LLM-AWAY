@@ -29,6 +29,14 @@ Use the session ID returned by `res-alloc`. Exiting the agent lets you keep the
 allocation (unloading the model) or release it. Independent sessions can use
 different hosts/models. No separate init script is needed.
 
+Selecting a parent RAG folder automatically discovers compatible cached subfolder
+indexes on the RAG compute host. These are reused and refreshed for changed files;
+only uncovered files are indexed in a separate remainder cache. Search combines
+all results. An existing full-folder index takes precedence. The RAG log shows
+`REUSE` and `REMAINDER` entries. Cache databases record roots, exclusions, model,
+and format in their `rag_metadata` table; old single-folder caches are also
+recognized. Remote snapshots with different absolute paths do not share caches.
+
 RAG indexing progress is available from the web monitor's **RAG** tab and from
 **F5 Logs → RAG progress log** in `res-mon`.
 

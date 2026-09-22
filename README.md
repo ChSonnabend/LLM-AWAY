@@ -24,6 +24,13 @@ First use installs isolated dependencies and downloads a small CPU embedding mod
 persistent index under ignored `local/run/rag/`; no database service or extra GPU
 allocation is needed. Multiple sessions can reuse the index.
 
+Each selected folder (or individual file) has its own persistent index. Selecting
+different combinations reuses those indexes; one search merges ranked results
+across all selected paths. Workers share one embedding model instance and build
+folders sequentially. Searches can return partial results while another folder
+is building. Existing single-folder caches are reused; legacy combined caches
+are preserved but new workers build separate folder indexes.
+
 The agent receives a `search_project` tool returning bounded excerpts with paths
 and line numbers. Changed/deleted files are refreshed on launch and each search;
 unchanged files reuse embeddings. Python functions/classes and Markdown headings
