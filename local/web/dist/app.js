@@ -8,6 +8,7 @@ let terminalOffset = 0;
 let terminalPoll = null;
 const chatTerminals = new Map();
 let sessionsBusy = false;
+let logBusy = false;
 let dialogToken = 0;
 
 async function api(path, options = {}) {
@@ -242,14 +243,20 @@ async function loadSessions() {
 }
 
 async function loadLog() {
-  if (!selected) return;
+  if (!selected || logBusy || $('log-output').hidden || !$('chats-view').hidden) return;
+  const sessionId = selected.id;
+  const requestedLog = logName;
+  logBusy = true;
   try {
-    const data = await api(`/api/log?session=${selected.id}&name=${logName}`);
-    const label = logName === 'session' ? 'Telemetry' : logName[0].toUpperCase() + logName.slice(1);
+    const data = await api(`/api/log?session=${sessionId}&name=${requestedLog}`);
+    if (Number(selected?.id) !== Number(sessionId) || logName !== requestedLog) return;
+    const label = requestedLog === 'session' ? 'Telemetry' : requestedLog[0].toUpperCase() + requestedLog.slice(1);
     $('output-title').textContent = `${label} log`;
     $('log-path').textContent = data.path;
     $('log-output').textContent = data.content || 'No output yet.';
+    $('log-output').scrollTop = $('log-output').scrollHeight;
   } catch (error) { notice(error.message, true); }
+  finally { logBusy = false; }
 }
 
 function actionDialog(button) {
@@ -479,3 +486,4 @@ window.addEventListener('error', event => notice(event.message || 'Unexpected br
 
 loadSessions();
 window.setInterval(loadSessions, 4000);
+window.setInterval(loadLog, 1000);
