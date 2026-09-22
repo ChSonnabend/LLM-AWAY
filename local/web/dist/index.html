@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>LLM-AWAY Resource Monitor</title>
-  <link rel="icon" href="/logo" type="image/jpeg">
+  <link rel="icon" href="/favicon.jpeg?v=2" type="image/jpeg">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
-  <link rel="stylesheet" href="/styles.css?v=12">
+  <link rel="stylesheet" href="/styles.css?v=16">
 </head>
 <body>
   <header class="topbar">
@@ -39,15 +39,15 @@
     </section>
 
     <section class="panel monitor-panel">
-      <div class="panel-heading monitor-heading"><div><span class="kicker">MONITOR</span><h2 id="output-title">Telemetry log</h2></div><div class="tabs"><button class="tab active" data-log="session" data-label="Telemetry">Telemetry</button><button class="tab" data-log="helper" data-label="Helper">Helper</button><button class="tab" data-log="agent" data-label="Agent">Agent</button><button class="tab" data-view="terminal">Terminal</button></div></div>
+      <div class="panel-heading monitor-heading"><div><span class="kicker">MONITOR</span><h2 id="output-title">Telemetry log</h2></div><div class="tabs"><button class="tab active" data-log="session" data-label="Telemetry">Telemetry</button><button class="tab" data-log="model-queries" data-label="Model queries">Model queries</button><button class="tab" data-log="rag" data-label="RAG">RAG</button><button class="tab" data-log="helper" data-label="Helper">Helper</button><button class="tab" data-log="agent" data-label="Agent">Agent</button><button class="tab" data-view="terminal">Terminal</button></div></div>
       <p id="log-path">Select an allocation to view its logs.</p>
       <pre id="log-output" class="log-output"></pre>
       <div id="terminal-slot"><div id="terminal-host" hidden></div></div>
     </section>
 
     <section class="panel gpu-overview-panel">
-      <div class="panel-heading"><div><span class="kicker">LIVE HISTORY</span><h2>GPU memory and utilization</h2></div><a class="panel-link" href="/metrics.html" target="_blank">Open full dashboard ↗</a></div>
-      <iframe id="gpu-overview" class="gpu-overview-frame" src="/metrics.html?embed=1" title="GPU monitoring graphs"></iframe>
+      <div class="panel-heading"><div><span class="kicker">LIVE HISTORY</span><h2>GPU memory and utilization</h2></div><a id="metrics-link" class="panel-link" href="/metrics.html" target="_blank">Open full dashboard ↗</a></div>
+      <iframe id="gpu-overview" class="gpu-overview-frame" src="/metrics.html?embed=1&amp;v=7" title="GPU monitoring graphs"></iframe>
     </section>
   </main>
 
@@ -65,6 +65,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
-  <script src="/app.js?v=12"></script>
+  <script src="/app.js?v=14"></script>
 </body>
 </html>

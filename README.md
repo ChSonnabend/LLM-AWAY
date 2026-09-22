@@ -2,16 +2,23 @@
 
 # LLM-AWAY
 
-Optional local code/document retrieval:
+Optional code/document retrieval alongside the selected model allocation:
 
 ```sh
 run --session 2 --rag .
 run --session 2 --rag ./src --rag ./docs
 ```
 
-RAG is off unless requested. Each path may be a file or folder and is local to the
-machine running `run`. In the web Attach menu, enter multiple RAG paths separated
-by colons.
+RAG is off unless requested. **RAG compute** independently selects the local web-UI
+machine or the remote Slurm/Kubernetes/direct-SSH host and defaults to the agent's
+location. **RAG paths live on** selects Local, Remote, or Shared (`local = remote`).
+When source files and RAG compute differ, LLM-AWAY creates a per-session synchronized
+snapshot on the compute side; Shared uses the paths directly without copying. In the web
+Attach menu, enter multiple RAG paths separated by colons. The same menu can limit
+embedding CPU cores and memory, and opt into an available CoreML, CUDA or ROCm GPU provider. Initial indexing runs
+in the background; searches report that the index is still building until ready.
+The web monitor's **RAG** tab and `res-mon` **Logs → RAG progress log** show live
+scan, embedding-batch, chunk-count, ready, and failure status.
 First use installs isolated dependencies and downloads a small CPU embedding model
 (`BAAI/bge-small-en-v1.5`). SQLite keyword search and semantic embeddings share a
 persistent index under ignored `local/run/rag/`; no database service or extra GPU
@@ -25,10 +32,13 @@ provide chunk boundaries; other text uses bounded overlapping chunks.
 Git ignore rules, `.ragignore` patterns, common generated directories, symlinks,
 large/binary files and common secret filenames/content are excluded. Secret detection
 is heuristic: select only appropriate folders and add sensitive paths to `.ragignore`.
-Embeddings/indexes stay local; retrieved excerpts go to the selected inference host.
-Indexing supports code, Markdown and text (not PDF). Limits: 20,000 files, 50,000
-chunks; select narrower folders for larger projects. Use `--rag` before `--` or any
-agent prompt. Nothing is injected unless the agent invokes the search tool.
+Embeddings/indexes stay on the selected RAG-compute host; retrieved excerpts go to the
+agent and its inference model.
+Indexing supports code, Markdown and text (not PDF). Limits: 20,000 files, 250,000
+chunks. Semantic search streams vectors in bounded batches, so querying a large index
+does not load all chunks and their text into memory. Select narrower folders for still
+larger projects. Use `--rag` before `--` or any agent prompt. Nothing is injected
+unless the agent invokes the search tool.
 
 One repository for the local agent gateway and remote llama.cpp runners.
 

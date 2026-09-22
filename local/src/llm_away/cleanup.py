@@ -41,7 +41,7 @@ def add_session_items(items, path, delete_folders=False):
         items.append(('socket',path/'ssh.sock',f'Close released session {path.name} SSH control connection'))
     # Keep session.json and lock files: IDs must never be reused, locks must
     # retain their inode. Never infer ownership of arbitrary /tmp directories.
-    for name in ('session.log','agent.log','helper.log','control.sock','tool-errors','models.json','tmp'):
+    for name in ('session.log','agent.log','helper.log','model-queries.log','rag.log','rag-bridge.log','rag-bridge.json','rag-snapshot','control.sock','tool-errors','models.json','tmp'):
         target=path/name
         if target.exists() and not target.is_symlink():items.append(('file',target,f'Delete {target}'))
     for target in path.glob('serve-watch-*.json'):
@@ -85,7 +85,24 @@ def main():
     execute(items,selected)
 
 
-def execute(items,selected):
+def preview(items):
+    """Expand cleanup targets without following directory symlinks."""
+    paths=[];remote_paths={}
+    for kind,target,label in items:
+        if kind=='remote':
+            data=json.loads((target/'session.json').read_text())
+            result=remote(config(data['config']),data['token'],data['remote_port'],'cleanup-preview')
+            remote_paths[str(target)]=result['paths']
+            paths.extend(str(data.get('host','remote'))+':'+p for p in result['paths'])
+        else:
+            actual=target/'serve-registration.json' if kind=='mcp' else target/'tunnel.json' if kind=='ssh' else target
+            paths.append(str(actual.absolute()))
+            if actual.is_dir() and not actual.is_symlink():
+                paths.extend(str(p.absolute()) for p in actual.rglob('*'))
+    return {'paths':sorted(set(paths)),'remote_paths':remote_paths}
+
+
+def execute(items,selected,expected_remote=None):
     for i in selected:
         kind,target,label=items[i]
         try:
@@ -108,7 +125,8 @@ def execute(items,selected):
                         error=None
                         for _ in range(3):
                             try:
-                                result=remote(config(data['config']),data['token'],data['remote_port'],'cleanup')
+                                extra=({'expected_paths':expected_remote[str(target)]} if expected_remote is not None else {})
+                                result=remote(config(data['config']),data['token'],data['remote_port'],'cleanup',**extra)
                                 error=None;break
                             except Exception as exc:
                                 error=exc;time.sleep(1)
@@ -116,7 +134,7 @@ def execute(items,selected):
                         # local RELEASED state without the remote release file.
                         # Confirm it is inactive, mark it released remotely,
                         # then make one final ownership-checked cleanup attempt.
-                        if error and 'not explicitly released' in str(error):
+                        if error and expected_remote is None and 'not explicitly released' in str(error):
                             status=remote(config(data['config']),data['token'],data['remote_port'],'status')
                             if status.get('active'):
                                 raise RuntimeError('Remote allocation is active; preserving its state')

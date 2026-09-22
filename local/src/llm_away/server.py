@@ -50,8 +50,15 @@ class ProviderHandler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def _do_POST(self) -> None:
+        query_id=uuid.uuid4().hex[:12]
+        started=time.monotonic()
+        outcome='completed'
         try:
             payload = self.read_json()
+            if urlsplit(self.path).path in ('/v1/responses','/v1/chat/completions','/v1/messages'):
+                self.query_log({'id':query_id,'event':'request','endpoint':self.path,
+                                'model':payload.get('model',self.config.model.name),
+                                'input':payload.get('input',payload.get('messages',[]))})
             if urlsplit(self.path).path in ("/v1/messages", "/v1/messages/count_tokens"):
                 self.handle_anthropic(payload)
             elif self.path == "/v1/chat/completions":
@@ -61,11 +68,30 @@ class ProviderHandler(BaseHTTPRequestHandler):
             else:
                 self.write_json({"error": "not found"}, status=404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            outcome='client disconnected'
             raise
         except BackendError as exc:
+            outcome='backend error: '+str(exc)
             self.write_json({"error": {"message": str(exc), "type": "backend_error"}}, status=502)
         except Exception as exc:
+            outcome='error: '+str(exc)
             self.write_json({"error": {"message": str(exc), "type": "server_error"}}, status=500)
+        finally:
+            if urlsplit(self.path).path in ('/v1/responses','/v1/chat/completions','/v1/messages'):
+                self.query_log({'id':query_id,'event':outcome,'elapsed_seconds':round(time.monotonic()-started,3)})
+
+    def query_log(self,record):
+        directory=os.environ.get('LLM_SESSION_DIR')
+        if not directory:return
+        try:
+            path=Path(directory)/'model-queries.log'
+            data=(time.strftime('%Y-%m-%d %H:%M:%S | ')+json.dumps(record,ensure_ascii=True)+'\n').encode()
+            with os.fdopen(os.open(path,os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600),'ab') as stream:
+                import fcntl
+                fcntl.flock(stream,fcntl.LOCK_EX)
+                stream.write(data)
+        except OSError as exc:
+            print('Model query log unavailable: '+str(exc),file=sys.stderr)
 
     def handle_anthropic(self, payload: dict) -> None:
         """Preserve native Anthropic tool blocks and SSE from llama.cpp."""

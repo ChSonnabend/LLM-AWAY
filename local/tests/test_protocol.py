@@ -15,6 +15,23 @@ from llm_away.protocol import (
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_namespaced_rag_tool_round_trip(self):
+        from llm_away.protocol import native_tool_definitions
+        tools=[{'type':'namespace','name':'mcp__project_search','tools':[
+            {'type':'function','name':'search_project','parameters':{
+                'type':'object','properties':{'query':{'type':'string'}},'required':['query']}}]}]
+        native=native_tool_definitions(tools)
+        self.assertEqual(native[0]['function']['name'],'mcp__project_search__search_project')
+        self.assertEqual(native[0]['function']['parameters']['required'],['query'])
+        text='<tool_call>'+json.dumps({'name':'mcp__project_search__search_project','arguments':{'query':'RAG setup'}})+'</tool_call>'
+        response=response_object('model',text,tools=tools)
+        call=response['output'][0]
+        self.assertEqual((call['namespace'],call['name']),('mcp__project_search','search_project'))
+        messages=responses_request_to_messages({'input':[call]},native=True)
+        self.assertEqual(messages[-1]['tool_calls'][0]['function']['name'],'mcp__project_search__search_project')
+        with self.assertRaisesRegex(ValueError,'Missing required'):
+            response_object('model','<tool_call>{"name":"mcp__project_search","arguments":{}}</tool_call>',tools=tools)
+
     def test_glm_native_tool_markup(self):
         tools=[{'name':'exec_command','parameters':{'required':['cmd']}}]
         result=response_object('model','<tool_call>exec_command\n<arg_key>cmd</arg_key><arg_value>printf "hello"</arg_value></tool_call>',tools=tools)
@@ -209,6 +226,15 @@ class ProtocolTests(unittest.TestCase):
 
         self.assertEqual(output["name"], "exec_command")
         self.assertEqual(json.loads(output["arguments"]), {"cmd": "sed -n '1,240p' -- README.md"})
+
+    def test_response_object_resolves_unique_mcp_server_shorthand(self):
+        response=response_object(
+            "qwen",
+            '<tool_call>{"name":"mcp__project_search","arguments":{"query":"TPC PID"}}</tool_call>',
+            tools=[{"type":"function","name":"mcp__project_search__search_project",
+                    "parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}],
+        )
+        self.assertEqual(response["output"][0]["name"],"mcp__project_search__search_project")
 
     def test_responses_prompt_includes_function_outputs(self):
         prompt = responses_input_to_prompt(

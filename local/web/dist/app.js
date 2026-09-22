@@ -146,7 +146,7 @@ function renderChats(rows) {
     const screen = card.querySelector('.chat-terminal');
     if (!ready && chatTerminals.has(key)) closeChatTerminal(key, screen);
     else if (!ready) screen.textContent = 'Load the model and attach its agent to open this terminal.';
-    if (ready) ensureChatTerminal(row, screen);
+    if (ready && !$('chats-view').hidden) ensureChatTerminal(row, screen);
   }
 }
 
@@ -155,6 +155,7 @@ function closeChatTerminal(key, host) {
   if (!item) return;
   chatTerminals.delete(key);
   if (item.poll) window.clearInterval(item.poll);
+  item.observer?.disconnect();
   if (item.id) fetch(`/api/terminal?id=${encodeURIComponent(item.id)}`, {method: 'DELETE'}).catch(() => {});
   item.terminal.dispose();
   host.textContent = 'Load the model and attach its agent to open this terminal.';
@@ -170,19 +171,27 @@ async function ensureChatTerminal(row, host) {
   try {
     const created = await api('/api/terminal', {method: 'POST', body: '{}'}); item.id = created.id;
     xterm.onData(data => api('/api/terminal/input', {method: 'POST', body: JSON.stringify({id: item.id, data})}).catch(error => notice(error.message, true)));
-    const resize = () => { const cols = Math.max(50, Math.floor(host.clientWidth / 8.1)); const rows = 28; xterm.resize(cols, rows); api('/api/terminal/resize', {method: 'POST', body: JSON.stringify({id: item.id, cols, rows})}).catch(() => {}); };
+    const resize = () => {
+      if (!host.clientWidth) return;
+      const cols = Math.max(50, Math.floor(host.clientWidth / 8.1)); const rows = 28;
+      if (xterm.cols === cols && xterm.rows === rows) return;
+      xterm.resize(cols, rows); api('/api/terminal/resize', {method: 'POST', body: JSON.stringify({id: item.id, cols, rows})}).catch(() => {});
+    };
     item.resize = resize;
-    resize();
+    item.observer = new ResizeObserver(() => window.requestAnimationFrame(resize)); item.observer.observe(host);
+    window.requestAnimationFrame(resize);
     await api('/api/terminal/input', {method: 'POST', body: JSON.stringify({id: item.id, data: `run --session ${Number(row.id)} --resume\n`})});
     item.poll = window.setInterval(async () => { try { const data = await api(`/api/terminal/output?id=${encodeURIComponent(item.id)}&offset=${item.offset}`); item.offset = data.offset; if (data.data) { xterm.write(data.data); xterm.scrollToBottom(); } } catch {} }, 120);
   } catch (error) { chatTerminals.delete(key); xterm.write(`\r\nCould not open terminal: ${error.message}\r\n`); }
 }
 
 function connectReadyChats() {
-  for (const item of chatTerminals.values()) item.resize?.();
-  for (const card of $('chat-cards').children) {
-    if (card.querySelector('.chat-status')?.classList.contains('ready')) ensureChatTerminal({id: card.dataset.session}, card.querySelector('.chat-terminal'));
-  }
+  window.requestAnimationFrame(() => {
+    for (const item of chatTerminals.values()) item.resize?.();
+    for (const card of $('chat-cards').children) {
+      if (card.querySelector('.chat-status')?.classList.contains('ready')) ensureChatTerminal({id: card.dataset.session}, card.querySelector('.chat-terminal'));
+    }
+  });
 }
 
 function selectSession(row, refreshLog = true) {
@@ -191,6 +200,7 @@ function selectSession(row, refreshLog = true) {
   $('selected-name').textContent = `Session ${row.id}`;
   renderDetails(row);
   document.querySelectorAll('.session-action').forEach(button => button.disabled = false);
+  $('metrics-link').href = `/metrics.html?session=${encodeURIComponent(row.id)}`;
   $('gpu-overview').contentWindow?.postMessage({type: 'select-session', session: String(row.id)}, window.location.origin);
   if (refreshLog && $('modal').hidden && $('terminal-host').hidden) loadLog();
 }
@@ -263,7 +273,7 @@ async function loadLog() {
   try {
     const data = await api(`/api/log?session=${sessionId}&name=${requestedLog}`);
     if (Number(selected?.id) !== Number(sessionId) || logName !== requestedLog) return;
-    const label = requestedLog === 'session' ? 'Telemetry' : requestedLog[0].toUpperCase() + requestedLog.slice(1);
+    const label = requestedLog === 'model-queries' ? 'Model queries' : requestedLog === 'session' ? 'Telemetry' : requestedLog[0].toUpperCase() + requestedLog.slice(1);
     $('output-title').textContent = `${label} log`;
     $('log-path').textContent = data.path;
     const output = $('log-output');
@@ -294,7 +304,7 @@ function toolsDialog() {
   });
   const options = [
     run('Refresh res-mon', 'Remove ended allocations while preserving uncertain sessions', 'refresh-monitor'),
-    run('Cleanup', 'Clean verified inactive logs, caches, sockets and managed connections', 'cleanup', true),
+    {label:'Cleanup', description:'Review every cleanup path before confirming.', danger:true, run:cleanupDialog},
   ];
   if (sessionId != null) options.push(
     run('Refresh session', 'Restart the selected agent as a fresh conversation', 'refresh-session'),
@@ -304,6 +314,26 @@ function toolsDialog() {
   );
   options.push({label: 'Terminal', description: 'Open the integrated command terminal.', run: () => terminalWindow('Integrated terminal')});
   menu('Tools', options);
+}
+
+async function cleanupDialog() {
+  const content=node('div','form','Collecting cleanup paths…');
+  const token=openDialog('Review cleanup',content);
+  try {
+    const plan=await api('/api/cleanup-preview');
+    if(token!==dialogToken)return;
+    content.replaceChildren(node('p','',`${plan.paths.length} paths. Directories and their contents are listed below. Remote paths are prefixed with their host.`));
+    const list=node('pre','cleanup-paths',plan.paths.join('\n') || 'No safely identifiable leftovers.');
+    list.tabIndex=0;content.append(list);
+    content.append(node('p','',plan.actions.join('\n')));
+    const actions=node('div','form-actions');
+    const cancel=node('button','','Cancel');cancel.onclick=closeDialog;
+    const confirm=node('button','danger','Acknowledge and clean listed files');
+    confirm.disabled=!plan.paths.length;
+    confirm.onclick=()=>runOperation('Cleanup','Cleaning the reviewed paths…','/api/actions',
+      {action:'cleanup',confirmed:true,preview_token:plan.token});
+    actions.append(cancel,confirm);content.append(actions);
+  } catch(error) { if(token===dialogToken)content.textContent=`Unable to preview cleanup: ${error.message}. Nothing was deleted.`; }
 }
 
 function field(label, control, help = '', full = false) {
@@ -394,12 +424,32 @@ async function modelDialog() {
     const modelOptions = data.models.map(model => ({value: model.name, label: `${model.alias || model.name} · ${(model.size_bytes / 1073741824).toFixed(1)} GiB`}));
     const model = selectControl(modelOptions, data.models.find(item => item.alias === data.current || item.name === data.current)?.name || data.models[0]?.name || '');
     const mtp = selectControl(['auto', 'on', 'off'], 'auto');
-    const location = selectControl(['local', 'remote'], 'local');
-    const cli = selectControl(['auto', 'codex', 'claude'], 'auto');
-    const workdir = inputControl(''); workdir.placeholder = 'Default project directory';
-    const rag = inputControl(''); rag.placeholder = '/path/to/src:/path/to/README.md';
+    const location = selectControl(['local', 'remote'], data.agent_location || 'local');
+    const cli = selectControl(['auto', 'codex', 'claude'], data.agent_cli || 'auto');
+    const workdir = inputControl(data.agent_workdir || ''); workdir.placeholder = 'Default project directory';
+    const rag = inputControl(data.rag || ''); rag.placeholder = '/path/to/src:/path/to/README.md';
+    const ragThreads = inputControl(String(data.rag_threads || 2), 'number'); ragThreads.min = '1'; ragThreads.step = '1';
+    const ragMemory = inputControl(String(data.rag_memory_gb || 0), 'number'); ragMemory.min = '0'; ragMemory.step = '0.5';
+    const ragGpu = selectControl(['no', 'yes'], data.rag_gpu ? 'yes' : 'no');
+    const ragCompute = selectControl(['local', 'remote'], data.rag_compute || data.agent_location || 'local');
+    const ragPathsLocation = selectControl([{value: 'local', label: 'Local paths'}, {value: 'remote', label: 'Remote paths'}, {value: 'shared', label: 'Shared: local = remote'}], data.rag_paths_location || data.agent_location || 'local');
     const server = inputControl(data.server_options_by_model?.[model.value] || '');
-    grid.append(field('Model', model, '', true), field('MTP', mtp), field('Agent location', location), field('Agent CLI', cli), field('Agent work directory', workdir), field('RAG', rag, 'Colon-separated local folder or file paths.', true), field('Model server options', server, 'Batch, context and backend arguments.', true));
+    grid.append(field('Model', model, '', true), field('MTP', mtp), field('Agent location', location), field('Agent CLI', cli), field('Agent work directory', workdir), field('RAG', rag, 'Colon-separated source paths.', true), field('RAG compute', ragCompute, 'Where the embedding model and vector index run.'), field('RAG paths live on', ragPathsLocation, 'Different hosts are synchronized to a per-session snapshot.', true), field('RAG CPU cores', ragThreads, 'Embedding threads on the RAG compute host.'), field('RAG memory (GiB)', ragMemory, 'Hard limit on the RAG compute host; 0 means unlimited.'), field('RAG GPU', ragGpu, 'Uses an available GPU on the RAG compute host.'), field('Model server options', server, 'Batch, context and backend arguments.', true));
+    function updateRagLocation() {
+      const remote = location.value === 'remote';
+      workdir.placeholder = remote ? 'Absolute directory on the remote host' : 'Default local project directory';
+      if (!data.rag_compute) ragCompute.value = location.value;
+      if (!data.rag_paths_location) ragPathsLocation.value = location.value;
+      updateRagPaths();
+    }
+    function updateRagPaths() {
+      const source = ragPathsLocation.value;
+      rag.placeholder = source === 'local' ? '/Users/me/project/src:/Users/me/project/README.md' : source === 'remote' ? '/remote/project/src:/remote/project/docs' : '/shared/project/src:/shared/project/docs';
+      rag.closest('.field').querySelector('small').textContent = source === ragCompute.value || source === 'shared'
+        ? 'Paths are read directly; no snapshot copy is needed.'
+        : `Paths are synchronized once from ${source} storage to ${ragCompute.value} RAG compute.`;
+    }
+    location.addEventListener('change', updateRagLocation);ragCompute.addEventListener('change',updateRagPaths);ragPathsLocation.addEventListener('change',updateRagPaths);updateRagLocation();
     model.addEventListener('change', () => { server.value = data.server_options_by_model?.[model.value] || ''; });
     form.append(grid);
     let replaceLoaded = null;
@@ -416,7 +466,7 @@ async function modelDialog() {
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (replaceLoaded && !replaceLoaded.checked) { notice('Acknowledge model replacement before loading the new configuration.', true); return; }
-      runOperation(`Start session ${sessionId}`, 'Loading the model and preparing the retained agent terminal…', '/api/load', {session: sessionId, settings: {model: model.value, mtp: mtp.value, agent_location: location.value, cli: cli.value, agent_workdir: workdir.value, rag: rag.value, replace_loaded: Boolean(replaceLoaded?.checked), server_options: server.value}}, true);
+      runOperation(`Start session ${sessionId}`, 'Loading the model and preparing the retained agent terminal…', '/api/load', {session: sessionId, settings: {model: model.value, mtp: mtp.value, agent_location: location.value, cli: cli.value, agent_workdir: workdir.value, rag: rag.value, rag_compute: ragCompute.value, rag_paths_location: ragPathsLocation.value, rag_threads: ragThreads.value, rag_memory_gb: ragMemory.value, rag_gpu: ragGpu.value, replace_loaded: Boolean(replaceLoaded?.checked), server_options: server.value}}, true);
     });
     openDialog(`Attach session ${sessionId}`, form);
   } catch (error) {

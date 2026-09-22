@@ -49,6 +49,25 @@ class LoadingTests(unittest.TestCase):
             self.assertEqual(spec['model'],'test')
             self.assertFalse((path/'attachment.json').exists())
 
+    def test_local_agent_bridges_rag_into_scheduled_allocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp);cfg=AppConfig();data={'config':asdict(cfg),'token':'test','remote_port':1,'model':'test'}
+            (path/'session.json').write_text(json.dumps(data))
+            rag={'paths':['/remote/project'],'threads':4,'memory_gb':8,'gpu':False,
+                 'compute':'remote','paths_location':'shared'}
+            spec={'loading':{'config':asdict(cfg),'model':{'alias':'test'},'reuse':True,'mtp':'off'},
+                  'target_location':'local','rag_config':rag}
+            response=MagicMock();response.__enter__.return_value.status=200
+            status={'allocation':{'active':True,'job_id':'42','host':'node1'}}
+            with patch.object(loading,'urlopen',return_value=response), \
+                 patch.object(resources,'identity',return_value='live'), \
+                 patch.object(resources,'rpc',return_value=status), \
+                 patch('llm_away.terminals.remote_rag_command',return_value=['ssh','remote-rag']) as bridge:
+                self.assertFalse(loading.prepare(path,spec))
+            self.assertEqual(spec['rag_command'],['ssh','remote-rag'])
+            bridge.assert_called_once_with(cfg,status['allocation'],
+                                           {'paths':['/remote/project'],'threads':4,'memory_gb':8,'gpu':False},'test')
+
     def test_failed_backend_cleans_loading_attachment(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp);spec={'loading':{'config':asdict(AppConfig()),'model':{'alias':'test'},'reuse':True,'mtp':'off'}}
@@ -61,12 +80,17 @@ class LoadingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp);cfg=AppConfig();data={'config':asdict(cfg),'token':'test','remote_port':1,'model':'test'}
             (path/'session.json').write_text(json.dumps(data))
-            spec={'loading':{'config':asdict(cfg),'model':{'alias':'test'},'reuse':True,'mtp':'off'},'target_location':'remote','cli':'auto','location':'local','cwd':''}
+            rag_config={'paths':['/remote/project'],'threads':8,'memory_gb':12,'gpu':True,
+                        'compute':'local','paths_location':'shared'}
+            spec={'loading':{'config':asdict(cfg),'model':{'alias':'test'},'reuse':True,'mtp':'off'},'target_location':'remote','cli':'auto','location':'local','cwd':'','rag_config':rag_config,'rag_command':['python','local-rag.py']}
             (path/'agent-selection.json').write_text(json.dumps(spec))
             response=MagicMock();response.__enter__.return_value.status=200
-            with patch.object(loading,'urlopen',return_value=response),patch.object(resources,'identity',return_value='live'),patch.object(resources,'remote',return_value={'clis':['codex']}),patch('llm_away.agents.choose_cli',return_value='codex'),patch('llm_away.terminals.ensure') as ensure,patch('llm_away.terminals.attach') as attach:
+            with patch.object(loading,'urlopen',return_value=response),patch.object(resources,'identity',return_value='live'),patch.object(resources,'rpc',return_value={'allocation':{'job_id':'42','host':'node'}}),patch.object(resources,'remote',return_value={'clis':['codex']}),patch('llm_away.rag.prepare',return_value=['python','local-rag.py']),patch('llm_away.agents.choose_cli',return_value='codex'),patch('llm_away.terminals.local_rag_for_remote_agent',return_value=['resource-terminal','rag-socket-client','socket']) as bridge,patch('llm_away.terminals.ensure') as ensure,patch('llm_away.terminals.attach') as attach:
                 self.assertTrue(loading.prepare(path,spec))
             self.assertEqual(ensure.call_args.args[2]['location'],'remote')
+            self.assertIsNone(ensure.call_args.args[2]['rag_config'])
+            self.assertEqual(ensure.call_args.args[2]['rag_command'],['resource-terminal','rag-socket-client','socket'])
+            bridge.assert_called_once()
             self.assertNotIn('loading',ensure.call_args.args[2])
             attach.assert_called_once()
 

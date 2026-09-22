@@ -10,8 +10,25 @@ from llm_away import webapp
 
 
 class WebAppTests(unittest.TestCase):
+    def test_cleanup_requires_preview_and_rejects_changed_paths(self):
+        with self.assertRaisesRegex(ValueError,'preview expired'):
+            webapp.cleanup_released('unknown')
+        with patch.object(webapp,'cleanup_items',return_value=[]),patch.object(webapp.cleanup,'preview',return_value={'paths':['/tmp/example'],'remote_paths':{}}):
+            plan=webapp.cleanup_preview()
+        with patch.object(webapp.cleanup,'preview',return_value={'paths':['/tmp/example','/tmp/new'],'remote_paths':{}}),patch.object(webapp.cleanup,'execute') as execute:
+            with self.assertRaisesRegex(ValueError,'changed'):
+                webapp.cleanup_released(plan['token'])
+            execute.assert_not_called()
+
+    def test_project_logo_is_used_for_the_favicon(self):
+        self.assertTrue(webapp.LOGO_PATH.is_file())
+        self.assertEqual(webapp.LOGO_PATH.name,'llm-away-logo.jpeg')
+        self.assertIn('/favicon.jpeg?v=2',(webapp.WEB_ROOT/'index.html').read_text())
+
     def test_load_browser_model_passes_colon_separated_rag_paths(self):
         settings={'model':'model','rag':f' ~/project/src {os.pathsep}/tmp/README.md{os.pathsep} ',
+                  'rag_threads':'6','rag_memory_gb':'12.5','rag_gpu':'yes',
+                  'rag_compute':'remote','rag_paths_location':'local',
                   'server_options':''}
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp);(path/'session.json').write_text(json.dumps({'model':'','allocation':{}}))
@@ -19,6 +36,10 @@ class WebAppTests(unittest.TestCase):
                 webapp.load_browser_model(4,settings)
         args=run.call_args.args[0]
         self.assertEqual(args.rag,['~/project/src','/tmp/README.md'])
+        self.assertEqual(args.rag_threads,6)
+        self.assertEqual(args.rag_memory_gb,12.5)
+        self.assertTrue(args.rag_gpu)
+        self.assertEqual((args.rag_compute,args.rag_paths_location),('remote','local'))
 
     def test_load_browser_model_replaces_loaded_model_after_acknowledgement(self):
         settings={'model':'new-model','replace_loaded':True,'server_options':''}

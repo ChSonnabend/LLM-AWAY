@@ -13,6 +13,30 @@ from pathlib import Path
 _active_window = None
 _shell_mode = None
 
+
+def cleanup_confirm(paths):
+    def screen(win):
+        offset=0
+        win.keypad(True);win.timeout(-1)
+        while True:
+            height,width=win.getmaxyx();win.erase()
+            lines=[line for path in paths for line in textwrap.wrap(path,max(1,width-3)) or ['']]
+            count=max(1,height-4);offset=min(offset,max(0,len(lines)-count))
+            def put(y,text):
+                try:win.addnstr(y,0,text,max(1,width-1))
+                except curses.error:pass
+            put(0,'Review cleanup: '+str(len(paths))+' absolute paths')
+            for i,line in enumerate(lines[offset:offset+count],2):put(i,line)
+            put(height-1,'Up/Down PgUp/PgDn: scroll | Y: acknowledge cleanup | Esc/N: cancel')
+            win.refresh();key=win.getch()
+            if key in (ord('y'),ord('Y')):return True
+            if key in (27,ord('n'),ord('N'),ord('q')):return False
+            if key==curses.KEY_DOWN:offset+=1
+            if key==curses.KEY_UP:offset=max(0,offset-1)
+            if key==curses.KEY_NPAGE:offset+=count
+            if key==curses.KEY_PPAGE:offset=max(0,offset-count)
+    return _terminal_screen(screen)
+
 def _terminal_screen(screen):
     """Restore the actual entry TTY mode, including output newline translation.
 
@@ -92,7 +116,7 @@ def snapshots(store):
             selection=path.parent/'agent-selection.json'
             selection_data=json.loads(selection.read_text()) if selection.exists() else {}
             data['agent_location']=selection_data.get('location','local')
-            data['rag_enabled']=bool(selection_data.get('rag_command'))
+            data['rag_enabled']=bool(selection_data.get('rag_command') or selection_data.get('rag_config'))
             if selection.exists():
                 try:
                     loading=selection_data.get('loading')
@@ -377,7 +401,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
         tools_open=False
         menu=None;menu_index=0
         menus={
-            'logs':['Session telemetry log','Helper log'],
+            'logs':['Session telemetry log','RAG progress log','Helper log','Model queries'],
             'release':['Unload model — keep resources','Reload a different model','Release resources — kill job'],
             'monitor':['Agent reply terminal','Telemetry logs','Helper log','Resource monitor','Model loading options'],
             'allocate':['Run res-alloc (allocate new resources)','Allocate a model to selected resource'],
@@ -399,7 +423,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
             if current=='logs':
                 if selected is None:message='No allocation selected.'
                 else:
-                    log_name='helper.log' if index==1 else 'session.log'
+                    log_name=('session.log','rag.log','helper.log','model-queries.log')[index]
                     log_id=selected;log_top=None;last=0
             elif current=='monitor':
                 monitor_mode=menus['monitor'][index];preview_id=None;preview_scroll=0;last=0
@@ -437,8 +461,14 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                             if offset:f.readline()
                             log_lines=f.read().decode('utf-8','replace').splitlines()
                     except FileNotFoundError:
-                        log_lines=(['No helper log yet. Helper logging may be disabled, or no query has run.']
-                                   if log_name=='helper.log' else ['No session log yet.'])
+                        remote_rag=''
+                        if log_name=='rag.log':
+                            try:remote_rag=json.loads((store/str(log_id)/'session.json').read_text()).get('allocation',{}).get('rag_log','')
+                            except (OSError,ValueError):pass
+                        log_lines=(remote_rag.splitlines() if remote_rag else
+                                   ['No helper log yet. Helper logging may be disabled, or no query has run.']
+                                   if log_name=='helper.log' else ['No RAG progress log yet. Start a session with RAG enabled.']
+                                   if log_name=='rag.log' else ['No session log yet.'])
                     except OSError as exc:log_lines=[str(exc)]
                 def load_preview(number):
                     nonlocal preview_loading,preview_lines
@@ -475,7 +505,8 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 put(0,'Enlarge terminal (minimum 45 columns × 10 rows).')
                 put(h-1,'q / Esc: Exit' if not pending else 'Release in progress…')
             elif log_id is not None:
-                log_title='helper log' if log_name=='helper.log' else 'allocation / provider traffic log'
+                log_title=('helper log' if log_name=='helper.log' else 'RAG progress log' if log_name=='rag.log'
+                           else 'Model queries' if log_name=='model-queries.log' else 'allocation / provider traffic log')
                 put(0,f' SESSION {log_id} — live {log_title}',curses.A_BOLD|color(1))
                 put(1,str(store/str(log_id)/log_name),color(3))
                 visible=wrapped_log_lines()

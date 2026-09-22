@@ -75,7 +75,8 @@ print('FIRST\\nSECOND',flush=True)
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)
             (path/'session.json').write_text('{}')
-            (path/'agent-selection.json').write_text(json.dumps({'location':'local','cli':'claude','cwd':tmp}))
+            rag={'paths':['/remote/project'],'threads':7,'memory_gb':9,'gpu':True,'compute':'local','paths_location':'remote'}
+            (path/'agent-selection.json').write_text(json.dumps({'location':'local','target_location':'remote','cli':'claude','cwd':tmp,'rag_config':rag}))
             with patch.object(resources,'path_for',return_value=path), patch('llm_away.terminals.engine',return_value={'alive':lambda p:False}), patch.object(resources,'run_agent') as run:
                 resources.refresh_session(1)
                 args=run.call_args.args[0]
@@ -83,6 +84,10 @@ print('FIRST\\nSECOND',flush=True)
                 self.assertTrue(args.detach)
                 self.assertEqual(args.cli,'claude')
                 self.assertEqual(args.agent_workdir,tmp)
+                self.assertEqual(args.agent_location,'remote')
+                self.assertEqual(args.rag,rag['paths'])
+                self.assertEqual((args.rag_threads,args.rag_memory_gb,args.rag_gpu),(7,9,True))
+                self.assertEqual((args.rag_compute,args.rag_paths_location),('local','remote'))
 
     def test_helper_rejects_self_accepts_others(self):
         with patch.object(helper_relations,'master_session',return_value={'id':1}):

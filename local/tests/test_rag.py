@@ -2,7 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from llm_away.rag import roots_for
+from unittest.mock import Mock
+
+from llm_away.rag import Index, roots_for
 
 
 class RagPathTests(unittest.TestCase):
@@ -20,6 +22,13 @@ class RagPathTests(unittest.TestCase):
     def test_rejects_missing_path(self):
         with self.assertRaisesRegex(ValueError,'files or directories'):
             roots_for(['/definitely/not/a/real/rag/path'])
+
+    def test_search_logs_the_exact_query_before_retrieval(self):
+        index=Index.__new__(Index);index.report=Mock()
+        index.refresh=Mock(side_effect=RuntimeError('stop after log'))
+        with self.assertRaisesRegex(RuntimeError,'stop after log'):
+            index.search('first line\nsecond line')
+        index.report.assert_called_once_with('QUERY | message "first line\\nsecond line"')
 
 
 if __name__=='__main__':unittest.main()

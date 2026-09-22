@@ -18,7 +18,9 @@ res-mon --list
 run --session 2                      # Choose model and start the agent
 run --session 2 --model glm-5.3-flash-q4 --mtp on
 run --session 2 --detach             # Load and open the agent in background tmux
-run --session 2 --rag .              # Optional local file/folder retrieval
+run --session 2 --rag /remote/project # Retrieval inside the model allocation
+run --session 2 --rag . --rag-threads 8 --rag-memory-gb 12 --rag-gpu
+run --session 2 --agent-location remote --agent-workdir /remote/project --rag /remote/project
 res-mon --logs 2                     # Ctrl+C only closes the log viewer
 res-mon --kill 2 --release
 ```
@@ -26,6 +28,9 @@ res-mon --kill 2 --release
 Use the session ID returned by `res-alloc`. Exiting the agent lets you keep the
 allocation (unloading the model) or release it. Independent sessions can use
 different hosts/models. No separate init script is needed.
+
+RAG indexing progress is available from the web monitor's **RAG** tab and from
+**F5 Logs → RAG progress log** in `res-mon`.
 
 `run --session 2` starts model loading inside a retained tmux terminal, then
 opens the CLI automatically when ready. Press **Ctrl+B, D** to detach during
@@ -50,7 +55,10 @@ rejected even if GPU memory is available. Create another allocation for concurre
 agents; sharing one allocation between multiple models is not implemented.
 
 Requires Python 3.10+, Bash, OpenSSH and Codex CLI. Add `~/.local/bin` to PATH.
-RAG installs its own optional dependencies and runs embeddings locally on CPU.
+RAG compute is independently selectable as local or remote and defaults to the
+agent's location. RAG source paths can be local, remote, or shared (`local = remote`).
+Cross-host combinations create a per-session snapshot on the compute side; shared
+paths skip copying. A reverse MCP bridge connects remote agents to local RAG compute.
 
 ## Settings
 

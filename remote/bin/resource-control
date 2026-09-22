@@ -11,18 +11,18 @@ root=Path(c['remote']['workdir']).resolve()
 resource_base=c['remote'].get('resource_state_dir', '')
 if resource_base:
     base=Path(os.path.expandvars(resource_base)).expanduser().resolve()
-    if action != 'cleanup': base.mkdir(parents=True,exist_ok=True,mode=0o700)
+    if action not in ('cleanup','cleanup-preview'): base.mkdir(parents=True,exist_ok=True,mode=0o700)
     if base.exists() and base.stat().st_uid != os.getuid():
         raise ValueError('Resource state directory must belong to the current user: '+str(base))
     state=base/'resources'/token
 else:
     # Existing allocations must remain addressable after updating the scripts.
     state=root/'.state'/'resources'/token
-if action == 'cleanup':
+if action in ('cleanup','cleanup-preview'):
     if state.is_symlink() or state.parent.is_symlink():
         raise ValueError('Refusing symlinked resource state')
     if not state.exists():
-        print(json.dumps({'cleaned':True,'already_missing':True})); sys.exit(0)
+        print(json.dumps({'cleaned':True,'already_missing':True,'paths':[]})); sys.exit(0)
     if state.stat().st_uid != os.getuid():
         raise ValueError('Resource state belongs to another user')
 else:
@@ -104,6 +104,10 @@ def status():
     if telemetry.exists():
         try:s['gpu_telemetry']=json.loads(telemetry.read_text())
         except (OSError,ValueError):pass
+    rag_log=state/'rag.log'
+    if rag_log.exists():
+        try:s['rag_log']=rag_log.read_text(errors='replace')[-262144:]
+        except OSError:pass
     latest=state/'prompt-latest'
     if latest.exists():
         prompt_id=latest.read_text().strip()
@@ -234,7 +238,9 @@ with open(lock_dir/(token+'.lock'),'a') as lock:
         if current.get('prompt',{}).get('status') in ('QUEUED','RUNNING'):raise ValueError('Wait for the legacy background task to finish')
         spec=p['spec']
         if spec.get('cli') not in ready.get('clis',[]):raise ValueError('Selected CLI unavailable on compute host')
-        spec.update(token=token,port=int(p['port']))
+        # The terminal worker receives the backend identity so resource-bound
+        # features can refuse to run on a login/control host by mistake.
+        spec.update(token=token,port=int(p['port']),allocation_kind=kind)
         write(state/'terminal-status.json',json.dumps({'status':'STARTING'}))
         write(state/'terminal-launch.json',json.dumps(spec))
         result={'starting':True}
@@ -270,7 +276,7 @@ with open(lock_dir/(token+'.lock'),'a') as lock:
         write(queue/(prompt_id+'.json'),json.dumps(request))
         write(state/'prompt-latest',prompt_id)
         result={'id':prompt_id,'status':'QUEUED'}
-    elif action=='cleanup':
+    elif action in ('cleanup','cleanup-preview'):
         if not (state/'release').is_file() or not meta.is_file():
             raise ValueError('Keep remote state: allocation is not explicitly released')
         if status()['active']:
@@ -284,8 +290,14 @@ with open(lock_dir/(token+'.lock'),'a') as lock:
                 try: os.kill(int(pid),0)
                 except ProcessLookupError: pass
                 else: raise ValueError('Keep remote state: worker PID is still alive')
-        shutil.rmtree(str(state))
-        result={'cleaned':True}
+        paths=sorted([str(state)]+[str(path) for path in state.rglob('*')])
+        if action=='cleanup-preview':
+            result={'paths':paths}
+        else:
+            if 'expected_paths' in p and paths!=p['expected_paths']:
+                raise ValueError('Remote files changed since preview; review cleanup again')
+            shutil.rmtree(str(state))
+            result={'cleaned':True}
     elif action=='log':
         path=state/'model.log'; offset=int(p.get('offset',0))
         data=b''

@@ -103,13 +103,29 @@ def tool_name(tool: dict) -> str:
     return ""
 
 
+def flatten_tools(tools) -> list[dict]:
+    """Expose namespace members to backends that only support flat functions."""
+    result = []
+    for tool in tools or []:
+        if tool.get('type') == 'namespace':
+            namespace = tool['name']
+            for member in flatten_tools(tool.get('tools', [])):
+                name = tool_name(member)
+                result.append({**member, 'name': namespace + '__' + name,
+                               '_namespace': namespace, '_member_name': name})
+        else:
+            result.append(tool)
+    return result
+
+
 def available_tool_names(tools) -> set[str]:
     if not isinstance(tools, list):
         return set()
-    return {name for tool in tools if (name := tool_name(tool))}
+    return {name for tool in flatten_tools(tools) if (name := tool_name(tool))}
 
 
 def tools_to_prompt(tools) -> str:
+    tools = flatten_tools(tools)
     lines = [
         "Tool calling:",
         "When a requested step needs a tool, issue the actual tool call in the same response. Do not end a turn with only an announcement such as Let me check or I will run. Continue authorized steps until complete, blocked, or genuinely missing user information; do not wait for go ahead.",
@@ -160,7 +176,7 @@ def responses_request_to_prompt(payload: dict) -> str:
 
 def native_tool_definitions(tools) -> list[dict]:
     result=[]
-    for tool in tools or []:
+    for tool in flatten_tools(tools):
         name=tool_name(tool)
         if not name: continue
         definition=tool.get('function',tool)
@@ -195,12 +211,15 @@ def responses_request_to_messages(payload: dict, native: bool = False) -> list[d
             content = content_to_text(item.get("content", item.get("text", "")))
         elif kind in {"function_call", "custom_tool_call"}:
             role = "assistant"
+            name = item.get('name', '')
+            if item.get('namespace'):
+                name = item['namespace'] + '__' + name
             arguments = ({"input": item.get("input", "")} if kind == "custom_tool_call"
                          else normalize_tool_arguments(item.get("arguments", {})))
             if native:
-                messages.append({'role':'assistant','content':'','tool_calls':[{'id':item.get('call_id',item.get('id','call_unknown')),'type':'function','function':{'name':item.get('name',''),'arguments':json.dumps(arguments)}}]})
+                messages.append({'role':'assistant','content':'','tool_calls':[{'id':item.get('call_id',item.get('id','call_unknown')),'type':'function','function':{'name':name,'arguments':json.dumps(arguments)}}]})
                 continue
-            content = render_tool_call(item.get("name", ""), arguments)
+            content = render_tool_call(name, arguments)
         elif kind in {"function_call_output", "custom_tool_call_output"}:
             if native:
                 messages.append({'role':'tool','tool_call_id':item.get('call_id',''),'content':content_to_text(item.get('output',''))})
@@ -385,6 +404,13 @@ def rewrite_tool_call(call: dict, allowed_names: set[str] | None = None) -> dict
     if not allowed_names or call["name"] in allowed_names:
         return call
 
+    # Smaller/local models sometimes call an MCP server as though it were the
+    # function. Resolve that shorthand only when the server has exactly one
+    # advertised tool; schema validation below can then teach it missing args.
+    if call["name"].startswith("mcp__") and call["name"].count("__")==1:
+        matches=[name for name in allowed_names if name.startswith(call["name"]+"__")]
+        if len(matches)==1:return {**call,"name":matches[0]}
+
     shell_name = shell_tool_name(allowed_names)
     if shell_name not in allowed_names and allowed_names:
         return call
@@ -448,6 +474,7 @@ def response_object(
     tools=None,
 ) -> dict:
     response_id = response_id or f"resp_{uuid.uuid4().hex}"
+    tools = flatten_tools(tools)
     blocks = tool_call_blocks(text)
     if blocks:
         if "<tool_call>" in visible_tool_text(text, blocks):
@@ -492,6 +519,10 @@ def response_object(
                     raise ValueError(f"Custom tool {item['name']} requires raw input text")
                 item["type"] = "custom_tool_call"
                 item["input"] = args["input"]
+            definition = definitions.get(item.get('name'), {})
+            if definition.get('_namespace'):
+                item['namespace'] = definition['_namespace']
+                item['name'] = definition['_member_name']
         return {
             "id": response_id,
             "object": "response",

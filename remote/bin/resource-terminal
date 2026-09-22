@@ -11,6 +11,8 @@ import signal
 import subprocess
 import sys
 import time
+import socket
+import threading
 
 
 def clipboard_command():
@@ -104,6 +106,11 @@ def capture(state):
 
 def stop(state):
     if alive(state):subprocess.check_call(tmux(state)+['kill-session','-t',name(state)])
+    bridge=Path(state)/'rag-bridge.json'
+    if bridge.exists():
+        try:os.killpg(int(json.loads(bridge.read_text())['pid']),signal.SIGTERM)
+        except (OSError,ValueError,KeyError):pass
+        bridge.unlink()
     record=Path(state)/'terminal-status.json'
     if record.exists():record.write_text(json.dumps({'status':'EXITED','text':'Agent terminal stopped.'}))
 
@@ -125,6 +132,72 @@ def resume_picker(command, spec):
     if spec.get('resume'):
         command.insert(1, '--resume' if spec['cli']=='claude' else 'resume')
     return command
+
+
+def prepare_rag(spec):
+    config=dict(spec.get('rag_config') or {})
+    if not config:return None
+    if spec.get('allocation_kind')=='slurm_server' and not os.environ.get('SLURM_JOB_ID'):
+        raise ValueError('Refusing to start remote RAG outside its Slurm allocation')
+    source=Path(__file__).resolve().parents[2]/'local/src'
+    if not (source/'llm_away/rag.py').is_file():
+        raise ValueError('Remote RAG requires a full LLM-AWAY checkout containing local/src')
+    sys.path.insert(0,str(source))
+    from llm_away.rag import prepare
+    return prepare(config.get('paths') or [],config.get('threads',2),
+                   config.get('memory_gb',0),config.get('gpu',False),
+                   config.get('status_log') or spec.get('rag_log_path'))
+
+
+def rag_stdio(raw):
+    """Run the RAG MCP server here while carrying stdio to a local agent."""
+    spec=json.loads(raw)
+    command=prepare_rag(spec)
+    if not command:raise ValueError('Missing remote RAG configuration')
+    os.execvpe(command[0],command,os.environ.copy())
+
+
+def socket_copy(source,target):
+    try:
+        while True:
+            data=source.recv(65536) if hasattr(source,'recv') else os.read(source.fileno(),65536)
+            if not data:break
+            if hasattr(target,'sendall'):target.sendall(data)
+            else:target.write(data);target.flush()
+    except (BrokenPipeError,OSError):pass
+    finally:
+        if hasattr(target,'shutdown'):
+            try:target.shutdown(socket.SHUT_WR)
+            except OSError:pass
+
+
+def rag_socket_server(path):
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    if path.exists():path.unlink()
+    server=socket.socket(socket.AF_UNIX);server.bind(str(path));os.chmod(str(path),0o600);server.listen(1)
+    try:
+        connection,_=server.accept()
+        threads=[threading.Thread(target=socket_copy,args=(connection,sys.stdout.buffer),daemon=True),
+                 threading.Thread(target=socket_copy,args=(sys.stdin.buffer,connection),daemon=True)]
+        for thread in threads:thread.start()
+        for thread in threads:thread.join()
+    finally:
+        server.close()
+        try:path.unlink()
+        except FileNotFoundError:pass
+
+
+def rag_socket_client(path):
+    connection=socket.socket(socket.AF_UNIX);deadline=time.time()+30
+    while True:
+        try:connection.connect(path);break
+        except (FileNotFoundError,ConnectionRefusedError):
+            if time.time()>=deadline:raise ValueError('Local RAG bridge did not become ready')
+            time.sleep(.2)
+    threads=[threading.Thread(target=socket_copy,args=(connection,sys.stdout.buffer),daemon=True),
+             threading.Thread(target=socket_copy,args=(sys.stdin.buffer,connection),daemon=True)]
+    for thread in threads:thread.start()
+    for thread in threads:thread.join()
 
 
 def worker(state):
@@ -153,6 +226,9 @@ def worker(state):
             sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'local/src'))
             from llm_away.loading import prepare
             if prepare(state,spec):return
+        if spec.get('rag_config'):
+            spec['rag_log_path']=str(state/'rag.log')
+            spec['rag_command']=prepare_rag(spec)
         (state/'agent-ready').touch()
         if (state/'resume-requested').exists():spec['resume']=True
         engine=runpy.run_path(str(Path(__file__).with_name('resource-agent')))
@@ -207,3 +283,6 @@ def worker(state):
 if __name__=='__main__':
     if sys.argv[1]=='worker':worker(sys.argv[2])
     elif sys.argv[1]=='stop':stop(sys.argv[2])
+    elif sys.argv[1]=='rag-stdio':rag_stdio(sys.argv[2])
+    elif sys.argv[1]=='rag-socket-server':rag_socket_server(sys.argv[2])
+    elif sys.argv[1]=='rag-socket-client':rag_socket_client(sys.argv[2])

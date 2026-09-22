@@ -364,6 +364,7 @@ def daemon(path):
                     summary=(s['slurm_state'],s.get('model_state'),s.get('host'))
                     if summary!=last:print('Resource state:',summary,flush=True);last=summary
                     if new_logs:print(new_logs,end='',flush=True)
+                    if 'rag_log' in s:(path/'rag.log').write_text(s['rag_log'])
                     if allocation_ended(cfg,s):
                         cleanup_ended_allocation(path,data)
                         print('Allocation ended; local processes cleaned up. History retained.',flush=True)
@@ -558,8 +559,8 @@ def run_agent(args):
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=model['context_size']),
                         codex=replace(cfg.codex,context_window=min(cfg.codex.context_window,model['context_size'])))
         location=getattr(args,'agent_location','local')
-        if not helper and location=='remote' and (args.rag or args.agent_args):
-            raise ValueError('Remote mode accepts prompts via its console or res-mon; local --rag and extra CLI arguments are not supported')
+        if not helper and location=='remote' and args.agent_args:
+            raise ValueError('Remote mode does not support extra agent CLI arguments')
         preference=getattr(args,'cli',None) or os.environ.get('LLM_AWAY_CLI') or cfg.agent.cli
         selected_cli=None
         if location=='local' and not helper:
@@ -578,9 +579,20 @@ def run_agent(args):
         if getattr(args,'server_extra_args',None) is not None:
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=args.server_extra_args))
         rag_command=None
-        if args.rag and not helper:
-            from .rag import prepare
-            rag_command=prepare(args.rag)
+        rag_config=({'paths':args.rag,'threads':getattr(args,'rag_threads',2),
+                     'memory_gb':getattr(args,'rag_memory_gb',0),'gpu':getattr(args,'rag_gpu',False),
+                     'compute':getattr(args,'rag_compute',None) or location,
+                     'paths_location':getattr(args,'rag_paths_location',None) or location}
+                    if args.rag else None)
+        agent_instructions=(cfg.claude.instructions or cfg.codex.instructions
+                            if selected_cli=='claude' else cfg.codex.instructions)
+        if rag_config:
+            agent_instructions+=('\nRAG is available through the exact function '
+                                 '`mcp__project_search__search_project`. Invoke that full function name with '
+                                 '`{"query":"what to find","limit":6}`. Never call `mcp__project_search` by itself, '
+                                 'and do not look for RAG in MCP resource listings.')
+        # Native/local allocations keep RAG local. Scheduled allocations prepare
+        # it after the job is ready and bridge its stdio back to a local agent.
         if not helper:
             # Load inside the retained local terminal, then open the selected CLI.
             # A remote CLI is attached through this terminal after readiness.
@@ -590,8 +602,9 @@ def run_agent(args):
             if location=='remote' and agent_cwd and not agent_cwd.startswith('/'):
                 raise ValueError('--agent-workdir must be an absolute remote path')
             selection={'location':'local','target_location':location,'cli':selected_cli or preference,
-                       'cwd':agent_cwd,'extra_args':args.agent_args,'rag_command':rag_command,'resume':resume,
-                       'instructions':cfg.claude.instructions or cfg.codex.instructions if selected_cli=='claude' else cfg.codex.instructions,
+                       'cwd':agent_cwd,'extra_args':args.agent_args,'rag_command':rag_command,
+                       'rag_config':rag_config,'resume':resume,
+                       'instructions':agent_instructions,
                        'context_window':cfg.codex.context_window,
                        'auto_compact_token_limit':min(cfg.codex.auto_compact_token_limit,int(cfg.codex.context_window*0.7)),
                        'loading':{'config':asdict(cfg),'model':model,'reuse':reuse,'mtp':mtp}}
@@ -805,13 +818,16 @@ def refresh_session(number, model=None):
     saved=path/'agent-selection.json'
     if not saved.exists():raise ValueError('Open the agent first with run')
     selection=json.loads(saved.read_text())
+    rag=selection.get('rag_config') or {}
     from . import terminals
     engine=terminals.engine()
     if engine['alive'](path):
         engine['stop'](path)
         deadline=time.monotonic()+5
         while engine['alive'](path) and time.monotonic()<deadline:time.sleep(0.2)
-    args=Namespace(session=number,detach=True,model=model,mtp=None,rag=[],helper=False,quiet=True,resume=False,
+    args=Namespace(session=number,detach=True,model=model,mtp=None,rag=rag.get('paths',[]),helper=False,quiet=True,resume=False,
+                   rag_threads=rag.get('threads',2),rag_memory_gb=rag.get('memory_gb',0),rag_gpu=rag.get('gpu',False),
+                   rag_compute=rag.get('compute'),rag_paths_location=rag.get('paths_location'),
                    log_helper=True,agent_location=selection.get('target_location',selection.get('location','local')),
                    cli=selection.get('cli'),agent_workdir=selection.get('cwd'),
                    agent_args=selection.get('extra_args',[]))
@@ -870,19 +886,20 @@ def refresh_monitor():
 
 def cleanup_monitor():
     from . import cleanup
-    from .monitor_ui import dropdown_win, terminal_operation
+    from .monitor_ui import cleanup_confirm, terminal_operation
     items=[]
     for saved in sorted(STORE.glob('[0-9]*/session.json'),key=lambda p:int(p.parent.name)):
         data=json.loads(saved.read_text())
         if data.get('phase')=='RELEASED' and not cleanup.busy(saved.parent):
             cleanup.add_session_items(items,saved.parent,False)
     if not items:return 'No inactive released-session leftovers.'
-    choice=dropdown_win('Clean '+str(len(items))+' released-session leftovers (logs, cache, managed connections)?', ['Cancel','Clean released-session leftovers'])
-    if choice!='Clean released-session leftovers':return 'Cleanup canceled.'
+    plan=terminal_operation(cleanup.preview,items)
+    if not cleanup_confirm(plan['paths']):return 'Cleanup canceled.'
     import io
     def perform():
+        if cleanup.preview(items)!=plan:raise ValueError('Files changed; review cleanup again')
         output=io.StringIO()
-        with contextlib.redirect_stdout(output):cleanup.execute(items,list(range(len(items))))
+        with contextlib.redirect_stdout(output):cleanup.execute(items,list(range(len(items))),expected_remote=plan['remote_paths'])
         return output.getvalue()
     return terminal_operation(perform)
 
@@ -1075,6 +1092,11 @@ def main():
     run=sub.add_parser('run');run.add_argument('--session','-s',required=True,type=int);run.add_argument('--model');run.add_argument('--mtp',choices=['auto','on','off']);run.add_argument('--rag',action='append',metavar='PATH',help='Local code/docs file or folder; repeat for multiple paths');run.add_argument('agent_args',nargs=argparse.REMAINDER)
     run.add_argument('--agent-location',choices=['local','remote'],default='local')
     run.add_argument('--agent-workdir',help='Project directory on the selected agent host')
+    run.add_argument('--rag-threads',type=int,default=2,help='CPU cores used on the selected RAG compute host')
+    run.add_argument('--rag-compute',choices=['local','remote'],help='Host for the RAG embedding model (default: agent host)')
+    run.add_argument('--rag-paths-location',choices=['local','remote','shared'],help='Where RAG source paths are visible')
+    run.add_argument('--rag-memory-gb',type=float,default=0,help='Local RAG memory limit in GiB; 0 is unlimited')
+    run.add_argument('--rag-gpu',action='store_true',help='Use an available local CoreML, CUDA, or ROCm provider for RAG')
     run.add_argument('--cli',choices=['auto','codex','claude'],help='Agent CLI; auto asks only when both are installed')
     run.add_argument('--detach',action='store_true',help='Start or reuse the tmux agent without attaching')
     run.add_argument('--helper',action='store_true',help='Load/reuse the model and register it as a Codex MCP helper; --rag selects folders, default current directory')

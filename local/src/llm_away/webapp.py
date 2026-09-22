@@ -27,6 +27,7 @@ from . import cleanup, monitor_ui, resources
 
 ROOT=Path(__file__).resolve().parents[2]
 WEB_ROOT=ROOT/'web'/'dist'
+LOGO_PATH=ROOT.parent/'docs'/'llm-away-logo.jpeg'
 JOBS={}
 JOBS_LOCK=threading.Lock()
 
@@ -85,7 +86,16 @@ def model_options(number):
                            'embedded':bool(mtp.get('embedded'))}})
     allocation=data.get('allocation') or {}
     loaded=bool(data.get('model') and allocation.get('model_state') in ('LOADING','LOADED','READY','RUNNING'))
+    selection={}
+    try:selection=json.loads((path/'agent-selection.json').read_text())
+    except (OSError,ValueError):pass
+    rag=selection.get('rag_config') or {}
     return {'native':False,'models':public,'current':data.get('model') or cfg.llamacpp.model_name,'loaded':loaded,
+            'agent_location':selection.get('target_location',selection.get('location','local')),
+            'agent_cli':selection.get('cli','auto'),'agent_workdir':selection.get('cwd',''),
+            'rag':os.pathsep.join(rag.get('paths') or []),'rag_threads':rag.get('threads',2),
+            'rag_memory_gb':rag.get('memory_gb',0),'rag_gpu':bool(rag.get('gpu',False)),
+            'rag_compute':rag.get('compute'),'rag_paths_location':rag.get('paths_location'),
             'server_options_by_model':{m['name']:shlex.join(resources.model_server_options(cfg,m['name'])) for m in models}}
 
 
@@ -104,8 +114,12 @@ def load_browser_model(number, settings):
     if loaded:resources.rpc(path,'stop')
     extra=shlex.split(str(settings.get('server_options','')))
     rag=[item.strip() for item in str(settings.get('rag','')).split(os.pathsep) if item.strip()]
+    rag_threads=max(1,int(settings.get('rag_threads') or 2))
+    rag_memory_gb=max(0,float(settings.get('rag_memory_gb') or 0))
     args=argparse.Namespace(session=number,model=settings.get('model') or None,
         mtp=settings.get('mtp','auto'),rag=rag,helper=False,quiet=True,
+        rag_threads=rag_threads,rag_memory_gb=rag_memory_gb,rag_gpu=settings.get('rag_gpu')=='yes',
+        rag_compute=settings.get('rag_compute') or None,rag_paths_location=settings.get('rag_paths_location') or None,
         server_extra_args=extra,mtp_prompted=True,log_helper=True,
         agent_location=settings.get('agent_location','local'),cli=settings.get('cli') or 'auto',
         agent_workdir=settings.get('agent_workdir') or None,agent_args=[],resume=True,detach=True)
@@ -189,8 +203,13 @@ def session_path(number):
 
 
 def read_log(number, name):
-    if name not in ('session','helper','agent'):raise ValueError('Unknown log')
-    path=session_path(number)/(name+'.log')
+    if name not in ('session','helper','agent','rag','model-queries'):raise ValueError('Unknown log')
+    session=session_path(number);path=session/(name+'.log')
+    if name=='rag':
+        try:
+            remote_text=json.loads((session/'session.json').read_text()).get('allocation',{}).get('rag_log','')
+            if remote_text:return {'path':'remote allocation: rag.log','content':remote_text}
+        except (OSError,ValueError):pass
     if not path.exists():return {'path':str(path),'content':'No '+name+' log yet.'}
     with path.open('rb') as stream:
         stream.seek(0,os.SEEK_END);size=stream.tell();stream.seek(max(0,size-1_000_000))
@@ -198,8 +217,7 @@ def read_log(number, name):
     return {'path':str(path),'content':content}
 
 
-def cleanup_released():
-    """Clean verified inactive leftovers without the curses confirmation UI."""
+def cleanup_items():
     items=[]
     for saved in sorted(resources.STORE.glob('[0-9]*/session.json'),key=lambda p:int(p.parent.name)):
         try:
@@ -207,15 +225,35 @@ def cleanup_released():
             if data.get('phase')=='RELEASED' and not cleanup.busy(saved.parent):
                 cleanup.add_session_items(items,saved.parent,False)
         except (OSError,ValueError):continue
-    if not items:return 'No safely identifiable released-session leftovers.'
+    return items
+
+
+CLEANUP_PLANS={}
+
+
+def cleanup_preview():
+    items=cleanup_items()
+    plan=cleanup.preview(items)
+    token=secrets.token_urlsafe(24)
+    for old in list(CLEANUP_PLANS):
+        if time.monotonic()-CLEANUP_PLANS[old][0]>600:CLEANUP_PLANS.pop(old,None)
+    CLEANUP_PLANS[token]=(time.monotonic(),items,plan)
+    return {'token':token,'paths':plan['paths'],'actions':[label for _,_,label in items]}
+
+
+def cleanup_released(token=None):
+    saved=CLEANUP_PLANS.pop(token,None)
+    if not saved or time.monotonic()-saved[0]>600:raise ValueError('Review cleanup files again; preview expired')
+    _,items,plan=saved
+    if cleanup.preview(items)!=plan:raise ValueError('Files changed since preview; review cleanup again')
     output=io.StringIO()
-    with contextlib.redirect_stdout(output):cleanup.execute(items,list(range(len(items))))
+    with contextlib.redirect_stdout(output):cleanup.execute(items,list(range(len(items))),expected_remote=plan['remote_paths'])
     return output.getvalue().strip() or 'Cleanup completed.'
 
 
 def run_action(action, number=None):
     if action=='refresh-monitor':return resources.refresh_monitor()
-    if action=='cleanup':return cleanup_released()
+    if action=='cleanup':raise ValueError('Cleanup requires a reviewed preview')
     if number is None:raise ValueError('Select an allocation first')
     number=int(number);path=session_path(number)
     if action=='refresh-session':return resources.refresh_session(number) or f'Session {number} refreshed.'
@@ -296,6 +334,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def log_message(self,*args):
         return
 
+    def end_headers(self):
+        asset_path=urlparse(self.path).path
+        if asset_path in ('','/') or Path(asset_path).suffix in ('.html','.js','.css'):
+            self.send_header('Cache-Control','no-cache, no-store, must-revalidate')
+        super().end_headers()
+
     def _json(self,payload,status=HTTPStatus.OK):
         data=json.dumps(payload).encode('utf-8')
         self.send_response(status);self.send_header('Content-Type','application/json; charset=utf-8')
@@ -310,12 +354,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         parsed=urlparse(self.path)
         try:
             if parsed.path=='/api/sessions':self._json({'sessions':session_rows(),'time':time.time()});return
-            if parsed.path=='/logo':
-                path=Path.home()/'Desktop'/'vit_man.jpeg'
-                data=path.read_bytes();self.send_response(HTTPStatus.OK)
+            if parsed.path in ('/logo','/favicon.jpeg'):
+                data=LOGO_PATH.read_bytes();self.send_response(HTTPStatus.OK)
                 self.send_header('Content-Type','image/jpeg');self.send_header('Content-Length',str(len(data)))
-                self.send_header('Cache-Control','no-cache');self.end_headers();self.wfile.write(data);return
+                self.send_header('Cache-Control','public, max-age=86400');self.end_headers();self.wfile.write(data);return
             if parsed.path=='/api/options':self._json(allocation_options());return
+            if parsed.path=='/api/cleanup-preview':self._json(cleanup_preview());return
             if parsed.path=='/api/models':
                 query=parse_qs(parsed.query);self._json(model_options(query.get('session',[''])[0]));return
             if parsed.path=='/api/job':
@@ -344,7 +388,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 action=str(body.get('action',''))
                 if action in ('cleanup','release') and not body.get('confirmed'):
                     raise ValueError('Confirmation required')
-                identifier=start_job(action,lambda:run_action(action,body.get('session')))
+                if action=='cleanup':
+                    identifier=start_job(action,lambda:cleanup_released(body.get('preview_token')))
+                else:identifier=start_job(action,lambda:run_action(action,body.get('session')))
                 self._json({'job':identifier});return
             if self.path=='/api/allocate':
                 settings=dict(body.get('settings') or {})

@@ -36,8 +36,30 @@ def prepare(path, spec):
             time.sleep(1)
         spec['model']=model['alias']
         print('Model ready. Opening CLI.',flush=True)
-        if spec.get('target_location')=='remote':
+        rag=spec.get('rag_config')
+        data=allocation=None
+        if rag or spec.get('target_location')=='remote':
             data=json.loads((path/'session.json').read_text())
+            allocation=rpc(path,'status').get('allocation',{})
+        if rag:
+            from .rag_transfer import snapshot
+            from .rag import prepare as prepare_rag
+            rag=dict(rag)
+            compute=rag.pop('compute',spec.get('target_location','local'))
+            source=rag.pop('paths_location',spec.get('target_location','local'))
+            rag['paths']=snapshot(cfg,allocation,data['token'],rag.get('paths') or [],source,compute,path)
+            if compute=='local':
+                command=prepare_rag(rag['paths'],rag.get('threads',2),rag.get('memory_gb',0),
+                                    rag.get('gpu',False),path/'rag.log')
+                spec['rag_config']=None
+                spec['rag_command']=(terminals.local_rag_for_remote_agent(path,data,cfg,allocation,command)
+                                     if spec.get('target_location')=='remote' else command)
+            elif spec.get('target_location')=='local':
+                spec['rag_command']=terminals.remote_rag_command(cfg,allocation,rag,data['token'])
+                spec['rag_config']=None
+            else:
+                spec['rag_config']=rag;spec['rag_command']=None
+        if spec.get('target_location')=='remote':
             info=remote(cfg,data['token'],data['remote_port'],'agent-info')
             if not info.get('clis'):raise ValueError('Install codex or claude on the compute host')
             spec['cli']=choose_cli(spec['cli'],info['clis'])

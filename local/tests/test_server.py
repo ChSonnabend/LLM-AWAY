@@ -43,6 +43,22 @@ class CompactPromptTests(unittest.TestCase):
 
 
 class ServerTests(unittest.TestCase):
+    def test_query_log_records_input_and_timing(self):
+        import tempfile,json
+        from pathlib import Path
+        from unittest.mock import patch
+        handler=object.__new__(ProviderHandler)
+        handler.path='/v1/responses';handler.config=AppConfig()
+        handler.read_json=lambda:{'model':'test','input':'hello\nworld'}
+        handler.handle_responses=lambda payload:None
+        with tempfile.TemporaryDirectory() as tmp,patch.dict(os.environ,{'LLM_SESSION_DIR':tmp}):
+            handler._do_POST()
+            rows=[json.loads(line.split(' | ',1)[1]) for line in (Path(tmp)/'model-queries.log').read_text().splitlines()]
+            self.assertEqual(rows[0]['input'],'hello\nworld')
+            self.assertEqual(rows[0]['id'],rows[1]['id'])
+            self.assertEqual(rows[1]['event'],'completed')
+            self.assertGreaterEqual(rows[1]['elapsed_seconds'],0)
+
     def test_server_exits_on_sigint(self):
         script = textwrap.dedent(
             """
