@@ -1072,7 +1072,7 @@ def main():
     alloc.add_argument('--host');alloc.add_argument('--connection',choices=['ssh','local']);alloc.add_argument('--restart',action='store_true');alloc.add_argument('--gpus',type=int)
     alloc.add_argument('--mode',choices=['native','custom'],help='Native account CLI or custom model allocation')
     alloc.add_argument('--cli',choices=['claude','codex'],help='CLI to launch in native mode')
-    run=sub.add_parser('run');run.add_argument('--session','-s',required=True,type=int);run.add_argument('--model');run.add_argument('--mtp',choices=['auto','on','off']);run.add_argument('--rag',action='append',metavar='FOLDER',help='Local code/docs folder; repeat for multiple folders');run.add_argument('agent_args',nargs=argparse.REMAINDER)
+    run=sub.add_parser('run');run.add_argument('--session','-s',required=True,type=int);run.add_argument('--model');run.add_argument('--mtp',choices=['auto','on','off']);run.add_argument('--rag',action='append',metavar='PATH',help='Local code/docs file or folder; repeat for multiple paths');run.add_argument('agent_args',nargs=argparse.REMAINDER)
     run.add_argument('--agent-location',choices=['local','remote'],default='local')
     run.add_argument('--agent-workdir',help='Project directory on the selected agent host')
     run.add_argument('--cli',choices=['auto','codex','claude'],help='Agent CLI; auto asks only when both are installed')

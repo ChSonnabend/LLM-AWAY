@@ -119,6 +119,8 @@ td.empty { padding: 44px 12px; color: var(--muted); text-align: center; }
 input, select { width: 100%; min-height: 39px; padding: 8px 10px; border: 1px solid var(--border-bright); border-radius: 7px; outline: none; background: #0c0f15; color: var(--text); }
 input:focus, select:focus { border-color: var(--accent-strong); box-shadow: 0 0 0 3px var(--accent-soft); }
 .form-actions { padding-top: 3px; display: flex; justify-content: flex-end; gap: 8px; }
+.replace-warning { margin: 0 16px 4px; padding: 11px 12px; display: flex; align-items: flex-start; gap: 10px; border: 1px solid #74572d; border-radius: 8px; background: rgba(244, 189, 103, .08); color: #f1d4a2; line-height: 1.4; }
+.replace-warning input { width: auto; min-height: 0; margin-top: 3px; }
 .danger { border-color: #704044; color: #ffb4b4; background: #311c20; }
 
 .operation { min-height: 230px; padding: 30px; display: grid; place-items: center; text-align: center; }

@@ -83,7 +83,9 @@ def model_options(number):
                            'configured':bool(mtp.get('configured')),'available':bool(mtp.get('available')),
                            'toggle_supported':bool(mtp.get('toggle_supported')),
                            'embedded':bool(mtp.get('embedded'))}})
-    return {'native':False,'models':public,'current':data.get('model') or cfg.llamacpp.model_name,
+    allocation=data.get('allocation') or {}
+    loaded=bool(data.get('model') and allocation.get('model_state') in ('LOADING','LOADED','READY','RUNNING'))
+    return {'native':False,'models':public,'current':data.get('model') or cfg.llamacpp.model_name,'loaded':loaded,
             'server_options_by_model':{m['name']:shlex.join(resources.model_server_options(cfg,m['name'])) for m in models}}
 
 
@@ -93,10 +95,17 @@ def allocate_browser(settings):
 
 
 def load_browser_model(number, settings):
-    number=int(number);session_path(number)
+    number=int(number);path=session_path(number)
+    data=json.loads((path/'session.json').read_text())
+    allocation=data.get('allocation') or {}
+    loaded=bool(data.get('model') and allocation.get('model_state') in ('LOADING','LOADED','READY','RUNNING'))
+    if loaded and not settings.get('replace_loaded'):
+        raise ValueError('A model is already loaded; acknowledge replacement before starting another configuration')
+    if loaded:resources.rpc(path,'stop')
     extra=shlex.split(str(settings.get('server_options','')))
+    rag=[item.strip() for item in str(settings.get('rag','')).split(os.pathsep) if item.strip()]
     args=argparse.Namespace(session=number,model=settings.get('model') or None,
-        mtp=settings.get('mtp','auto'),rag=[],helper=False,quiet=True,
+        mtp=settings.get('mtp','auto'),rag=rag,helper=False,quiet=True,
         server_extra_args=extra,mtp_prompted=True,log_helper=True,
         agent_location=settings.get('agent_location','local'),cli=settings.get('cli') or 'auto',
         agent_workdir=settings.get('agent_workdir') or None,agent_args=[],resume=True,detach=True)
@@ -154,6 +163,7 @@ def safe_details(row):
         'Model flags: '+(shlex.join(llama.get('server_extra_args') or []) if row.get('model') else ''),
         'Slurm flags: '+(shlex.join(slurm_flags) if cfg.get('backend_type')=='slurm_server' else '—'),
         'Agent: '+agent_state,
+        'RAG: '+('enabled' if row.get('rag_enabled') else 'disabled'),
     ]
     if row.get('_terminal'):lines.append('Agent terminal: open'+(' (waiting for model)' if pending else ''))
     if row.get('_stale'): lines.append('Status: daemon may be offline or stale')
@@ -214,8 +224,8 @@ def run_action(action, number=None):
         register(number,log_helper=True);return f'Session {number} is available as a helper.'
     if action=='restart':return resources.restart_session(number) or f'Session {number} restarting.'
     if action=='reconnect':return resources.reconnect_session(number)
-    if action=='unload':return resources.rpc(path,'stop') or f'Model unloaded from session {number}.'
-    if action=='release':return resources.release_session(number) or f'Session {number} released.'
+    if action=='unload':resources.rpc(path,'stop');return f'Model unloaded from session {number}.'
+    if action=='release':resources.release_session(number);return f'Session {number} released.'
     raise ValueError('Unknown action')
 
 

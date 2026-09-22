@@ -84,10 +84,9 @@ def register(session,rag=None,log_helper=False):
     path=path_for(args.session);data=rpc(path,'status')
     if not data.get('model') or not alive(data):
         raise ValueError(f'Load the model first: run --session {args.session} --helper')
-    roots=[str(Path(p).expanduser().resolve()) for p in (args.rag or [os.getcwd()])]
-    if any(not Path(p).is_dir() for p in roots):raise ValueError('--rag must be a directory')
     # Prepare dependencies before registration, avoiding MCP startup installation delays.
-    from .rag import runtime
+    from .rag import roots_for, runtime
+    roots=[str(root) for root in roots_for(args.rag or [os.getcwd()])]
     runtime()
     record_path=path/'serve-registration.json'
     with (path/'serve-registration.lock').open('a') as lock:

@@ -29,9 +29,10 @@ SECRET_TEXT = re.compile(r'-----BEGIN .*PRIVATE KEY-----|\bAKIA[0-9A-Z]{16}\b|(?
 
 def roots_for(paths):
     roots = sorted({str(Path(p).expanduser().resolve()) for p in paths})
-    if not roots or any(not Path(p).is_dir() for p in roots):
-        raise ValueError('--rag requires existing local directories')
-    return [Path(p) for p in roots if not any(Path(q) in Path(p).parents for q in roots)]
+    if not roots or any(not Path(p).exists() or not (Path(p).is_dir() or Path(p).is_file()) for p in roots):
+        raise ValueError('--rag requires existing local files or directories')
+    return [Path(p) for p in roots
+            if not any(Path(q).is_dir() and Path(q) in Path(p).parents for q in roots)]
 
 
 def runtime():
@@ -59,27 +60,32 @@ def prepare(paths):
 
 def candidates(root):
     import pathspec
-    probe=subprocess.run(['git','-C',str(root),'rev-parse','--show-toplevel'],capture_output=True,text=True)
-    if probe.returncode == 0:
-        raw=subprocess.check_output(['git','-C',str(root),'ls-files','-z','--cached','--others','--exclude-standard'])
-        paths={root/os.fsdecode(p) for p in raw.split(b'\0') if p}
+    if root.is_file():
+        paths={root}
+        base=root.parent
     else:
-        paths=set()
-        for directory,dirs,files in os.walk(root,followlinks=False):
-            dirs[:]=[d for d in dirs if d not in SKIP_DIRS and not d.startswith('.') and not (Path(directory)/d).is_symlink()]
-            paths.update(Path(directory)/f for f in files)
-            if len(paths)>20000:raise ValueError('RAG folder too large; select narrower --rag folders')
+        base=root
+        probe=subprocess.run(['git','-C',str(root),'rev-parse','--show-toplevel'],capture_output=True,text=True)
+        if probe.returncode == 0:
+            raw=subprocess.check_output(['git','-C',str(root),'ls-files','-z','--cached','--others','--exclude-standard'])
+            paths={root/os.fsdecode(p) for p in raw.split(b'\0') if p}
+        else:
+            paths=set()
+            for directory,dirs,files in os.walk(root,followlinks=False):
+                dirs[:]=[d for d in dirs if d not in SKIP_DIRS and not d.startswith('.') and not (Path(directory)/d).is_symlink()]
+                paths.update(Path(directory)/f for f in files)
+                if len(paths)>20000:raise ValueError('RAG folder too large; select narrower --rag paths')
     specs={}
     for p in sorted(paths):
-        relative=p.relative_to(root)
+        relative=p.relative_to(base)
         if any(part in SKIP_DIRS or part.startswith('.') for part in relative.parts):continue
         if SECRET_NAME.search(p.name) or p.name.endswith(('.min.js','.min.css','-lock.json','.lock')):continue
         if p.suffix.lower() not in EXTENSIONS and p.name not in ('Makefile','Dockerfile','CMakeLists.txt'):continue
-        if p.is_symlink() or any(a.is_symlink() for a in p.parents if a != root and root in a.parents):continue
+        if p.is_symlink() or any(a.is_symlink() for a in p.parents if a != base and base in a.parents):continue
         if not p.is_file() or p.stat().st_size>1024*1024:continue
         ignored=False
         # Apply nested ignore files also for tracked files and non-Git folders.
-        for directory in [root,*reversed([a for a in p.parent.parents if root in a.parents]),p.parent]:
+        for directory in [base,*reversed([a for a in p.parent.parents if base in a.parents]),p.parent]:
             if directory not in specs:
                 lines=[]
                 for name in ('.gitignore','.ragignore'):

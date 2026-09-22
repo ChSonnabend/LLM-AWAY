@@ -90,10 +90,12 @@ def snapshots(store):
             except Exception:data['ps']=None
             data['_busy']=busy(path.parent)
             selection=path.parent/'agent-selection.json'
-            data['agent_location']=json.loads(selection.read_text()).get('location','local') if selection.exists() else 'local'
+            selection_data=json.loads(selection.read_text()) if selection.exists() else {}
+            data['agent_location']=selection_data.get('location','local')
+            data['rag_enabled']=bool(selection_data.get('rag_command'))
             if selection.exists():
                 try:
-                    loading=json.loads(selection.read_text()).get('loading')
+                    loading=selection_data.get('loading')
                     if loading:
                         cfg=loading.get('config',{}).get('llamacpp',{})
                         model=loading.get('model',{})

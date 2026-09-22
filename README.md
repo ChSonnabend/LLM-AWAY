@@ -9,7 +9,9 @@ run --session 2 --rag .
 run --session 2 --rag ./src --rag ./docs
 ```
 
-RAG is off unless requested. Paths are local to the machine running `run`.
+RAG is off unless requested. Each path may be a file or folder and is local to the
+machine running `run`. In the web Attach menu, enter multiple RAG paths separated
+by colons.
 First use installs isolated dependencies and downloads a small CPU embedding model
 (`BAAI/bge-small-en-v1.5`). SQLite keyword search and semantic embeddings share a
 persistent index under ignored `local/run/rag/`; no database service or extra GPU

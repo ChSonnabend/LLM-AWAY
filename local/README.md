@@ -18,7 +18,7 @@ res-mon --list
 run --session 2                      # Choose model and start the agent
 run --session 2 --model glm-5.3-flash-q4 --mtp on
 run --session 2 --detach             # Load and open the agent in background tmux
-run --session 2 --rag .              # Optional local project retrieval
+run --session 2 --rag .              # Optional local file/folder retrieval
 res-mon --logs 2                     # Ctrl+C only closes the log viewer
 res-mon --kill 2 --release
 ```

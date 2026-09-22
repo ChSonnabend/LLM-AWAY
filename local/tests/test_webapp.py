@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -9,6 +10,32 @@ from llm_away import webapp
 
 
 class WebAppTests(unittest.TestCase):
+    def test_load_browser_model_passes_colon_separated_rag_paths(self):
+        settings={'model':'model','rag':f' ~/project/src {os.pathsep}/tmp/README.md{os.pathsep} ',
+                  'server_options':''}
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp);(path/'session.json').write_text(json.dumps({'model':'','allocation':{}}))
+            with patch.object(webapp,'session_path',return_value=path),patch.object(webapp.resources,'run_agent') as run:
+                webapp.load_browser_model(4,settings)
+        args=run.call_args.args[0]
+        self.assertEqual(args.rag,['~/project/src','/tmp/README.md'])
+
+    def test_load_browser_model_replaces_loaded_model_after_acknowledgement(self):
+        settings={'model':'new-model','replace_loaded':True,'server_options':''}
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp);(path/'session.json').write_text(json.dumps({'model':'old-model','allocation':{'model_state':'LOADED'}}))
+            with patch.object(webapp,'session_path',return_value=path),patch.object(webapp.resources,'rpc') as rpc,patch.object(webapp.resources,'run_agent') as run:
+                webapp.load_browser_model(4,settings)
+            rpc.assert_called_once_with(path,'stop');self.assertEqual(run.call_args.args[0].model,'new-model')
+
+    def test_load_browser_model_rejects_unacknowledged_replacement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp);(path/'session.json').write_text(json.dumps({'model':'old-model','allocation':{'model_state':'LOADED'}}))
+            with patch.object(webapp,'session_path',return_value=path),patch.object(webapp.resources,'rpc') as rpc:
+                with self.assertRaisesRegex(ValueError,'acknowledge replacement'):
+                    webapp.load_browser_model(4,{'model':'new-model','server_options':''})
+            rpc.assert_not_called()
+
     def test_session_rows_exclude_secrets(self):
         row={'id':7,'token':'secret','config':{'ssh':{'password':'secret'}},'host':'host','gpus':4,
              'phase':'RUNNING','model':'test','_busy':False,'_terminal':True,

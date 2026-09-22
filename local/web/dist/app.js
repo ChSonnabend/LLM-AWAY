@@ -144,9 +144,20 @@ function renderChats(rows) {
     card.querySelector('h2').textContent = row.model || 'No model selected';
     const status = card.querySelector('.chat-status'); status.className = `chat-status ${ready ? 'ready' : ''}`; status.textContent = ready ? 'Terminal' : row.model_state || row.phase || 'Unavailable';
     const screen = card.querySelector('.chat-terminal');
-    if (!ready && !chatTerminals.has(key)) screen.textContent = 'Load the model and attach its agent to open this terminal.';
+    if (!ready && chatTerminals.has(key)) closeChatTerminal(key, screen);
+    else if (!ready) screen.textContent = 'Load the model and attach its agent to open this terminal.';
     if (ready) ensureChatTerminal(row, screen);
   }
+}
+
+function closeChatTerminal(key, host) {
+  const item = chatTerminals.get(key);
+  if (!item) return;
+  chatTerminals.delete(key);
+  if (item.poll) window.clearInterval(item.poll);
+  if (item.id) fetch(`/api/terminal?id=${encodeURIComponent(item.id)}`, {method: 'DELETE'}).catch(() => {});
+  item.terminal.dispose();
+  host.textContent = 'Load the model and attach its agent to open this terminal.';
 }
 
 async function ensureChatTerminal(row, host) {
@@ -255,8 +266,11 @@ async function loadLog() {
     const label = requestedLog === 'session' ? 'Telemetry' : requestedLog[0].toUpperCase() + requestedLog.slice(1);
     $('output-title').textContent = `${label} log`;
     $('log-path').textContent = data.path;
-    $('log-output').textContent = data.content || 'No output yet.';
-    $('log-output').scrollTop = $('log-output').scrollHeight;
+    const output = $('log-output');
+    const follow = output.scrollHeight - output.scrollTop - output.clientHeight < 24;
+    const position = output.scrollTop;
+    output.textContent = data.content || 'No output yet.';
+    output.scrollTop = follow ? output.scrollHeight : position;
   } catch (error) { notice(error.message, true); }
   finally { logBusy = false; }
 }
@@ -383,16 +397,26 @@ async function modelDialog() {
     const location = selectControl(['local', 'remote'], 'local');
     const cli = selectControl(['auto', 'codex', 'claude'], 'auto');
     const workdir = inputControl(''); workdir.placeholder = 'Default project directory';
+    const rag = inputControl(''); rag.placeholder = '/path/to/src:/path/to/README.md';
     const server = inputControl(data.server_options_by_model?.[model.value] || '');
-    grid.append(field('Model', model, '', true), field('MTP', mtp), field('Agent location', location), field('Agent CLI', cli), field('Agent work directory', workdir), field('Model server options', server, 'Batch, context and backend arguments.', true));
+    grid.append(field('Model', model, '', true), field('MTP', mtp), field('Agent location', location), field('Agent CLI', cli), field('Agent work directory', workdir), field('RAG', rag, 'Colon-separated local folder or file paths.', true), field('Model server options', server, 'Batch, context and backend arguments.', true));
     model.addEventListener('change', () => { server.value = data.server_options_by_model?.[model.value] || ''; });
+    form.append(grid);
+    let replaceLoaded = null;
+    if (data.loaded) {
+      const warning = node('label', 'replace-warning');
+      replaceLoaded = document.createElement('input'); replaceLoaded.type = 'checkbox';
+      warning.append(replaceLoaded, node('span', '', 'A model is already loaded. Stop it and replace its model, flags, agent settings, and RAG configuration.'));
+      form.append(warning);
+    }
     const actions = node('div', 'form-actions');
     const attach = node('button', '', 'Attach existing terminal'); attach.type = 'button'; attach.addEventListener('click', () => terminalWindow(`Session ${sessionId}`, `run --session ${sessionId} --resume\n`));
     const submit = node('button', 'primary', 'Load and start'); submit.type = 'submit';
-    actions.append(attach, submit); form.append(grid, actions);
+    actions.append(attach, submit); form.append(actions);
     form.addEventListener('submit', event => {
       event.preventDefault();
-      runOperation(`Start session ${sessionId}`, 'Loading the model and preparing the retained agent terminal…', '/api/load', {session: sessionId, settings: {model: model.value, mtp: mtp.value, agent_location: location.value, cli: cli.value, agent_workdir: workdir.value, server_options: server.value}}, true);
+      if (replaceLoaded && !replaceLoaded.checked) { notice('Acknowledge model replacement before loading the new configuration.', true); return; }
+      runOperation(`Start session ${sessionId}`, 'Loading the model and preparing the retained agent terminal…', '/api/load', {session: sessionId, settings: {model: model.value, mtp: mtp.value, agent_location: location.value, cli: cli.value, agent_workdir: workdir.value, rag: rag.value, replace_loaded: Boolean(replaceLoaded?.checked), server_options: server.value}}, true);
     });
     openDialog(`Attach session ${sessionId}`, form);
   } catch (error) {
@@ -406,7 +430,7 @@ async function modelDialog() {
 function releaseDialog() {
   const sessionId = selected.id;
   menu(`Release session ${sessionId}`, [
-    {label: 'Unload model', description: 'Stop the model and keep the resource allocation.', run: () => runOperation('Unload model', 'Stopping the model while retaining the allocation…', '/api/actions', {action: 'unload', session: sessionId, confirmed: true})},
+    {label: 'Unload model', description: 'Stop the model and keep the resource allocation.', run: () => runOperation('Unload model', 'Stopping the model while retaining the allocation…', '/api/actions', {action: 'unload', session: sessionId, confirmed: true}, true)},
     {label: 'Load a different model', description: 'Unload as needed and open browser model selection.', run: modelDialog},
     {label: 'Release allocation', description: 'Stop the model, end the agent and return all resources.', danger: true, run: () => runOperation('Release allocation', 'Stopping session processes and releasing resources…', '/api/actions', {action: 'release', session: sessionId, confirmed: true}, true)}
   ]);
