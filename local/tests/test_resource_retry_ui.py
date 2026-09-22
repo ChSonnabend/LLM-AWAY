@@ -14,6 +14,11 @@ from llm_away.config import AppConfig
 ROOT=Path(__file__).resolve().parents[2]
 
 class RetryAndMenus(unittest.TestCase):
+    def test_pending_allocation_does_not_require_model_stop_acknowledgement(self):
+        self.assertTrue(resources.allocation_pending({'slurm_state':'PENDING','host':'','model_state':'STARTING'}))
+        self.assertTrue(resources.allocation_pending({'slurm_state':'CONFIGURING','host':'node'}))
+        self.assertFalse(resources.allocation_pending({'slurm_state':'RUNNING','host':'node','model_state':'LOADED'}))
+
     def test_new_generation_masks_previous_failure_and_start_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg=AppConfig();cfg=replace(cfg,backend_type='direct',remote=replace(cfg.remote,workdir=tmp),llamacpp=replace(cfg.llamacpp,container=''))

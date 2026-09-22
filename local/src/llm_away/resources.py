@@ -39,6 +39,10 @@ def config(data):
     return replace(base,**{key:type(getattr(base,key))(**value) if is_dataclass(getattr(base,key)) else value
                           for key,value in data.items() if key not in ('hosts','saved_hosts')})
 
+def allocation_pending(status):
+    """True while a scheduler allocation has no compute node to run a model."""
+    return status.get('slurm_state') in ('PENDING','CONFIGURING') or not status.get('host')
+
 def remote(cfg, token, port, action, **extra):
     command=['python3',cfg.remote.workdir+'/bin/resource-control',action]
     if cfg.ssh.connection!='local':
@@ -259,7 +263,13 @@ def daemon(path):
             try:child.wait(timeout=10)
             except subprocess.TimeoutExpired:child.kill();child.wait()
         child=None
+        before=remote(cfg,token,port,'status')
         remote(cfg,token,port,'stop')
+        if allocation_pending(before):
+            # No model process exists to acknowledge the stop. The changed
+            # desired generation prevents a later start if Slurm assigns a node.
+            state(model='',client_pid=None,client_identity='',provider_pid=None,provider_identity='')
+            return
         deadline=time.time()+20
         while time.time()<deadline:
             s=remote(cfg,token,port,'status')
