@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LLM-AWAY Resource Monitor</title>
+  <link rel="icon" href="/logo" type="image/jpeg">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <link rel="stylesheet" href="/styles.css?v=6">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img class="brand-logo" src="/logo" alt="LLM-AWAY" width="38" height="38" style="width:38px;height:38px;object-fit:cover"><div><p>LLM-AWAY</p><h1>Resource Monitor</h1></div></div>
+    <div class="live-state"><span class="live-dot"></span><span id="updated">Connecting…</span></div>
+  </header>
+
+  <nav class="view-tabs" aria-label="Main views">
+    <button class="view-tab active" data-page="monitoring">Monitoring</button>
+    <button class="view-tab" data-page="chats">Chats</button>
+  </nav>
+
+  <nav class="toolbar monitoring-view" aria-label="Resource monitor tools">
+    <button class="primary" id="allocate"><span>＋</span> Allocate</button>
+    <button id="attach-menu" class="session-action primary">Attach…</button>
+    <span class="toolbar-divider"></span>
+    <button data-action="refresh-monitor" data-description="Remove ended allocations while preserving uncertain sessions.">Refresh res-mon</button>
+    <button data-action="cleanup" data-danger="true" data-description="Clean verified inactive logs, caches, sockets and managed connections.">Cleanup</button>
+    <span class="toolbar-divider"></span>
+    <button data-action="refresh-session" data-description="Restart the selected agent as a fresh conversation while keeping its helper relationships." class="session-action">Refresh session</button>
+    <button data-action="set-helper" data-description="Register the selected session as a helper and create its helper log." class="session-action">Set helper</button>
+    <button data-action="restart" data-description="Retry a failed or ended allocation using its current host settings." class="session-action">Restart</button>
+    <button data-action="reconnect" data-description="Repair the selected session's model SSH tunnel." class="session-action">Reconnect</button>
+    <button id="release-menu" class="session-action">Release…</button>
+    <button id="open-terminal">Terminal</button>
+  </nav>
+
+  <main class="workspace monitoring-view">
+    <section class="panel allocations-panel">
+      <div class="panel-heading"><div><span class="kicker">SESSIONS</span><h2>Allocations</h2></div><span class="badge" id="allocation-count">0</span></div>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>State</th><th>Model</th><th>Node</th><th>GPUs</th><th>Job</th></tr></thead><tbody id="sessions"><tr><td colspan="6" class="empty">Loading allocations…</td></tr></tbody></table></div>
+    </section>
+
+    <section class="panel details-panel">
+      <div class="panel-heading"><div><span class="kicker">SELECTED</span><h2>Allocation details</h2></div><span class="badge muted" id="selected-name">None</span></div>
+      <dl id="detail" class="detail-grid"><div><dt>Status</dt><dd>Select an allocation</dd></div></dl>
+    </section>
+
+    <section class="panel monitor-panel">
+      <div class="panel-heading monitor-heading"><div><span class="kicker">MONITOR</span><h2 id="output-title">Telemetry log</h2></div><div class="tabs"><button class="tab active" data-log="session" data-label="Telemetry">Telemetry</button><button class="tab" data-log="helper" data-label="Helper">Helper</button><button class="tab" data-log="agent" data-label="Agent">Agent</button><button class="tab" data-view="terminal">Terminal</button></div></div>
+      <p id="log-path">Select an allocation to view its logs.</p>
+      <pre id="log-output" class="log-output"></pre>
+      <div id="terminal-slot"><div id="terminal-host" hidden></div></div>
+    </section>
+
+    <section class="panel gpu-overview-panel">
+      <div class="panel-heading"><div><span class="kicker">LIVE HISTORY</span><h2>GPU memory and utilization</h2></div><a class="panel-link" href="/metrics.html" target="_blank">Open full dashboard ↗</a></div>
+      <iframe id="gpu-overview" class="gpu-overview-frame" src="/metrics.html?embed=1" title="GPU monitoring graphs"></iframe>
+    </section>
+  </main>
+
+  <main id="chats-view" class="chats-view" hidden>
+    <div class="panel-heading chats-heading"><div><span class="kicker">ALLOCATIONS</span><h2>Model chats</h2></div><span class="badge" id="chat-count">0</span></div>
+    <section id="chat-cards" class="chat-grid"></section>
+  </main>
+
+  <div id="notice" role="status" aria-live="polite"></div>
+  <div id="modal" class="modal" hidden>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <header class="dialog-heading"><div><span class="kicker">LLM-AWAY</span><h2 id="modal-title"></h2></div><button id="modal-close" class="icon-button" aria-label="Close dialog">×</button></header>
+      <div id="modal-body" class="dialog-body"></div>
+    </section>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="/app.js?v=7"></script>
+</body>
+</html>

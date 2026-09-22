@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LLM-AWAY GPU Monitoring</title>
+  <link rel="icon" href="/logo" type="image/jpeg">
+  <link rel="stylesheet" href="/styles.css?v=6">
+</head>
+<body class="metrics-page">
+  <header class="topbar">
+    <div class="brand"><img class="brand-logo" src="/logo" alt="LLM-AWAY" width="38" height="38" style="width:38px;height:38px;object-fit:cover"><div><p>LLM-AWAY</p><h1>GPU Monitoring</h1></div></div>
+    <div class="live-state"><span class="live-dot"></span><span id="metrics-updated">Connecting…</span></div>
+  </header>
+  <main class="metrics-main">
+    <section class="metrics-controls panel">
+      <div><span class="kicker">DASHBOARD</span><h2>GPU memory and utilization</h2></div>
+      <label>Session <select id="metrics-session"></select></label>
+      <div class="legend"><span><i class="vram-key"></i>VRAM used</span><span><i class="util-key"></i>GPU utilization</span></div>
+    </section>
+    <section id="metric-cards" class="metric-cards"><div class="panel metrics-empty">Waiting for GPU telemetry…</div></section>
+  </main>
+  <script src="/metrics.js?v=6"></script>
+</body>
+</html>

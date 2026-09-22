@@ -613,6 +613,9 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
             if key in (ord('4'),curses.KEY_F4):
                 menu='allocate';menu_index=0
                 continue
+            if key in (ord('1'),curses.KEY_F1):
+                tools_open=True
+                continue
             if rows:
                 pos=next((i for i,d in enumerate(rows) if d['id']==selected),0)
                 if key in (curses.KEY_LEFT,ord('h')):selected=rows[max(0,pos-1)]['id'];detail_offset=0;preview_id=None
@@ -621,7 +624,6 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 elif key==curses.KEY_NPAGE:detail_offset+=3
                 elif key in (curses.KEY_UP,curses.KEY_DOWN,ord('j'),ord('k')):
                     preview_scroll=max(0,preview_scroll+(1 if key in (curses.KEY_UP,ord('k')) else -1))
-                elif key in (ord('1'),curses.KEY_F1):tools_open=True
                 elif key in (ord('2'),curses.KEY_F2):
                     d=next((d for d in rows if d['id']==selected),{})
                     if d.get('_terminal'):return selected

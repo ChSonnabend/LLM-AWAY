@@ -140,13 +140,19 @@ class ResourceBackend(SlurmServerBackend):
             if self._ready_model==model and self.http_ready(model): return
             state=self.serverctl('ensure',model)
             deadline=time.time()+self.config.gateway.startup_timeout_seconds
-            while time.time()<deadline and not self._closing.is_set():
+            while not self._closing.is_set():
                 state=self.serverctl('status',model)
                 if not state.get('active'): raise BackendError('Resource allocation ended')
                 if state.get('model_state')=='EXITED': raise BackendError('Model exited; see res-mon logs')
+                if state.get('slurm_state') in ('PENDING','CONFIGURING') or not state.get('host'):
+                    # Scheduler queue time is not model startup time. The desired
+                    # model is already recorded and the worker starts it once the
+                    # allocation receives a node.
+                    deadline=time.time()+self.config.gateway.startup_timeout_seconds
                 if state.get('host') and state.get('model_state')=='LOADING':
                     self.ensure_tunnel(state['host'])
                     if self.http_ready(model): self._ready_model=model;return
+                if time.time()>=deadline:break
                 self._closing.wait(2)
             raise BackendError('Model startup timed out or was canceled')
     def ensure_tunnel(self,host):
@@ -618,7 +624,10 @@ def run_agent(args):
                         if r.status==200:break
                 except OSError:pass
                 s=rpc(path,'status')
-                if s.get('provider_exit') is not None or not s.get('allocation',{}).get('active',True) or s.get('allocation',{}).get('model_state')=='EXITED':raise RuntimeError('Backend stopped; inspect session log')
+                allocation=s.get('allocation') or {}
+                if s.get('provider_exit') is not None or not allocation.get('active',True) or allocation.get('model_state')=='EXITED':raise RuntimeError('Backend stopped; inspect session log')
+                if allocation.get('slurm_state') in ('PENDING','CONFIGURING') or not allocation.get('host'):
+                    deadline=time.time()+cfg.gateway.startup_timeout_seconds
                 if time.time()>deadline:raise TimeoutError('Model startup timed out')
                 time.sleep(1)
             detached=True
@@ -808,9 +817,12 @@ def model_server_options(cfg, name):
     result=[];skip=False
     for value in options:
         if skip:skip=False;continue
-        if value in ('--batch-size','-b','--ubatch-size','-ub'):skip=True;continue
-        if value.split('=',1)[0] in ('--batch-size','--ubatch-size','-b','-ub'):continue
+        replaced=('--batch-size','-b','--ubatch-size','-ub')
+        if name=='glm-5.3-flash-q4':replaced+=('--cache-type-k','--cache-type-v')
+        if value in replaced:skip=True;continue
+        if value.split('=',1)[0] in replaced:continue
         result.append(value)
+    if name=='glm-5.3-flash-q4':result+=['--cache-type-k','q4_0','--cache-type-v','q4_0']
     return result+['--batch-size',str(defaults[0]),'--ubatch-size',str(defaults[1])]
 
 
@@ -911,6 +923,8 @@ def allocate_from_wizard(settings):
         if settings['connection']=='ssh':
             host=settings.get('host') or None
             if not host:raise ValueError('SSH host required for a native SSH session')
+            config_path=os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml'))
+            host=load_config(config_path).host_config(host).ssh_host
         elif not shutil.which(cli):
             raise ValueError(f'{cli} is not available on PATH')
         from .native_sessions import allocate as allocate_native
@@ -922,13 +936,8 @@ def allocate_from_wizard(settings):
         cfg=load_config(config_path)
         if settings['connection']=='ssh':
             host=settings.get('host') or cfg.ssh.host
-            from .host_store import read_store, apply_profile
-            store=read_store(config_path)
-            profile=store['hosts'].get(host)
-            if profile is None:
-                raise ValueError(f'No saved settings for host {host}; run res-alloc once to set it up')
-            cfg=apply_profile(cfg,profile)
-            cfg=replace(cfg,ssh=replace(cfg.ssh,connection='ssh',host=host),active_host='')
+            cfg=cfg.with_host(host)
+            cfg=replace(cfg,ssh=replace(cfg.ssh,connection='ssh'),active_host='')
         else:
             cfg=replace(cfg,ssh=replace(cfg.ssh,connection='local',host='localhost'))
         gpus=int(settings.get('gpus') or 0)

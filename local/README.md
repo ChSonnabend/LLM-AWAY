@@ -88,6 +88,15 @@ resources. Rejected tool payloads are saved under the session's `tool-errors/` f
 
 See [initialization](docs/initialization.md), [Codex integration](docs/codex.md),
 [remote documentation](../remote/README.md), and [GLM setup](../remote/docs/glm-5.3-flash.md).
+
+### Optional dashboard
+
+`res-mon-web` starts a loopback-only dashboard at `http://127.0.0.1:8766` and
+opens it in the default browser. The Monitoring tab shows allocations, details,
+logs, maintenance tools, and live VRAM/utilization graphs. The Chats tab provides
+a full interactive terminal for every ready allocation. Allocation, model
+selection, release, and maintenance actions use browser dialogs; the dashboard
+remains optional and all command-line commands remain available.
 # Use a session as a helper for GPT / another primary model
 
 Cleanup: `res-clean` previews identifiable local leftovers, lets you select item

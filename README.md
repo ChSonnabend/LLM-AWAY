@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/llm-away-logo.jpeg" alt="LLM-AWAY logo" width="128"></p>
+
 # LLM-AWAY
 
 Optional local code/document retrieval:

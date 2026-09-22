@@ -90,7 +90,10 @@ llamacpp_common_run_args() { :; }
     def test_model_batch_defaults_replace_both_flag_forms(self):
         cfg=AppConfig();cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=['--batch-size=8192','-ub','8192','--flash-attn','on']))
         for name,ub in [('glm-5.3-flash-q4','1024'),('glm-5.3-flash-q8','512')]:
-            self.assertEqual(resources.model_server_options(cfg,name),['--flash-attn','on','--batch-size','2048','--ubatch-size',ub])
+            expected=['--flash-attn','on']
+            if name.endswith('-q4'):expected+=['--cache-type-k','q4_0','--cache-type-v','q4_0']
+            expected+=['--batch-size','2048','--ubatch-size',ub]
+            self.assertEqual(resources.model_server_options(cfg,name),expected)
 
     def test_monitor_returns_after_attached_agent_exits(self):
         from argparse import Namespace
@@ -113,6 +116,14 @@ llamacpp_common_run_args() { :; }
             with patch.object(monitor_ui,'dropdown_win'):
                 self.screen([curses.KEY_F1,key,ord('q')],**{kind+'_monitor':callback})
             callback.assert_called_once()
+
+    def test_tools_refresh_is_available_without_a_selected_session(self):
+        callback=MagicMock(return_value='No ended sessions.')
+        win=MagicMock();win.getmaxyx.return_value=(30,100)
+        win.getch.side_effect=[curses.KEY_F1,curses.KEY_F4,ord('q')]
+        with patch.object(monitor_ui,'_terminal_screen',side_effect=lambda f:f(win)),patch.object(monitor_ui,'snapshots',return_value=[]),patch.object(monitor_ui,'dropdown_win'),patch.object(monitor_ui.curses,'curs_set'),patch.object(monitor_ui.curses,'has_colors',return_value=False),patch.object(monitor_ui.curses,'ACS_HLINE',45,create=True):
+            monitor_ui.show(Path('/unused'),None,None,refresh_monitor=callback)
+        callback.assert_called_once()
 
     def test_tools_reconnects_selected_session(self):
         reconnect=MagicMock(return_value='Reconnected')

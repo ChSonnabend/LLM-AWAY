@@ -9,7 +9,7 @@ for name in add-serve res-background; do
         rm "$dest"
     fi
 done
-for name in resource-allocator resource-monitor run res-alloc res-mon session-tool res-clean codex-away claude-away; do
+for name in resource-allocator resource-monitor run res-alloc res-mon res-mon-web session-tool res-clean codex-away claude-away; do
     case "$name" in res-alloc) target=resource-allocator ;; res-mon) target=resource-monitor ;; *) target=$name ;; esac
     dest="$HOME/.local/bin/$name"
     if [[ -e "$dest" && ! -L "$dest" ]]; then
