@@ -388,7 +388,7 @@ function releaseDialog() {
   menu(`Release session ${sessionId}`, [
     {label: 'Unload model', description: 'Stop the model and keep the resource allocation.', run: () => runOperation('Unload model', 'Stopping the model while retaining the allocation…', '/api/actions', {action: 'unload', session: sessionId, confirmed: true})},
     {label: 'Load a different model', description: 'Unload as needed and open browser model selection.', run: modelDialog},
-    {label: 'Release allocation', description: 'Stop the model, end the agent and return all resources.', danger: true, run: () => runOperation('Release allocation', 'Stopping session processes and releasing resources…', '/api/actions', {action: 'release', session: sessionId, confirmed: true})}
+    {label: 'Release allocation', description: 'Stop the model, end the agent and return all resources.', danger: true, run: () => runOperation('Release allocation', 'Stopping session processes and releasing resources…', '/api/actions', {action: 'release', session: sessionId, confirmed: true}, true)}
   ]);
 }
 
