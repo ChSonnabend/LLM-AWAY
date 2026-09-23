@@ -39,6 +39,14 @@ python3 "$(dirname "${BASH_SOURCE[0]}")/resource-prompts" "$state" >> "$state/mo
 prompt_pid=$!
 while [[ ! -f "$state/release" ]]; do
     touch "$state/heartbeat"
+    if [[ -n "$telemetry_pid" ]] && ! kill -0 "$telemetry_pid" 2>/dev/null; then
+        wait "$telemetry_pid" 2>/dev/null || true
+        telemetry_pid=''
+    fi
+    if [[ -z "$telemetry_pid" ]]; then
+        python3 "$(dirname "${BASH_SOURCE[0]}")/resource-telemetry" "$state" >> "$state/allocation.log" 2>&1 &
+        telemetry_pid=$!
+    fi
     desired=$(cat "$state/desired" 2>/dev/null || true)
     if [[ -n "$desired" && "$desired" != "$seen" ]]; then
         stop_model

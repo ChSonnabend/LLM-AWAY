@@ -146,6 +146,15 @@ def snapshots(store):
     return sorted(annotate(store,rows),key=lambda d:int(d['id']))
 
 
+def time_left_text(data):
+    seconds=(data.get('allocation') or {}).get('time_left_seconds')
+    if seconds is None:return '∞'
+    seconds=max(0,int(seconds))
+    days,rest=divmod(seconds,86400)
+    hours,rest=divmod(rest,3600)
+    return f'{days:02d}-{hours:02d}:{rest//60:02d}'
+
+
 def detail(data):
     relations=['PS: '+str(data.get('ps') or '—'), 'IS MASTER: '+data.get('is_master','—'), 'IS HELPER: '+data.get('is_slave','—')]
     if data.get('native'):
@@ -172,6 +181,7 @@ def detail(data):
     else:lines=['Direct devices: '+str(cfg.get('llamacpp',{}).get('visible_devices') or 'auto')]
     allocation=data.get('allocation',{})
     lines+=['Remote path: '+str(cfg.get('remote',{}).get('workdir','')),
+            'Time left: '+time_left_text(data),
             'Model: '+str(data.get('model') or 'none')+' | backend: '+str(allocation.get('model_state','unknown')),
             'Agent: '+('in use' if data.get('_busy') else 'not attached')+' | PID: '+str(data.get('client_pid') or '—')]
     job=allocation.get('prompt',{})
@@ -520,24 +530,24 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 pos=next((i for i,d in enumerate(rows) if d['id']==selected),0)
                 put(0,f' RESOURCE MONITOR  |  {len(rows)} allocations  |  refreshed every second',curses.A_BOLD|color(1))
                 if w>=95:
-                    fixed=[5, max(10,w//9),5,10,14,9,11,8]
+                    fixed=[7, max(10,w//9-10),5,10,14,9,11,11,8]
                     widths=fixed+[max(8,w-1-sum(fixed))]
-                    headers=['ID','HOST','GPUS','SCHEDULER','STATE','AGENT','JOB','PS','MODEL / NODE']
+                    headers=['ID','HOST','GPUS','SCHEDULER','STATE','AGENT','JOB','TIME LEFT','PS','MODEL / NODE']
                     def cells(d):
                         cfg=d.get('config',{});a=d.get('allocation',{})
                         return [d['id'],d.get('host','?'),d.get('gpus',0),'native' if d.get('native') else cfg.get('backend_type','?').replace('_server',''),
-                                'STALE' if d.get('_stale') else d.get('phase','?'),'IN USE' if d['_busy'] else 'idle',a.get('job_id','—'),d.get('ps') or '—',
+                                'STALE' if d.get('_stale') else d.get('phase','?'),'IN USE' if d['_busy'] else 'idle',a.get('job_id','—'),time_left_text(d),d.get('ps') or '—',
                                 str(d.get('model') or d.get('native_cli') or 'no model')+' / '+str(a.get('host') or 'pending')]
                 else:
                     widths=[5,10,7,8,max(10,w-31)];headers=['ID','STATE','AGENT','PS','HOST / MODEL']
                     def cells(d):return [d['id'],d.get('phase','?'),'BUSY' if d['_busy'] else 'idle',d.get('ps') or '—',str(d.get('host','?'))+' / '+str(d.get('model') or d.get('native_cli') or 'none')]
                 if w>=125:
-                    relation_width=max(11,min(20,(w-100)//2))
+                    relation_width=16
                     widths[-1]=max(8,widths[-1]-2*relation_width)
                     widths += [relation_width,relation_width]
-                    headers += ['IS MASTER','IS HELPER']
+                    headers += ['IS HELPER','IS MASTER']
                     original_cells=cells
-                    def cells(d):return original_cells(d)+[d.get('is_master','—'),d.get('is_slave','—')]
+                    def cells(d):return original_cells(d)+[d.get('is_slave','—'),d.get('is_master','—')]
                 def formatted(values):return ''.join(clean(v)[:max(1,n-1)].ljust(n) for v,n in zip(values,widths))
                 put(2,formatted(headers),curses.A_BOLD)
                 count=max(1,(h-8)//3);top=max(0,min(pos-count+1,max(0,len(rows)-count)))

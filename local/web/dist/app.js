@@ -142,7 +142,7 @@ function renderChats(rows) {
       card.append(heading, screen); cards.append(card);
     }
     card.querySelector('h2').textContent = row.model || 'No model selected';
-    const status = card.querySelector('.chat-status'); status.className = `chat-status ${ready ? 'ready' : ''}`; status.textContent = ready ? 'Terminal' : row.model_state || row.phase || 'Unavailable';
+    const status = card.querySelector('.chat-status'); status.className = `chat-status ${ready ? 'ready' : ''}`; status.textContent = ready ? `Terminal · ${row.time_left || '∞'}` : `${row.model_state || row.phase || 'Unavailable'} · ${row.time_left || '∞'}`;
     const screen = card.querySelector('.chat-terminal');
     if (!ready && chatTerminals.has(key)) closeChatTerminal(key, screen);
     else if (!ready) screen.textContent = 'Load the model and attach its agent to open this terminal.';
@@ -237,7 +237,7 @@ async function loadSessions() {
     if (!data.sessions.length) {
       const row = node('tr');
       const cell = node('td', 'empty', 'No active allocations');
-      cell.colSpan = 6;
+      cell.colSpan = 7;
       row.append(cell);
       body.append(row);
       selected = null;
@@ -248,7 +248,7 @@ async function loadSessions() {
     for (const row of data.sessions) {
       const tr = node('tr');
       tr.dataset.id = row.id;
-      const values = [row.id, row.model_state || row.phase || '—', row.model || 'No model', row.node || row.host || '—', row.gpus || 0, row.job_id || '—'];
+      const values = [row.id, row.model_state || row.phase || '—', row.model || 'No model', row.node || row.host || '—', row.gpus || 0, row.job_id || '—', row.time_left || '∞'];
       values.forEach(value => tr.append(node('td', '', String(value))));
       tr.title = row.model && ['LOADED', 'READY', 'RUNNING'].includes(String(row.model_state || '').toUpperCase())
         ? 'Double-click to attach or choose a conversation'

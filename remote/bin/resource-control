@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Persistent resource reservations, independent of the model process (Python 3.6+)."""
-import fcntl, json, os, re, shlex, shutil, subprocess, sys, time, uuid
+import datetime, fcntl, json, os, re, shlex, shutil, subprocess, sys, time, uuid
 from pathlib import Path
 
 p=json.load(sys.stdin)
@@ -57,6 +57,11 @@ def status():
             phase,host,reason=out.splitlines()[0].split('|',2)
             s.update(active=phase in ('PENDING','RUNNING','CONFIGURING','COMPLETING'),slurm_state=phase,reason=reason)
             if phase=='RUNNING': s['host']=host
+        try:
+            end_raw=call(['squeue','-h','-j',s['job_id'],'-o','%e']).splitlines()[0]
+            if end_raw in ('NONE','UNLIMITED',''):s['time_left_seconds']=None
+            else:s['time_left_seconds']=max(0,int((datetime.datetime.fromtimestamp(time.mktime(time.strptime(end_raw,'%Y-%m-%dT%H:%M:%S')))-datetime.datetime.now()).total_seconds()))
+        except (RuntimeError,IndexError,ValueError):s['time_left_seconds']=None
         else:
             # Missing from squeue is not proof of termination (accounting may lag).
             s['slurm_state']='UNKNOWN'
@@ -78,6 +83,12 @@ def status():
             job=json.loads(raw)
             labels=job['metadata'].get('labels',{})
             if labels.get('llm-remote-resource',labels.get('llm-away-resource'))!=token: raise RuntimeError('Job ownership mismatch')
+            deadline=job.get('spec',{}).get('activeDeadlineSeconds')
+            if deadline is None:s['time_left_seconds']=None
+            else:
+                started=job.get('status',{}).get('startTime')
+                if started:s['time_left_seconds']=max(0,deadline-int((datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(started.replace('Z','+00:00'))).total_seconds()))
+                else:s['time_left_seconds']=deadline
             s.update(active=not any(x.get('status')=='True' and x.get('type') in ('Complete','Failed') for x in job.get('status',{}).get('conditions',[])),slurm_state='PENDING')
             pods=json.loads(kubectl(['get','pods','-l','job-name='+s['job_id'],'-o','json']))['items']
             if pods:
@@ -89,6 +100,7 @@ def status():
         heartbeat=state/'heartbeat'
         active=time.time()-(heartbeat.stat().st_mtime if heartbeat.exists() else s['created'])<20
         s.update(active=active,slurm_state='RUNNING' if active else 'STOPPED',host='127.0.0.1')
+    if 'time_left_seconds' not in s:s['time_left_seconds']=None
     wf=state/'worker.state'
     if wf.exists():
         fields=wf.read_text().split()

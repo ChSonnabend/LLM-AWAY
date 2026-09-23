@@ -144,6 +144,7 @@ def session_rows():
             'terminal':row.get('_terminal',False), 'error':row.get('error',''),
             'agent_text':str(agent.get('text') or '')[-32768:],
             'gpu_lines':telemetry.get('lines',[]), 'gpu_timestamp':telemetry.get('timestamp'),
+            'time_left':monitor_ui.time_left_text(row),
             'details':safe_details(row),
         })
     return rows
