@@ -19,6 +19,7 @@ import struct
 import subprocess
 import threading
 import time
+import sys
 import webbrowser
 from urllib.request import urlopen
 from urllib.parse import parse_qs, urlparse
@@ -376,6 +377,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         try:
             body=self._body()
+            if self.path in ('/api/browser/ping','/api/browser/close'):
+                identifier=str(body.get('id',''))[:100]
+                with self.server.browser_lock:
+                    if self.path.endswith('/close'):
+                        self.server.browsers.pop(identifier,None)
+                    else:
+                        self.server.browsers[identifier]=time.monotonic()
+                        self.server.browser_seen=True
+                    self.server.browser_activity=time.monotonic()
+                self._json({'ok':True});return
             if self.path=='/api/terminal':
                 item=BrowserTerminal();identifier=secrets.token_urlsafe(18)
                 with TERMINALS_LOCK:TERMINALS[identifier]=item
@@ -435,10 +446,26 @@ def serve(port=8766,open_browser=True):
         if open_browser:open_dashboard(port)
         return
     server=ThreadingHTTPServer(('127.0.0.1',port),DashboardHandler)
+    server.browser_lock=threading.Lock()
+    server.browsers={}
+    server.browser_seen=False
+    server.browser_activity=time.monotonic()
+    def browser_watch():
+        started=time.monotonic()
+        while True:
+            time.sleep(1)
+            now=time.monotonic()
+            with server.browser_lock:
+                server.browsers={key:seen for key,seen in server.browsers.items() if now-seen<180}
+                idle=not server.browsers and now-server.browser_activity>5 and (server.browser_seen or now-started>30)
+            if idle:
+                server.shutdown();return
+    threading.Thread(target=browser_watch,daemon=True).start()
     if open_browser:open_dashboard(port)
     else:print(f'LLM-AWAY dashboard: http://127.0.0.1:{port}',flush=True)
     try:server.serve_forever()
     finally:
+        server.server_close()
         with TERMINALS_LOCK:items=list(TERMINALS.values());TERMINALS.clear()
         for item in items:item.close()
 
@@ -446,9 +473,24 @@ def serve(port=8766,open_browser=True):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port',type=int,default=8766)
+    parser.add_argument("--serve",action="store_true",help=argparse.SUPPRESS)
     args=parser.parse_args()
     if not 1024<=args.port<=65535:parser.error('--port must be 1024–65535')
-    serve(args.port)
+    if args.serve:
+        serve(args.port,open_browser=False)
+        return
+    if not dashboard_running(args.port):
+        log=Path(__file__).resolve().parents[2]/'run/dashboard.log'
+        log.parent.mkdir(parents=True,exist_ok=True)
+        with log.open('a') as output:
+            child=subprocess.Popen([sys.executable,'-m','llm_away.webapp','--serve','--port',str(args.port)],
+                stdin=subprocess.DEVNULL,stdout=output,stderr=output,start_new_session=True)
+        for _ in range(100):
+            if dashboard_running(args.port):break
+            if child.poll() is not None:raise RuntimeError(f'Dashboard failed; see {log}')
+            time.sleep(.1)
+        else:raise RuntimeError(f'Dashboard startup timed out; see {log}')
+    open_dashboard(args.port)
 
 
 if __name__=='__main__':main()

@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+_AWAY_ENTRY="${BASH_SOURCE[0]}"
+while [[ -L "$_AWAY_ENTRY" ]]; do
+    _AWAY_DIR="$(cd -P "$(dirname "$_AWAY_ENTRY")" && pwd)"
+    _AWAY_ENTRY="$(readlink "$_AWAY_ENTRY")"
+    [[ $_AWAY_ENTRY = /* ]] || _AWAY_ENTRY="$_AWAY_DIR/$_AWAY_ENTRY"
+done
+source "$(cd -P "$(dirname "$_AWAY_ENTRY")/../scripts" && pwd)/env.sh"
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do
     DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"

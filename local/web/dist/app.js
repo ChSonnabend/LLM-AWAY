@@ -583,3 +583,13 @@ window.addEventListener('error', event => notice(event.message || 'Unexpected br
 loadSessions();
 window.setInterval(loadSessions, 4000);
 window.setInterval(loadLog, 1000);
+
+// Each browser tab owns a lease; the server exits after the last tab closes.
+const browserLease = crypto.randomUUID();
+function pingBrowser() {
+  fetch('/api/browser/ping', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: browserLease})}).catch(() => {});
+}
+pingBrowser();
+setInterval(pingBrowser, 15000);
+window.addEventListener('pageshow', pingBrowser);
+window.addEventListener('pagehide', () => navigator.sendBeacon('/api/browser/close', JSON.stringify({id: browserLease})));

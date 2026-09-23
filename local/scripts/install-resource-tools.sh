@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/env.sh"
 mkdir -p "$HOME/.local/bin"
 # Remove only obsolete links installed by this repository.
 for name in add-serve res-background; do

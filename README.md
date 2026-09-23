@@ -271,3 +271,10 @@ attachment uses SSH plus `srun --overlap --pty` for Slurm, `kubectl exec -it` fo
 Kubernetes, or direct SSH. The selected CLI must be installed on that host.
 Use a new allocation after updating the remote workers. Releasing/unloading
 stops its agent terminal; detaching does not release the allocation.
+
+Local commands automatically prepare and use `local/.venv`, with dependencies
+pinned in `local/requirements.txt`. Run `local/scripts/init` to prepare it ahead
+of time; no manual activation is needed. RAG keeps its separate environments.
+`res-mon-web` opens the browser and returns to the shell. Closing the last
+dashboard/metrics tab releases the port after a short grace period (up to three
+minutes if the browser crashes or cannot send its close notification).

@@ -15,6 +15,14 @@ annotations above from being evaluated at runtime).
 """
 from __future__ import annotations
 
+import os as _os
+import pathlib as _pathlib
+import sys as _sys
+_away_root = _pathlib.Path(__file__).resolve().parents[1]
+_away_env = _away_root / "scripts/env.sh"
+if _away_env.exists() and _sys.prefix != str(_away_root / ".venv"):
+    _os.execvp("bash", ["bash", "-c", 'set -e; source "$1"; shift; exec python3 "$@"', "away", str(_away_env), str(_pathlib.Path(__file__).resolve()), *_sys.argv[1:]])
+
 import argparse
 import json
 import os

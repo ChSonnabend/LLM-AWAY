@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+_AWAY_ENTRY="${BASH_SOURCE[0]}"
+while [[ -L "$_AWAY_ENTRY" ]]; do
+    _AWAY_DIR="$(cd -P "$(dirname "$_AWAY_ENTRY")" && pwd)"
+    _AWAY_ENTRY="$(readlink "$_AWAY_ENTRY")"
+    [[ $_AWAY_ENTRY = /* ]] || _AWAY_ENTRY="$_AWAY_DIR/$_AWAY_ENTRY"
+done
+source "$(cd -P "$(dirname "$_AWAY_ENTRY")/../scripts" && pwd)/env.sh"
+
 repo_dir="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "${BASH_SOURCE[0]}")"
 config="${LLM_REMOTE_CONFIG:-$repo_dir/config/model.toml}"
 tty_state="$(stty -g 2>/dev/null || true)"
