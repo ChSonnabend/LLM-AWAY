@@ -15,6 +15,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,25 +40,66 @@ def roots_for(paths):
             if not any(Path(q).is_dir() and Path(q) in Path(p).parents for q in roots)]
 
 
-def runtime(gpu=False):
-    """Install dependencies once, isolated from the agent and user Python."""
+def bootstrap_python():
+    """Use a working base interpreter, even if the caller's old venv was removed."""
+    candidates=[shutil.which('python3.12'),shutil.which('python3.11'),
+                getattr(sys,'_base_executable',None),'/usr/bin/python3',
+                shutil.which('python3'),sys.executable]
+    checked=set()
+    for candidate in candidates:
+        if not candidate:continue
+        candidate=str(Path(candidate).resolve())
+        if candidate in checked or not Path(candidate).is_file():continue
+        checked.add(candidate)
+        try:
+            probe=subprocess.run([candidate,'-I','-c',
+                'import sys; print("%s.%s" % sys.version_info[:2]); sys.exit(sys.version_info < (3,10))'],
+                capture_output=True,text=True,timeout=15)
+        except (OSError,subprocess.TimeoutExpired):continue
+        if probe.returncode==0:return candidate,probe.stdout.strip()
+    raise ValueError('RAG requires a working Python 3.10+ with venv support; the previous interpreter may have been removed')
+
+
+def setup_command(command,log_path):
+    env=gpu_environment()
+    for name in ('PYTHONHOME','PYTHONPATH'):env.pop(name,None)
+    env['PYTHONNOUSERSITE']='1'
+    with log_path.open('a') as log:
+        result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,env=env)
+    if result.returncode:
+        detail=log_path.read_text(errors='replace')[-3000:].strip()
+        raise RuntimeError(f'RAG dependency setup exited {result.returncode}; see {log_path}\n{detail}')
+
+
+def runtime(gpu=False,status_log=None):
+    """Versioned, isolated environments; CPU and CUDA never share ONNX files."""
     CACHE.mkdir(parents=True, exist_ok=True, mode=0o700)
-    environment='venv-gpu' if gpu and sys.platform!='darwin' else 'venv'
-    python = CACHE/environment/'bin/python'
-    with (CACHE/('install-'+environment+'.lock')).open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        ready=(python.exists() and subprocess.run([str(python),'-c','import fastembed,mcp,pathspec'],
-               stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=gpu_environment() if gpu else None).returncode == 0)
-        if ready and (not gpu or gpu_provider_available(python)):
-            return python
-        if not ready:
-            interpreter = shutil.which('python3.12') or shutil.which('python3.11') or sys.executable
-            print('Preparing RAG dependencies on this host (first use only)…', flush=True)
-            command=[interpreter,'-m','venv']
-            if environment=='venv-gpu':command+=['--system-site-packages']
-            subprocess.run(command+[str(CACHE/environment)],check=True)
-            subprocess.run([str(python),'-m','pip','install','--quiet','fastembed>=0.6,<0.8','mcp>=1.12,<2','pathspec>=0.12,<1'],check=True)
-        if gpu and not gpu_provider_available(python):install_gpu_runtime(python)
+    provider=requested_gpu_provider() if gpu else ''
+    if gpu and not provider:raise ValueError('RAG GPU requested, but no supported GPU runtime was detected')
+    profile={'CUDAExecutionProvider':'cuda','ROCMExecutionProvider':'rocm'}.get(provider,'cpu')
+    requirements=ROOT/'requirements'/('rag-'+profile+'.txt')
+    common=ROOT/'requirements'/'rag-common.txt'
+    interpreter,version=bootstrap_python()
+    fingerprint=hashlib.sha256(b'isolated-v1\n'+requirements.read_bytes()+common.read_bytes()).hexdigest()[:12]
+    directory=CACHE/f'venv-{profile}-py{version}-{fingerprint}'
+    python=directory/'bin/python';marker=directory/'.ready'
+    log_path=CACHE/('setup-'+directory.name+'.log')
+    with (CACHE/('install-'+directory.name+'.lock')).open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        if marker.exists() and python.exists():
+            probe=subprocess.run([str(python),'-I','-c','import fastembed,mcp,pathspec,onnxruntime; assert hasattr(onnxruntime,"InferenceSession")'],
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            if probe.returncode==0 and (not gpu or gpu_provider_available(python)):return python
+        append_status(status_log,f'RAG: SETUP | Python {version} | {profile} | dependency log {log_path}')
+        print(f'Preparing isolated RAG dependencies; log: {log_path}',flush=True)
+        marker.unlink(missing_ok=True)
+        setup_command([interpreter,'-I','-m','venv','--clear',str(directory)],log_path)
+        setup_command([str(python),'-I','-m','pip','install','--quiet','-r',str(requirements)],log_path)
+        if profile=='rocm':install_gpu_runtime(python)
+        setup_command([str(python),'-I','-c','import fastembed,mcp,pathspec,onnxruntime; assert hasattr(onnxruntime,"InferenceSession")'],log_path)
+        if gpu and not gpu_provider_available(python):
+            raise ValueError(f'RAG runtime does not expose {provider}; see {log_path}')
+        marker.write_text(fingerprint+'\n')
     return python
 
 
@@ -81,7 +123,7 @@ def gpu_provider_available(python):
     provider=requested_gpu_provider()
     if not provider:return False
     code='import onnxruntime as o,sys;sys.exit(0 if '+repr(provider)+' in o.get_available_providers() else 1)'
-    return subprocess.run([str(python),'-c',code],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+    return subprocess.run([str(python),'-I','-c',code],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                           env=gpu_environment()).returncode==0
 
 
@@ -107,16 +149,33 @@ def install_gpu_runtime(python):
     elif provider=='CUDAExecutionProvider':
         subprocess.run([str(python),'-m','pip','uninstall','-y','onnxruntime'],
                        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        subprocess.run([str(python),'-m','pip','install','--quiet','onnxruntime-gpu'],check=True)
+        subprocess.run([str(python),'-m','pip','install','--quiet','--force-reinstall',
+                        'onnxruntime-gpu[cuda,cudnn]==1.26.0'],check=True)
     if not gpu_provider_available(python):
         raise ValueError(f'Installed runtime does not expose {provider or "a supported GPU provider"}')
 
 
 def prepare(paths,threads=2,memory_gb=0,gpu=False,status_log=None):
+    append_status(status_log,'RAG: SETUP | validating paths and preparing dependencies')
+    try:
+        return prepare_index(paths,threads,memory_gb,gpu,status_log)
+    except Exception as exc:
+        append_status(status_log,f'RAG: FAILED | setup | {type(exc).__name__}: {exc}')
+        raise
+
+
+def watch_build(process,status_log,build_log):
+    code=process.wait()
+    if code:
+        reason=f'signal {-code}' if code<0 else f'exit code {code}'
+        append_status(status_log,f'RAG: FAILED | index worker ended with {reason}; details: {build_log}')
+
+
+def prepare_index(paths,threads=2,memory_gb=0,gpu=False,status_log=None):
     roots=roots_for(paths)
-    python=runtime(gpu)
+    python=runtime(gpu,status_log=status_log)
     threads=max(1,int(threads));memory_gb=max(0,float(memory_gb))
-    command=[str(python),str(Path(__file__).resolve()),'--roots',json.dumps([str(p) for p in roots]),
+    command=[str(python),'-I',str(Path(__file__).resolve()),'--roots',json.dumps([str(p) for p in roots]),
              '--threads',str(threads),'--memory-gb',str(memory_gb),'--gpu',('yes' if gpu else 'no')]
     if status_log:command+=['--status-log',str(status_log)]
     if gpu:
@@ -125,9 +184,9 @@ def prepare(paths,threads=2,memory_gb=0,gpu=False,status_log=None):
             command=['env','LD_LIBRARY_PATH='+environment['LD_LIBRARY_PATH'],*command]
     directory=index_directory(roots);directory.mkdir(parents=True,exist_ok=True,mode=0o700)
     append_status(status_log,f'RAG: STARTING | 0% | model {MODEL} | roots {len(roots)} | threads {threads} | GPU {"yes" if gpu else "no"}')
-    log=(directory/'build.log').open('a')
-    subprocess.Popen(command+['--index','--owner-pid',str(os.getpid())],stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
-    log.close()
+    with (directory/'build.log').open('a') as log:
+        process=subprocess.Popen(command+['--index','--owner-pid',str(os.getpid())],stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
+    threading.Thread(target=watch_build,args=(process,status_log,directory/'build.log'),daemon=True).start()
     print(f'RAG: background index log {directory/"build.log"}',flush=True)
     return command
 
@@ -173,6 +232,9 @@ def append_status(path,message):
 def embedding_providers(use_gpu):
     if not use_gpu:return None
     import onnxruntime as ort
+    if requested_gpu_provider()=='CUDAExecutionProvider':
+        # Use the CUDA/cuDNN wheels in this environment, not another project's torch.
+        ort.preload_dlls(directory='')
     available=ort.get_available_providers()
     requested=requested_gpu_provider()
     preferred=[requested] if requested else ['CUDAExecutionProvider','ROCMExecutionProvider','CoreMLExecutionProvider']
@@ -478,13 +540,18 @@ def main():
     parser.add_argument('--gpu',choices=['yes','no'],default='no');parser.add_argument('--status-log')
     parser.add_argument('--owner-pid',type=int)
     args=parser.parse_args();os.umask(0o077)
+    try:return run(args)
+    except Exception as exc:
+        append_status(args.status_log,f'RAG: FAILED | {type(exc).__name__}: {exc}')
+        raise
+
+
+def run(args):
     if args.index and args.owner_pid:watch_owner(args.owner_pid,args.status_log)
     limit_memory(args.memory_gb)
     roots=roots_for(json.loads(args.roots))
     if args.index:
-        try:FolderIndexes(roots,threads=args.threads,gpu=args.gpu=='yes',status_log=args.status_log).refresh()
-        except Exception as exc:
-            append_status(args.status_log,'RAG: FAILED | '+str(exc));raise
+        FolderIndexes(roots,threads=args.threads,gpu=args.gpu=='yes',status_log=args.status_log).refresh()
         return
     from mcp.server.fastmcp import FastMCP
     import threading

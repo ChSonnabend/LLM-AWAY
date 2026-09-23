@@ -1,0 +1,5 @@
+-r rag-common.txt
+# GPU distribution avoids installing/uninstalling overlapping CPU ONNX files.
+fastembed-gpu==0.7.4
+# CUDA 12, with environment-owned NVIDIA libraries; supports Python 3.14.
+onnxruntime-gpu[cuda,cudnn]==1.26.0

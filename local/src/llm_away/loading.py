@@ -12,6 +12,9 @@ def prepare(path, spec):
     from . import terminals
     loading=spec['loading'];cfg=config(loading['config'])
     model=loading['model']
+    if spec.get('rag_config'):
+        from .rag import append_status
+        append_status(path/'rag.log','RAG: WAITING | preparing model/session before indexing')
     print('Loading '+model['alias']+'. Ctrl+B then D detaches; F2 reattaches.',flush=True)
     write(path/'attachment.json',dict(client_pid=os.getpid(),client_identity=identity(os.getpid())))
     try:
@@ -74,5 +77,10 @@ def prepare(path, spec):
             terminals.attach(path,data,remote_selection)
             return True
         return False
+    except Exception as exc:
+        if spec.get('rag_config'):
+            from .rag import append_status
+            append_status(path/'rag.log',f'RAG: FAILED | session startup | {type(exc).__name__}: {exc}')
+        raise
     finally:
         (path/'attachment.json').unlink(missing_ok=True)

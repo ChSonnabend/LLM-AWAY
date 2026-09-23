@@ -24,6 +24,14 @@ First use installs isolated dependencies and downloads a small CPU embedding mod
 persistent index under ignored `local/run/rag/`; no database service or extra GPU
 allocation is needed. Multiple sessions can reuse the index.
 
+RAG dependencies are pinned in `local/requirements/rag-*.txt`. CPU, CUDA and
+ROCm use separate virtual environments, keyed by Python version and requirements;
+system Python packages are excluded. A missing or broken environment is recreated
+on the next launch without removing cached indexes. Setup failures and worker
+errors appear in the session RAG log, including the dependency/build log path
+when available. After upgrading Python, restart existing sessions so their
+manager processes no longer reference a removed interpreter.
+
 Each selected folder (or individual file) has its own persistent index. Selecting
 different combinations reuses those indexes; one search merges ranked results
 across all selected paths. Workers share one embedding model instance and build

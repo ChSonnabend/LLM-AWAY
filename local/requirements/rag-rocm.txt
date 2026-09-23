@@ -1,0 +1,4 @@
+-r rag-common.txt
+fastembed==0.7.4
+# The version-matched AMD runtime is installed by install_gpu_runtime().
+numpy<2
