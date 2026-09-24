@@ -75,7 +75,14 @@ def allocation_options():
 def model_options(number):
     path=session_path(number);data=json.loads((path/'session.json').read_text())
     if data.get('native'):
-        return {'native':True,'models':[],'current':'','server_options':''}
+        selection={}
+        try:selection=json.loads((path/'agent-selection.json').read_text())
+        except (OSError,ValueError):pass
+        rag=selection.get('rag_config') or {}
+        return {'native':True,'models':[],'current':'','server_options':'',
+                'agent_cli':selection.get('cli','auto'),'agent_workdir':selection.get('cwd',''),
+                'rag':os.pathsep.join(rag.get('paths') or []),'rag_threads':rag.get('threads',2),
+                'rag_memory_gb':rag.get('memory_gb',0),'rag_gpu':bool(rag.get('gpu',False))}
     cfg=resources.config(data['config']);models=resources.discover_models(cfg)
     public=[]
     for model in models:
@@ -128,6 +135,22 @@ def load_browser_model(number, settings):
     return f'Session {number} started. Use Attach to open its agent terminal.'
 
 
+def restart_native_session(number, settings):
+    from . import native_sessions
+    path=session_path(number)
+    data=json.loads((path/'session.json').read_text())
+    if not data.get('native'):raise ValueError('This session is not a native CLI session')
+    instructions=None
+    cli=settings.get('cli')
+    if cli and cli!='auto':
+        config_path=os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml'))
+        cfg=resources.load_config(config_path)
+        base=cfg.claude.instructions if cli=='claude' else cfg.codex.instructions
+        instructions=base
+    native_sessions.update_settings(path,dict(settings,instructions=instructions))
+    return f'Session {number} agent restarted with the saved settings.'
+
+
 def session_rows():
     """Return monitor information without exposing session tokens or config."""
     rows=[]
@@ -139,6 +162,7 @@ def session_rows():
         rows.append({
             'id':row['id'], 'host':row.get('host',''), 'gpus':row.get('gpus',0),
             'phase':row.get('phase',''), 'model':row.get('model',''),
+            'native':row.get('native',False), 'native_cli':row.get('native_cli',''),
             'job_id':allocation.get('job_id',''), 'node':allocation.get('host',''),
             'model_state':model_state, 'busy':row.get('_busy',False),
             'terminal':row.get('_terminal',False), 'error':row.get('error',''),
@@ -357,6 +381,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         parsed=urlparse(self.path)
         try:
             if parsed.path=='/api/sessions':self._json({'sessions':session_rows(),'time':time.time()});return
+            if parsed.path=='/api/gpu-history':
+                from .gpu_history import append, read
+                query=parse_qs(parsed.query);path=session_path(query.get('session',[''])[0])
+                data=json.loads((path/'session.json').read_text())
+                append(path,(data.get('allocation') or {}).get('gpu_telemetry'))
+                self._json(read(path,query.get('after',['0'])[0]));return
             if parsed.path in ('/logo','/favicon.jpeg'):
                 data=LOGO_PATH.read_bytes();self.send_response(HTTPStatus.OK)
                 self.send_header('Content-Type','image/jpeg');self.send_header('Content-Length',str(len(data)))
@@ -401,6 +431,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 action=str(body.get('action',''))
                 if action in ('cleanup','release') and not body.get('confirmed'):
                     raise ValueError('Confirmation required')
+                print(json.dumps(dict(event='dashboard_action',time=time.time(),action=action,
+                    session=body.get('session'),peer=self.client_address[0],pid=os.getpid())),flush=True)
                 if action=='cleanup':
                     identifier=start_job(action,lambda:cleanup_released(body.get('preview_token')))
                 else:identifier=start_job(action,lambda:run_action(action,body.get('session')))
@@ -412,6 +444,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if self.path=='/api/load':
                 number=body.get('session');settings=dict(body.get('settings') or {})
                 identifier=start_job('Start session',lambda:load_browser_model(number,settings))
+                self._json({'job':identifier});return
+            if self.path=='/api/native':
+                number=body.get('session');settings=dict(body.get('settings') or {})
+                identifier=start_job('Restart native agent',lambda:restart_native_session(number,settings))
                 self._json({'job':identifier});return
             if self.path=='/api/chat':
                 resources.submit_prompt(int(body['session']),str(body.get('prompt','')))

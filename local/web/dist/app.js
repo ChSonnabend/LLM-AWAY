@@ -131,7 +131,8 @@ function renderChats(rows) {
   for (const card of [...cards.children]) if (!active.has(card.dataset.session)) card.remove();
   for (const row of rows) {
     const key = String(row.id);
-    const ready = Boolean(row.terminal) && ['LOADED', 'READY', 'RUNNING'].includes(String(row.model_state || '').toUpperCase());
+    const nativeReady = Boolean(row.phase && String(row.phase).toUpperCase() === 'RUNNING');
+    const ready = Boolean(row.terminal) && (nativeReady || ['LOADED', 'READY', 'RUNNING'].includes(String(row.model_state || '').toUpperCase()));
     let card = cards.querySelector(`[data-session="${key}"]`);
     if (!card) {
       card = node('article', 'panel chat-card'); card.dataset.session = key;
@@ -141,7 +142,7 @@ function renderChats(rows) {
       const screen = node('div', 'chat-terminal'); screen.dataset.session = key;
       card.append(heading, screen); cards.append(card);
     }
-    card.querySelector('h2').textContent = row.model || 'No model selected';
+    card.querySelector('h2').textContent = row.model || (nativeReady ? `Native ${row.native_cli || 'CLI'}` : 'No model selected');
     const status = card.querySelector('.chat-status'); status.className = `chat-status ${ready ? 'ready' : ''}`; status.textContent = ready ? `Terminal · ${row.time_left || '∞'}` : `${row.model_state || row.phase || 'Unavailable'} · ${row.time_left || '∞'}`;
     const screen = card.querySelector('.chat-terminal');
     if (!ready && chatTerminals.has(key)) closeChatTerminal(key, screen);
@@ -216,6 +217,7 @@ window.addEventListener('message', event => {
 function openSession(row) {
   selectSession(row, false);
   const state = String(row.model_state || '').toUpperCase();
+  if (row.native) { terminalWindow(`Session ${row.id}`, `run --session ${row.id} --resume\n`); return; }
   const loaded = Boolean(row.model) && ['LOADED', 'READY', 'RUNNING'].includes(state);
   if (loaded) {
     terminalWindow(`Session ${row.id}`, `run --session ${row.id} --resume\n`);
@@ -248,7 +250,7 @@ async function loadSessions() {
     for (const row of data.sessions) {
       const tr = node('tr');
       tr.dataset.id = row.id;
-      const values = [row.id, row.model_state || row.phase || '—', row.model || 'No model', row.node || row.host || '—', row.gpus || 0, row.job_id || '—', row.time_left || '∞'];
+      const values = [row.id, row.model_state || row.phase || '—', row.model || (row.native ? `Native ${row.native_cli || 'CLI'}` : 'No model'), row.node || row.host || '—', row.gpus || 0, row.job_id || '—', row.time_left || '∞'];
       values.forEach(value => tr.append(node('td', '', String(value))));
       tr.title = row.model && ['LOADED', 'READY', 'RUNNING'].includes(String(row.model_state || '').toUpperCase())
         ? 'Double-click to attach or choose a conversation'
@@ -411,12 +413,28 @@ async function allocationDialog() {
 
 async function modelDialog() {
   const sessionId = selected.id;
-  const loading = operationView(`Session ${sessionId}`, 'Discovering installed models…');
+  const loading = operationView(`Session ${sessionId}`, 'Loading session options…');
   openDialog(`Session ${sessionId}`, loading);
   try {
     const data = await api(`/api/models?session=${sessionId}`);
     if (data.native) {
-      menu(`Session ${sessionId}`, [{label: 'Attach native agent', description: 'Open the retained native CLI terminal.', run: () => terminalWindow(`Session ${sessionId}`, `run --session ${sessionId} --resume\n`)}]);
+      const form = node('form', 'form');
+      const grid = node('div', 'form-grid');
+      const cli = selectControl(['auto', 'codex', 'claude'], data.agent_cli || 'auto');
+      const workdir = inputControl(data.agent_workdir || ''); workdir.placeholder = 'Default project directory';
+      const rag = inputControl(data.rag || ''); rag.placeholder = '/path/to/src:/path/to/README.md';
+      const ragThreads = inputControl(String(data.rag_threads || 2), 'number'); ragThreads.min = '1'; ragThreads.step = '1';
+      const ragMemory = inputControl(String(data.rag_memory_gb || 0), 'number'); ragMemory.min = '0'; ragMemory.step = '0.5';
+      const ragGpu = selectControl(['no', 'yes'], data.rag_gpu ? 'yes' : 'no');
+      grid.append(field('Native CLI', cli, 'Uses its own account and model.'), field('Agent work directory', workdir), field('RAG', rag, 'Colon-separated source paths.', true), field('RAG CPU cores', ragThreads, 'Embedding threads on this host.'), field('RAG memory (GiB)', ragMemory, 'Hard memory limit; 0 means unlimited.'), field('RAG GPU', ragGpu, 'Uses an available local GPU for RAG.'));
+      const submit = node('button', 'primary', 'Attach / Restart agent'); submit.type = 'submit';
+      const actions = node('div', 'form-actions'); actions.append(submit); form.append(grid, actions);
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        const settings = {cli: cli.value, agent_workdir: workdir.value, rag: rag.value, rag_threads: ragThreads.value, rag_memory_gb: ragMemory.value, rag_gpu: ragGpu.value, resume: true};
+        runOperation(`Session ${sessionId}`, 'Starting the native agent terminal…', '/api/native', {session: sessionId, settings}, true);
+      });
+      openDialog(`Session ${sessionId}`, form);
       return;
     }
     const form = node('form', 'form');

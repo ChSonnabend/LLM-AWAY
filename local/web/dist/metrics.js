@@ -1,6 +1,8 @@
 const cards = document.getElementById('metric-cards');
 const updated = document.getElementById('metrics-updated');
 const history = new Map();
+const historyCursors = new Map();
+let refreshing = false;
 let selectedSession = '';
 const pageParameters = new URLSearchParams(window.location.search);
 let requestedSession = pageParameters.get('session') || '';
@@ -44,7 +46,7 @@ function record(row) {
     if (!history.get(session).has(key)) history.get(session).set(key, []);
     const points = history.get(session).get(key);
     if (!points.length || points[points.length - 1].time !== timestamp) points.push({...gpu, time: timestamp});
-    if (points.length > 360) points.splice(0, points.length - 360);
+
   }
 }
 
@@ -75,8 +77,8 @@ function draw(canvas, series) {
   }
   const allPoints = series.flatMap(item => item.points);
   if (!allPoints.length) return;
-  const first = Math.min(...allPoints.map(point => point.time));
-  const last = Math.max(Math.max(...allPoints.map(point => point.time)), first + 1);
+  const first = allPoints.reduce((value, point) => Math.min(value, point.time), Infinity);
+  const last = Math.max(allPoints.reduce((value, point) => Math.max(value, point.time), -Infinity), first + 1);
   const plot = (points, color, value) => {
     ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
     points.forEach((point, index) => {
@@ -128,20 +130,36 @@ function reportHeight() {
 }
 
 async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
   try {
     const response = await fetch('/api/sessions', {cache: 'no-store'}); const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Request failed');
-    data.sessions.forEach(record);
+
     const preferred = requestedSession || selectedSession;
     const firstWithTelemetry = data.sessions.find(row => samplesFrom(row).length);
     selectedSession = data.sessions.some(row => String(row.id) === preferred) ? preferred : String(firstWithTelemetry?.id || data.sessions[0]?.id || '');
+    if (selectedSession) {
+      const session = selectedSession;
+      let more = true;
+      while (more) {
+        const after = historyCursors.get(session) || 0;
+        const response = await fetch(`/api/gpu-history?session=${encodeURIComponent(session)}&after=${after}`, {cache: 'no-store'});
+        const page = await response.json();
+        if (!response.ok) throw new Error(page.error || 'GPU history unavailable');
+        page.samples.forEach(sample => record({...sample, id: session}));
+        historyCursors.set(session, page.cursor);
+        more = page.more;
+      }
+    }
     updated.textContent = `Live · ${new Date(data.time * 1000).toLocaleTimeString()}`; render();
   } catch (error) { updated.textContent = error.message; }
+  finally { refreshing = false; }
 }
 
 window.addEventListener('message', event => {
   if (event.origin !== window.location.origin || event.data?.type !== 'select-session') return;
-  requestedSession = String(event.data.session || ''); selectedSession = requestedSession; render();
+  requestedSession = String(event.data.session || ''); selectedSession = requestedSession; render(); refresh();
 });
 window.addEventListener('resize', render);
 refresh(); setInterval(refresh, 5000);

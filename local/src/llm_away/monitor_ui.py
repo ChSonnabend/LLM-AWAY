@@ -116,7 +116,7 @@ def snapshots(store):
             selection=path.parent/'agent-selection.json'
             selection_data=json.loads(selection.read_text()) if selection.exists() else {}
             data['agent_location']=selection_data.get('location','local')
-            data['rag_enabled']=bool(selection_data.get('rag_command') or selection_data.get('rag_config'))
+            data['rag_enabled']=bool(selection_data.get('rag_command') or selection_data.get('rag_config') or (data.get('native') and selection_data.get('native')))
             if selection.exists():
                 try:
                     loading=selection_data.get('loading')

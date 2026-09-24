@@ -23,15 +23,40 @@ def locked(path):
         yield
 
 
-def live(pid, born):
+def process_key(pid):
+    """Linux process identity independent of locale, timezone and recycled PIDs."""
+    try:
+        stat=Path(f'/proc/{int(pid)}/stat').read_text().rsplit(')',1)[1].split()
+        boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        return boot+':'+stat[19]
+    except (OSError,ValueError,IndexError,TypeError):return ''
+
+
+def same_birth(left, right):
+    """Compare legacy ps lstart records written in English or German."""
+    if left==right:return True
+    months=dict(zip('Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(),range(1,13)))
+    months.update(Mär=3,Mrz=3,Mai=5,Okt=10,Dez=12)
+    def parts(value):
+        fields=str(value).split()
+        if len(fields)!=5 or fields[1] not in months:return None
+        return (months[fields[1]],fields[2],fields[3],fields[4])
+    a,b=parts(left),parts(right)
+    return a is not None and a==b
+
+
+def live(pid, born, key=None):
     from .resources import identity
     if not pid or not born:return False
     try:os.kill(int(pid),0)
     except ProcessLookupError:return False
     except PermissionError:return True
+    if key:
+        current=process_key(pid)
+        return not current or current==key
     current=identity(pid)
     # An unavailable process query is not evidence that the process died.
-    return not current or current==born
+    return not current or same_birth(current,born)
 
 
 def register(path, pid=None):
@@ -43,15 +68,15 @@ def register(path, pid=None):
         if data.get('phase')=='RELEASED':raise ValueError('Session already released')
         try:
             old=read(path/'runner.json')
-            if (old.get('token')==data['token'] and old.get('pid')==pid and old.get('identity')==born
-                    and live(old.get('guard_pid'),old.get('guard_identity'))):return
+            if (old.get('token')==data['token'] and old.get('pid')==pid and same_birth(old.get('identity'),born)
+                    and live(old.get('guard_pid'),old.get('guard_identity'),old.get('guard_key'))):return
         except (OSError,ValueError):pass
-        record=dict(pid=pid,identity=born,token=data['token'],generation=uuid.uuid4().hex)
+        record=dict(pid=pid,identity=born,process_key=process_key(pid),token=data['token'],generation=uuid.uuid4().hex)
         write(path/'runner.json',record)
         with (path/'session.log').open('a') as log:
             child=subprocess.Popen([sys.executable,'-m','llm_away.session_guard',str(path),record['generation']],
                 stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
-        record.update(guard_pid=child.pid,guard_identity=identity(child.pid))
+        record.update(guard_pid=child.pid,guard_identity=identity(child.pid),guard_key=process_key(child.pid))
         write(path/'runner.json',record)
 
 
@@ -67,22 +92,22 @@ def finished(path):
 def ensure(path, data):
     """Adopt existing runners when res-mon is opened after an upgrade."""
     from .resources import identity
-    if data.get('allocation_cleaned'):return None
+    if data.get('allocation_cleaned') or data.get('phase') in ('RELEASED','STOPPED'):return None
     try:
         record=read(path/'runner.json')
         if record.get('token')==data['token']:
             if record.get('finished'):return None
-            if live(record.get('guard_pid'),record.get('guard_identity')):return record['pid']
-            if live(record['pid'],record['identity']):
+            if live(record.get('guard_pid'),record.get('guard_identity'),record.get('guard_key')):return record['pid']
+            if live(record['pid'],record['identity'],record.get('process_key')):
                 register(path,record['pid']);return record['pid']
             with locked(path):
                 current=read(path/'runner.json')
                 if current['generation']!=record['generation']:return current['pid']
-                if live(current.get('guard_pid'),current.get('guard_identity')):return current['pid']
+                if live(current.get('guard_pid'),current.get('guard_identity'),current.get('guard_key')):return current['pid']
                 with (path/'session.log').open('a') as log:
                     child=subprocess.Popen([sys.executable,'-m','llm_away.session_guard',str(path),record['generation']],
                         stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
-                record.update(guard_pid=child.pid,guard_identity=identity(child.pid))
+                record.update(guard_pid=child.pid,guard_identity=identity(child.pid),guard_key=process_key(child.pid))
                 from .resources import write
                 write(path/'runner.json',record)
             return record['pid']
@@ -140,14 +165,17 @@ def cleanup(path, data):
 
 
 def watch(path, generation):
-    from .resources import write
+    from .resources import write, identity
     while True:
         with locked(path):
             record=read(path/'runner.json');data=read(path/'session.json')
             if (record['generation']!=generation or record['token']!=data['token']
                     or record.get('finished') or data.get('allocation_cleaned') or data.get('phase')=='RELEASED'):return
-            dead=not live(record['pid'],record['identity'])
+            dead=not live(record['pid'],record['identity'],record.get('process_key'))
             if dead:
+                print(json.dumps(dict(event='runner_lost',time=time.time(),runner_pid=record['pid'],
+                    expected_identity=record['identity'],observed_identity=identity(record['pid']),
+                    expected_key=record.get('process_key'),observed_key=process_key(record['pid']),guard_pid=os.getpid())),flush=True)
                 try:cleanup(path,data);return
                 except Exception as exc:
                     data.update(phase='RELEASE FAILED',error='Runner exited; cleanup will retry: '+str(exc))

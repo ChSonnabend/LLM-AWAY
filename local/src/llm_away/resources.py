@@ -244,6 +244,10 @@ def daemon(path):
     sock.listen(4);sock.settimeout(1)
     def state(**kwargs):
         data.update(kwargs);write(path/'session.json',data)
+        if 'allocation' in kwargs:
+            from .gpu_history import append
+            try:append(path,(kwargs['allocation'] or {}).get('gpu_telemetry'))
+            except Exception as exc:print(f'GPU history: {exc}',file=sys.stderr,flush=True)
     def stop_model(caller=None):
         nonlocal child,cfg
         from .serve_registration import remove
@@ -519,9 +523,20 @@ def run_agent(args):
                 preference=getattr(args,'cli',None) or os.environ.get('LLM_AWAY_CLI') or cfg.agent.cli
                 native_cli=choose_cli(preference,available) if len(available)>1 else available[0]
                 agent_cwd=getattr(args,'agent_workdir',None) or os.getcwd()
+                rag_config=({'paths':args.rag,'threads':getattr(args,'rag_threads',2),
+                             'memory_gb':getattr(args,'rag_memory_gb',0),'gpu':getattr(args,'rag_gpu',False),
+                             'compute':'local','paths_location':'local'}
+                            if args.rag else None)
+                instructions=cfg.claude.instructions or cfg.codex.instructions
+                if rag_config:
+                    instructions+=(('\n' if instructions else '')+
+                                   'RAG is available through the exact function '
+                                   '`mcp__project_search__search_project`. Invoke that full function name with '
+                                   '`{"query":"what to find","limit":6}`. Never call `mcp__project_search` by itself, '
+                                   'and do not look for RAG in MCP resource listings.')
                 selection={'location':'local','cli':native_cli,'cwd':agent_cwd,'extra_args':args.agent_args,
-                           'rag_command':None,'native':True,
-                           'instructions':cfg.claude.instructions or cfg.codex.instructions if native_cli=='claude' else cfg.codex.instructions}
+                           'rag_config':rag_config,'rag_command':None,'native':True,
+                           'instructions':instructions}
                 write(path/'agent-selection.json',selection)
                 current=json.loads((path/'session.json').read_text())
                 terminals.ensure(path,current,selection)
