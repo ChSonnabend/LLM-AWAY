@@ -532,7 +532,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 if w>=95:
                     fixed=[7, max(10,w//9-10),10,14,14,11,11,25,8]
                     widths=fixed+[max(8,w-1-sum(fixed))]
-                    headers=['ID','HOST','GPUS','SCHEDULER','STATE','AGENT','JOB','TIME LEFT (dd-hh:mm)','PS','MODEL / NODE']
+                    headers=['ID','HOST','GPUS','SCHEDULER','STATE','AGENT','JOB','TIME LEFT (DD-HH:MM)','PS','MODEL / NODE']
                     def cells(d):
                         cfg=d.get('config',{});a=d.get('allocation',{})
                         return [d['id'],d.get('host','?'),d.get('gpus',0),'native' if d.get('native') else cfg.get('backend_type','?').replace('_server',''),
