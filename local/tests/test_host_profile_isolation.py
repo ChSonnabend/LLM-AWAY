@@ -1,9 +1,23 @@
 from dataclasses import replace
 import unittest
-from llm_away.config import AppConfig
+from llm_away.config import AppConfig, HostConfig
 from llm_away.host_store import apply_profile
 
 class HostProfileIsolation(unittest.TestCase):
+    def test_named_host_does_not_inherit_saved_host_paths(self):
+        cfg=AppConfig()
+        cfg=replace(cfg,remote=replace(cfg.remote,resource_state_dir='/scratch/other/cache'),
+                    llamacpp=replace(cfg.llamacpp,models_dir='/scratch/other/models',installation_dir='/scratch/other'),
+                    hosts={'hydra-h200':HostConfig(name='hydra-h200',ssh_host='hydra',
+                        remote_workdir='/lustre/project',state_dir='/lustre/cache')})
+        result=cfg.with_host('hydra-h200')
+        self.assertEqual(result.ssh.host,'hydra')
+        self.assertEqual(result.remote.workdir,'/lustre/project')
+        self.assertEqual(result.remote.state_dir,'/lustre/cache')
+        self.assertEqual(result.remote.resource_state_dir,'')
+        self.assertEqual(result.llamacpp.models_dir,'')
+        self.assertEqual(result.llamacpp.installation_dir,'')
+
     def test_older_host_does_not_inherit_other_host_paths(self):
         cfg=AppConfig()
         cfg=replace(cfg,remote=replace(cfg.remote,resource_state_dir='/scratch/other/cache'),
