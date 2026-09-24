@@ -1055,11 +1055,12 @@ def monitor(args):
     if entries:
         from .helper_relations import annotate
         annotate(STORE,entries)
-        rows=[['ID','HOST','GPUS','STATE','MODEL','JOB','IS MASTER','IS HELPER','PS','ERROR']]
+        rows=[['ID','HOST','GPUS','STATE','MODEL','JOB','TIME LEFT (dd-hh:mm)','IS MASTER','IS HELPER','PS','ERROR']]
         for data in entries:
+            from .monitor_ui import time_left_text
             rows.append([str(data['id']),data['host'],str(data['gpus']),data['phase'],
                          data.get('model') or ('native '+data['native_cli'] if data.get('native') else '-'),str(data.get('allocation',{}).get('job_id') or '-'),
-                         data['is_master'],data['is_slave'],str(data.get('ps') or '—'),data.get('error') or ''])
+                         time_left_text(data),data['is_master'],data['is_slave'],str(data.get('ps') or '—'),data.get('error') or ''])
         widths=[max(len(row[col]) for row in rows) for col in range(len(rows[0]))]
         header=rows[0]
         print('\x1b[1;94m'+'    '.join(header[col].ljust(widths[col]) for col in range(len(header)))+'\x1b[0m')

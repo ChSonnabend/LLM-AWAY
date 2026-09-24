@@ -57,11 +57,11 @@ def status():
             phase,host,reason=out.splitlines()[0].split('|',2)
             s.update(active=phase in ('PENDING','RUNNING','CONFIGURING','COMPLETING'),slurm_state=phase,reason=reason)
             if phase=='RUNNING': s['host']=host
-        try:
-            end_raw=call(['squeue','-h','-j',s['job_id'],'-o','%e']).splitlines()[0]
-            if end_raw in ('NONE','UNLIMITED',''):s['time_left_seconds']=None
-            else:s['time_left_seconds']=max(0,int((datetime.datetime.fromtimestamp(time.mktime(time.strptime(end_raw,'%Y-%m-%dT%H:%M:%S')))-datetime.datetime.now()).total_seconds()))
-        except (RuntimeError,IndexError,ValueError):s['time_left_seconds']=None
+            try:
+                end_raw=call(['squeue','-h','-j',s['job_id'],'-o','%e']).splitlines()[0]
+                if end_raw in ('NONE','UNLIMITED',''):s['time_left_seconds']=None
+                else:s['time_left_seconds']=max(0,int((datetime.datetime.fromtimestamp(time.mktime(time.strptime(end_raw,'%Y-%m-%dT%H:%M:%S')))-datetime.datetime.now()).total_seconds()))
+            except (RuntimeError,IndexError,ValueError):s['time_left_seconds']=None
         else:
             # Missing from squeue is not proof of termination (accounting may lag).
             s['slurm_state']='UNKNOWN'
