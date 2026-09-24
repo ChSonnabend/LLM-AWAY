@@ -12,9 +12,24 @@ def prepare(path, spec):
     from . import terminals
     loading=spec['loading'];cfg=config(loading['config'])
     model=loading['model']
-    if spec.get('rag_config'):
-        from .rag import append_status
-        append_status(path/'rag.log','RAG: WAITING | preparing model/session before indexing')
+    rag=spec.get('rag_config')
+    rag_command=None
+    if rag:
+        from .rag_transfer import snapshot
+        from .rag import append_status, prepare as prepare_rag
+        rag=dict(rag)
+        compute=rag.pop('compute',spec.get('target_location','local'))
+        source=rag.pop('paths_location',spec.get('target_location','local'))
+        if (source,compute)==('local','local'):
+            # Local indexing only needs the local file paths, so start it while the
+            # model loads instead of after the model is ready.
+            command=prepare_rag(rag.get('paths') or [],rag.get('threads',2),rag.get('memory_gb',0),
+                                rag.get('gpu',False),path/'rag.log')
+            spec['rag_config']=None
+            rag_command=(terminals.local_rag_for_remote_agent(path,json.loads((path/'session.json').read_text()),cfg,{},command)
+                         if spec.get('target_location')=='remote' else command)
+        else:
+            append_status(path/'rag.log','RAG: WAITING | preparing model/session before snapshotting')
     print('Loading '+model['alias']+'. Ctrl+B then D detaches; F2 reattaches.',flush=True)
     write(path/'attachment.json',dict(client_pid=os.getpid(),client_identity=identity(os.getpid())))
     try:
@@ -40,10 +55,10 @@ def prepare(path, spec):
         spec['model']=model['alias']
         print('Model ready. Opening CLI.',flush=True)
         rag=spec.get('rag_config')
-        data=allocation=None
-        if rag or spec.get('target_location')=='remote':
-            data=json.loads((path/'session.json').read_text())
-            allocation=rpc(path,'status').get('allocation',{})
+        data=(json.loads((path/'session.json').read_text())
+              if rag or spec.get('target_location')=='remote' else None)
+        allocation=(rpc(path,'status').get('allocation',{})
+                    if rag or spec.get('target_location')=='remote' else None)
         if rag:
             from .rag_transfer import snapshot
             from .rag import prepare as prepare_rag
@@ -51,17 +66,11 @@ def prepare(path, spec):
             compute=rag.pop('compute',spec.get('target_location','local'))
             source=rag.pop('paths_location',spec.get('target_location','local'))
             rag['paths']=snapshot(cfg,allocation,data['token'],rag.get('paths') or [],source,compute,path)
-            if compute=='local':
-                command=prepare_rag(rag['paths'],rag.get('threads',2),rag.get('memory_gb',0),
-                                    rag.get('gpu',False),path/'rag.log')
-                spec['rag_config']=None
-                spec['rag_command']=(terminals.local_rag_for_remote_agent(path,data,cfg,allocation,command)
-                                     if spec.get('target_location')=='remote' else command)
-            elif spec.get('target_location')=='local':
+            if compute!='local' and spec.get('target_location')=='local':
                 spec['rag_command']=terminals.remote_rag_command(cfg,allocation,rag,data['token'])
                 spec['rag_config']=None
             else:
-                spec['rag_config']=rag;spec['rag_command']=None
+                spec['rag_config']=rag;spec['rag_command']=rag_command
         if spec.get('target_location')=='remote':
             info=remote(cfg,data['token'],data['remote_port'],'agent-info')
             if not info.get('clis'):raise ValueError('Install codex or claude on the compute host')
