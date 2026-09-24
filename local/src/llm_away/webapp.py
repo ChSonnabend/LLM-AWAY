@@ -202,7 +202,7 @@ def safe_details(row):
         'Model loader PID: '+str(row.get('provider_pid') or '—'),
         'Model flags: '+(shlex.join(llama.get('server_extra_args') or []) if row.get('model') else ''),
         'Slurm flags: '+(shlex.join(slurm_flags) if cfg.get('backend_type')=='slurm_server' else '—'),
-        'Time left (dd-hh:mm): '+monitor_ui.time_left_text(row),
+        'Time left: '+monitor_ui.time_left_text(row),
         'Agent: '+agent_state,
         'RAG: '+('enabled' if row.get('rag_enabled') else 'disabled'),
     ]
