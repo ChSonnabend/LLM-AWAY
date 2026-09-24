@@ -438,7 +438,17 @@ def dashboard_running(port):
 def open_dashboard(port):
     url=f'http://127.0.0.1:{port}/'
     print(f'LLM-AWAY dashboard: {url}',flush=True)
-    webbrowser.open(url)
+    quiet=None;saved=None
+    try:
+        saved=os.dup(2);quiet=os.open(os.devnull,os.O_WRONLY);os.dup2(quiet,2)
+    except OSError:
+        if quiet is not None:os.close(quiet);quiet=None
+        if saved is not None:os.close(saved);saved=None
+    try:webbrowser.open(url)
+    finally:
+        if saved is not None and quiet is not None:os.dup2(saved,2)
+        if saved is not None:os.close(saved)
+        if quiet is not None:os.close(quiet)
 
 
 def serve(port=8766,open_browser=True):
@@ -483,14 +493,18 @@ def main():
     if not dashboard_running(args.port):
         log=Path(__file__).resolve().parents[2]/'run/dashboard.log'
         log.parent.mkdir(parents=True,exist_ok=True)
+        def log_tail():
+            try:return log.read_text(errors='replace').strip()[-2000:]
+            except OSError:return ''
         with log.open('a') as output:
             child=subprocess.Popen([sys.executable,'-m','llm_away.webapp','--serve','--port',str(args.port)],
                 stdin=subprocess.DEVNULL,stdout=output,stderr=output,start_new_session=True)
         for _ in range(100):
             if dashboard_running(args.port):break
-            if child.poll() is not None:raise RuntimeError(f'Dashboard failed; see {log}')
+            if child.poll() is not None:
+                raise RuntimeError(f'Dashboard failed; see {log}\n{log_tail()}')
             time.sleep(.1)
-        else:raise RuntimeError(f'Dashboard startup timed out; see {log}')
+        else:raise RuntimeError(f'Dashboard startup timed out; see {log}\n{log_tail()}')
     open_dashboard(args.port)
 
 
