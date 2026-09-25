@@ -70,10 +70,10 @@ while [[ ! -f "$state/release" ]]; do
         health_tick=$((SECONDS + 5))
         if python3 - "$state/allocation.json" <<'HEALTH'
 import json, sys
-from urllib.request import urlopen
+from urllib.request import build_opener, ProxyHandler
 try:
     with open(sys.argv[1]) as stream: port=json.load(stream)['server_port']
-    with urlopen('http://127.0.0.1:%s/health' % port,timeout=1) as response:
+    with build_opener(ProxyHandler({})).open('http://127.0.0.1:%s/health' % port,timeout=1) as response:
         healthy=response.status==200 and json.load(response).get('status')=='ok'
     sys.exit(0 if healthy else 1)
 except Exception:

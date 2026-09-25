@@ -117,6 +117,26 @@ class RemoteOwnershipTests(unittest.TestCase):
         finally:
             worker.terminate();worker.communicate(timeout=10)
 
+    def test_legacy_loading_worker_uses_live_health_without_proxy(self):
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import threading
+        class Health(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200);self.end_headers();self.wfile.write(b'{"status":"ok"}')
+            def log_message(self,*args):pass
+        server=HTTPServer(('127.0.0.1',0),Health)
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            allocation=json.loads((self.state/'allocation.json').read_text())
+            allocation['server_port']=server.server_port
+            (self.state/'allocation.json').write_text(json.dumps(allocation))
+            generation=self.call('start')['generation']
+            (self.state/'worker.state').write_text(generation+' LOADING host')
+            with patch.dict('os.environ',{'http_proxy':'http://127.0.0.1:1','HTTP_PROXY':'http://127.0.0.1:1','no_proxy':'','NO_PROXY':''}):
+                self.assertEqual(self.call('status')['model_state'],'LOADED')
+            self.assertEqual((self.state/'desired').read_text(),generation)
+        finally:server.shutdown();server.server_close();thread.join()
+
     def test_release_requires_explicit_intent_and_is_audited(self):
         self.call('start')
         self.assertIn('Explicit release required',self.call('release',ok=False))

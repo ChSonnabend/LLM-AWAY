@@ -102,7 +102,9 @@ async function runOperation(title, description, endpoint, payload, closeOnSucces
     view.querySelector('h3').textContent = result.state === 'done' ? 'Completed' : 'Could not complete';
     view.querySelector('p').textContent = result.message;
     await loadSessions();
-    if (result.state === 'done' && closeOnSuccess) {
+    if (result.state === 'done' && endpoint === '/api/load') {
+      await terminalWindow(`Session ${payload.session}`, `run --session ${payload.session} --resume\n`);
+    } else if (result.state === 'done' && closeOnSuccess) {
       window.setTimeout(() => { if (token === dialogToken) closeDialog(); }, 500);
     }
   } catch (error) {

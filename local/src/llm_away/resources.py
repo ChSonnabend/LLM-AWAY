@@ -17,7 +17,10 @@ import sys
 import time
 import threading
 import uuid
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, ProxyHandler
+
+# Provider and tunnel traffic must stay local, even on hosts with HTTP proxies.
+urlopen = build_opener(ProxyHandler({})).open
 
 from .config import AppConfig, load_config
 from .backends import SlurmServerBackend, KubernetesBackend, BackendError

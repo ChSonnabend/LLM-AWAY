@@ -3,7 +3,10 @@ import json
 import os
 from pathlib import Path
 import time
-from urllib.request import urlopen
+from urllib.request import build_opener, ProxyHandler
+
+# Provider and tunnel traffic must stay local, even on hosts with HTTP proxies.
+urlopen = build_opener(ProxyHandler({})).open
 
 
 def prepare(path, spec):

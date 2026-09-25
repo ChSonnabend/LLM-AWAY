@@ -72,7 +72,7 @@ class DashboardUpgradeTests(unittest.TestCase):
 105 {uid} python3 -m llm_away.webapp --restart --port 8766
 '''
         self.assertEqual(webapp.dashboard_processes(processes,8766),[100])
-        with patch.object(webapp.subprocess,'check_output',return_value=processes),patch.object(webapp.os,'kill') as kill,patch.object(webapp,'dashboard_running',return_value=False):webapp.stop_dashboard(8766)
+        with patch.object(webapp.subprocess,'check_output',return_value=processes),patch.object(webapp.os,'kill') as kill,patch.object(webapp,'port_listening',return_value=False):webapp.stop_dashboard(8766)
         kill.assert_called_once_with(100,webapp.signal.SIGTERM)
 
     def test_opening_dashboard_restarts_outdated_process(self):
@@ -80,6 +80,25 @@ class DashboardUpgradeTests(unittest.TestCase):
             with patch.object(webapp,'__file__',str(Path(tmp)/'src/llm_away/webapp.py')),patch.object(webapp.sys,'argv',['res-mon-web']),patch.object(webapp,'dashboard_running',side_effect=[True,True]),patch.object(webapp,'dashboard_current',return_value=False),patch.object(webapp,'stop_dashboard') as stop,patch.object(webapp.subprocess,'Popen') as start,patch.object(webapp,'open_dashboard') as show:
                 webapp.main();stop.assert_called_once_with(8766)
                 self.assertIn('--serve',start.call_args.args[0]);show.assert_called_once_with(8766)
+
+    def test_restart_handles_unresponsive_http_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(webapp,'__file__',str(Path(tmp)/'src/llm_away/webapp.py')), \
+                 patch.object(webapp.sys,'argv',['res-mon-web','--restart']), \
+                 patch.object(webapp,'dashboard_running',side_effect=[False,True]), \
+                 patch.object(webapp,'port_listening',return_value=True), \
+                 patch.object(webapp,'stop_dashboard') as stop,patch.object(webapp.subprocess,'Popen'), \
+                 patch.object(webapp,'open_dashboard'):
+                webapp.main()
+                stop.assert_called_once_with(8766)
+
+    def test_stop_waits_for_socket_not_session_endpoint(self):
+        output=f'123 {os.getuid()} python3 -m llm_away.webapp --serve --port 8766'
+        with patch.object(webapp.subprocess,'check_output',return_value=output), \
+             patch.object(webapp.os,'kill') as kill,patch.object(webapp,'port_listening',side_effect=[True,False]) as probe, \
+             patch.object(webapp,'dashboard_running',side_effect=AssertionError('Slow endpoint')),patch.object(webapp.time,'sleep'):
+            webapp.stop_dashboard(8766)
+            self.assertEqual(probe.call_count,2);kill.assert_called_once_with(123,webapp.signal.SIGTERM)
 
     def test_runtime_endpoint_reports_loaded_revision(self):
         handler=object.__new__(webapp.DashboardHandler);handler.path='/api/runtime'

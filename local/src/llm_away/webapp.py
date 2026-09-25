@@ -16,13 +16,17 @@ import secrets
 import shlex
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import threading
 import time
 import sys
 import webbrowser
-from urllib.request import urlopen
+from urllib.request import build_opener, ProxyHandler
+
+# Provider and tunnel traffic must stay local, even on hosts with HTTP proxies.
+urlopen = build_opener(ProxyHandler({})).open
 from urllib.parse import parse_qs, urlparse
 
 from . import cleanup, monitor_ui, resources
@@ -534,12 +538,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:self._json({'error':str(exc)},HTTPStatus.BAD_REQUEST)
 
 
-def dashboard_running(port):
+def port_listening(port):
     try:
-        with urlopen(f'http://127.0.0.1:{port}/api/sessions',timeout=.5) as response:
-            payload=json.loads(response.read())
-        return isinstance(payload.get('sessions'),list)
-    except Exception:return False
+        with socket.create_connection(('127.0.0.1',port),timeout=.5):return True
+    except OSError:return False
+
+
+def dashboard_running(port):
+    # Session enumeration can block on SSH. A busy dashboard still owns its port.
+    for endpoint,key,kind in (('runtime','revision',str),('sessions','sessions',list)):
+        try:
+            with urlopen(f'http://127.0.0.1:{port}/api/{endpoint}',timeout=.5) as response:
+                payload=json.loads(response.read())
+            if isinstance(payload.get(key),kind):return True
+        except Exception:pass
+    return False
 
 
 def dashboard_current(port):
@@ -573,7 +586,7 @@ def stop_dashboard(port):
         try:os.kill(pid,signal.SIGTERM)
         except ProcessLookupError:pass
     deadline=time.monotonic()+5
-    while dashboard_running(port):
+    while port_listening(port):
         if time.monotonic()>=deadline:raise RuntimeError('Dashboard has not stopped yet; retry shortly')
         time.sleep(.1)
 
@@ -635,7 +648,7 @@ def main():
         serve(args.port,open_browser=False)
         return
     running=dashboard_running(args.port)
-    if running and (args.restart or not dashboard_current(args.port)):
+    if (args.restart and port_listening(args.port)) or (running and not dashboard_current(args.port)):
         print('Restarting dashboard to load current code; resource allocations are retained.',flush=True)
         stop_dashboard(args.port)
         running=False

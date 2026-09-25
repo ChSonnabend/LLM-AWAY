@@ -118,6 +118,15 @@ def status():
         requested=desired.read_text().strip()
         if requested and requested!=s.get('generation'):
             s.update(model_state='STARTING' if (state/(requested+'.sh')).exists() else 'STOPPING',generation=requested)
+    # Older workers never promote LOADING. Check the live server so discovered
+    # allocations report readiness without requiring their model to be restarted.
+    if s.get('active') and s.get('model_state')=='LOADING' and kind in ('direct','slurm_server') and s.get('host'):
+        try:
+            from urllib.request import build_opener, ProxyHandler
+            url='http://%s:%s/health' % (s['host'],s.get('server_port',p['port']))
+            with build_opener(ProxyHandler({})).open(url,timeout=1) as response:
+                if response.status==200 and json.load(response).get('status')=='ok':s['model_state']='LOADED'
+        except Exception:pass
     telemetry=state/'gpu.json'
     if telemetry.exists():
         try:s['gpu_telemetry']=json.loads(telemetry.read_text())

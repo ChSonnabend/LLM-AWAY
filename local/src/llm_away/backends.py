@@ -10,7 +10,10 @@ import sys
 import threading
 import time
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, ProxyHandler
+
+# Provider and tunnel traffic must stay local, even on hosts with HTTP proxies.
+urlopen = build_opener(ProxyHandler({})).open
 
 from .config import AppConfig
 from .protocol import normalize_chat_messages, native_tool_definitions
