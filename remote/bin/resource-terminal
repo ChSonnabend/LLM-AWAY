@@ -79,8 +79,14 @@ def configure(state):
     current=subprocess.check_output(tmux(state)+['show-options','-sv','terminal-overrides'],universal_newlines=True)
     if override[1:] not in current:
         subprocess.check_call(tmux(state)+['set-option','-as','terminal-overrides',override])
+    # Anchor a drag at the mouse-down position, not the pane cursor or an old
+    # copy-mode selection. Mouse-aware agents still receive their own events.
+    subprocess.check_call(tmux(state)+['bind-key','-T','root','MouseDrag1Pane',
+        'if-shell','-F','#{mouse_any_flag}','send-keys -M','copy-mode -M'])
     copy=clipboard_command()
     for table in ('copy-mode','copy-mode-vi'):
+        subprocess.check_call(tmux(state)+['bind-key','-T',table,'MouseDrag1Pane',
+            'select-pane ; send-keys -X clear-selection ; send-keys -X begin-selection'])
         action=['copy-pipe-and-cancel',' '.join(shlex.quote(x) for x in copy)] if copy else ['copy-selection-and-cancel']
         subprocess.check_call(tmux(state)+['bind-key','-T',table,'C-c','send-keys','-X',*action])
         # Finish mouse selection immediately so subsequent typing reaches the agent.

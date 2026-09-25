@@ -102,7 +102,9 @@ def ensure():
     env = {'LLAMACPP_MODELS_DIR':llama.get('models_dir',''), 'LLAMACPP_INSTALLATION_DIR':llama.get('installation_dir',''), 'MODEL_NAME':llama.get('model_name') or p['model'], 'LLAMACPP_BACKEND':llama['backend'],
            'LLAMACPP_ROCM_ARCH':llama.get('rocm_arch','auto'), 'LLAMACPP_HOST':'0.0.0.0',
            'LLAMACPP_PORT':str(p['server_port']), 'LLAMACPP_CTX_SIZE':str(llama.get('context_size',8192)),
-           'LLAMACPP_MTP':llama.get('mtp','auto'), 'LLAMACPP_IN_CONTAINER':'1'}
+           'LLAMACPP_MTP':llama.get('mtp','auto'), 'LLAMACPP_IN_CONTAINER':'1',
+           **({} if llama.get('mtp_draft_tokens') is None else
+              {'LLAMACPP_MTP_DRAFT_TOKENS':str(llama['mtp_draft_tokens'])})}
     # The pod uses the bundled model recipes and container-native server binary.
     args = [llama.get('server_cli','bin/run-server'),'--ctx-size',str(llama.get('context_size',8192))]
     args += llama.get('server_extra_args',[])

@@ -385,6 +385,7 @@ def daemon(path):
                             if not allocation.get('active'): raise ValueError('Allocation is not active')
                             cfg=replace(cfg,model=replace(cfg.model,name=request['model']['alias']),
                                 llamacpp=replace(cfg.llamacpp,model_name=request['model']['name'],mtp=request['mtp'],
+                                                 mtp_draft_tokens=request.get('mtp_draft_tokens',cfg.llamacpp.mtp_draft_tokens),
                                                  server_extra_args=request.get('server_extra_args',cfg.llamacpp.server_extra_args),
                                                  container=request.get('container',cfg.llamacpp.container)))
                             if request['model'].get('context_size',0)>0:
@@ -689,8 +690,9 @@ def run_agent(args):
             models=discover_models(cfg,allow_cached=True)
             if not args.model and sys.stdin.isatty() and not getattr(args,'quiet',False):
                 from .monitor_ui import mtp_select_win
-                model,args.mtp=mtp_select_win(models,args.session,cfg.llamacpp.model_name)
+                model,mtp_choice=mtp_select_win(models,args.session,cfg.llamacpp.model_name)
                 if model is None:return
+                args.mtp,args.mtp_tokens=(mtp_choice if isinstance(mtp_choice,tuple) else (mtp_choice,None))
                 args.mtp_prompted=True
             else:model=choose_model(models,cfg.llamacpp.model_name,args.model)
         # Explicit preset context also applies to allocations created before the preset.
@@ -707,6 +709,8 @@ def run_agent(args):
                 preference=next((cli for cli in ('codex','claude','opencode') if shutil.which(cli)), 'codex')
             selected_cli=choose_cli(preference)
         mtp=cfg.llamacpp.mtp if reuse else args.mtp if getattr(args,'mtp_prompted',False) else choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
+        if not reuse and getattr(args,'mtp_prompted',False):
+            cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,mtp_draft_tokens=getattr(args,'mtp_tokens',None)))
         if not reuse:
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=model_server_options(cfg,model['name'])))
         if not reuse and sys.stdin.isatty() and not getattr(args,'quiet',False):
@@ -780,7 +784,8 @@ def run_agent(args):
         try:
             if not reuse:
                 if loaded:rpc(path,'stop',client_pid=os.getpid())
-                rpc(path,'start',model=model,mtp=mtp,server_extra_args=cfg.llamacpp.server_extra_args,client_pid=os.getpid())
+                rpc(path,'start',model=model,mtp=mtp,mtp_draft_tokens=cfg.llamacpp.mtp_draft_tokens,
+                    server_extra_args=cfg.llamacpp.server_extra_args,client_pid=os.getpid())
             started=True
             write(path/'attachment.json',dict(client_pid=os.getpid(),client_identity=identity(os.getpid())))
             deadline=time.time()+cfg.gateway.startup_timeout_seconds
@@ -1078,9 +1083,10 @@ def allocate_and_run(mode,session=None):
     except Exception as exc:report('Model discovery failed: '+str(exc));return
     from .monitor_ui import mtp_select_win
     try:
-        model,mtp=mtp_select_win(models,number,current=str(data.get('model') or cfg.llamacpp.model_name))
+        model,mtp_choice=mtp_select_win(models,number,current=str(data.get('model') or cfg.llamacpp.model_name))
     except KeyboardInterrupt:return
     if model is None:return
+    mtp,mtp_tokens=mtp_choice if isinstance(mtp_choice,tuple) else (mtp_choice,None)
     cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=model_server_options(cfg,model['name'])))
     from .monitor_ui import _form_screen
     options=_form_screen('Model server options', [('text','Options',None,shlex.join(cfg.llamacpp.server_extra_args))], [shlex.join(cfg.llamacpp.server_extra_args)])
@@ -1089,7 +1095,7 @@ def allocate_and_run(mode,session=None):
     except ValueError as exc:report(str(exc));return
     args=Namespace(session=number,model=model['name'],mtp=mtp,rag=[],helper=False,quiet=True,server_extra_args=extra,
                    mtp_prompted=True,
-                   log_helper=True,agent_location='local',cli=None,agent_workdir=None,
+                   mtp_tokens=mtp_tokens,log_helper=True,agent_location='local',cli=None,agent_workdir=None,
                    agent_args=[],resume=True,detach=True)
     try:terminal_operation(run_agent,args)
     except (ValueError,RuntimeError,OSError,subprocess.SubprocessError) as exc:

@@ -75,7 +75,9 @@ try:
                     LLAMACPP_CONTAINER=image, LLAMACPP_CONTAINER_RUNTIME=l.get('container_runtime','apptainer'),
                     LLAMACPP_VISIBLE_DEVICES=l.get('visible_devices',''), LLAMACPP_HOST='127.0.0.1',
                     LLAMACPP_PORT=str(p['server_port']), LLAMACPP_CTX_SIZE=str(l.get('context_size',8192)),
-                    LLAMACPP_MTP=l.get('mtp','auto'), MODEL_NAME=l.get('model_name') or p['model'])
+                    LLAMACPP_MTP=l.get('mtp','auto'),
+                    **({} if l.get('mtp_draft_tokens') is None else {'LLAMACPP_MTP_DRAFT_TOKENS':str(l['mtp_draft_tokens'])}),
+                    MODEL_NAME=l.get('model_name') or p['model'])
                 if l.get('backend') == 'cuda' and l.get('visible_devices'):
                     env['CUDA_VISIBLE_DEVICES'] = l['visible_devices']
                 if l.get('backend') == 'rocm' and l.get('visible_devices'):

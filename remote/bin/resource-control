@@ -294,7 +294,7 @@ def start():
     if s.get('model_state') in ('STARTING','LOADING','LOADED','READY'):
         previous=s.get('session') or {}
         def runtime_settings(settings):
-            return {key:value for key,value in settings.items() if key not in ('model_batch_defaults','model_host_batch_defaults')}
+            return {key:value for key,value in settings.items() if value is not None and key not in ('model_batch_defaults','model_host_batch_defaults')}
         if previous and (previous.get('model')!=c['model'] or runtime_settings(previous.get('llamacpp',{}))!=runtime_settings(c['llamacpp'])):
             raise ValueError('Stop the existing model before changing its configuration')
         return status()

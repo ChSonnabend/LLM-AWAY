@@ -146,6 +146,8 @@ extra_args = ["-n", "64"]
 model_name = "qwen3.8-27b-q4km"
 # auto follows the remote preset; on/off explicitly control MTP in the remote wrapper.
 mtp = "auto"
+# Optional explicit draft token count for MTP; clamped to 1..model draft_n_max remotely.
+# mtp_draft_tokens = 2
 server_cli = "bin/run-server"
 model_path = ""
 context_size = 128000

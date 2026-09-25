@@ -24,6 +24,9 @@ llama = payload["llamacpp"]
 mtp = llama.get("mtp", "auto")
 if mtp not in ("auto", "on", "off"):
     sys.exit("invalid MTP mode; expected auto, on, or off")
+mtp_draft_tokens = llama.get("mtp_draft_tokens")
+if mtp_draft_tokens is not None and (not isinstance(mtp_draft_tokens, int) or mtp_draft_tokens < 1):
+    sys.exit("invalid MTP draft token count; expected a positive integer")
 
 def q(value):
     return shlex.quote(str(value))
@@ -75,6 +78,7 @@ setup = [
     f"cd {q(payload['remote_workdir'])}",
     f"export MODEL_NAME={q(llama.get('model_name') or payload['model'])}",
     f"export LLAMACPP_MTP={q(mtp)}",
+    *([] if mtp_draft_tokens is None else [f"export LLAMACPP_MTP_DRAFT_TOKENS={q(mtp_draft_tokens)}"]),
     f"export LLAMACPP_MODELS_DIR={q(llama.get('models_dir', ''))}",
     f"export LLAMACPP_INSTALLATION_DIR={q(llama.get('installation_dir', ''))}",
     f"export LLAMACPP_BACKEND={q(llama.get('backend', 'rocm'))}",

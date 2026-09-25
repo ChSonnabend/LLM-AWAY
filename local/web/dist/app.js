@@ -316,9 +316,14 @@ async function loadLog() {
     $('output-title').textContent = `${label} log`;
     $('log-path').textContent = data.path;
     const output = $('log-output');
+    const selection = window.getSelection();
+    // Replacing a text node during a drag expands or destroys the selection.
+    if (output.dataset.selecting || (selection && !selection.isCollapsed && (output.contains(selection.anchorNode) || output.contains(selection.focusNode)))) return;
+    const content = data.content || 'No output yet.';
+    if (output.textContent === content) return;
     const follow = output.scrollHeight - output.scrollTop - output.clientHeight < 24;
     const position = output.scrollTop;
-    output.textContent = data.content || 'No output yet.';
+    output.textContent = content;
     output.scrollTop = follow ? output.scrollHeight : position;
   } catch (error) { notice(error.message, true); }
   finally { logBusy = false; }
@@ -487,6 +492,18 @@ async function modelDialog() {
     if (data.discovery_warning) notice(data.discovery_warning, true);
     const model = selectControl(modelOptions, data.models.find(item => item.alias === data.current || item.name === data.current)?.name || data.models[0]?.name || '');
     const mtp = selectControl(['auto', 'on', 'off'], 'auto');
+    const mtpTokens = inputControl('', 'number'); mtpTokens.min = '1'; mtpTokens.step = '1';
+    const mtpTokensField = field('MTP draft tokens',mtpTokens);
+    let mtpMaximum = 0;
+    const updateMtpTokens = () => {
+      const current = data.models.find(item => item.name === model.value);
+      const enabled = Boolean(current?.mtp?.available && current?.mtp?.toggle_supported && mtp.value === 'on');
+      mtpMaximum = Math.max(1, parseInt(current?.mtp?.draft_n_max, 10) || 8);
+      mtpTokensField.hidden = !enabled;
+      mtpTokens.title = enabled ? `1 to ${mtpMaximum} draft tokens; blank uses the model default` : '';
+      mtpTokens.max = String(mtpMaximum);
+      if (parseInt(mtpTokens.value, 10) > mtpMaximum) mtpTokens.value = String(mtpMaximum);
+    };
     const location = selectControl(['local', 'remote'], data.agent_location || 'local');
     const cli = selectControl(['auto', 'codex', 'claude', 'opencode'], data.agent_cli || 'auto');
     const workdir = inputControl(data.agent_workdir || ''); workdir.placeholder = 'Default project directory';
@@ -517,7 +534,7 @@ async function modelDialog() {
     build.addEventListener('change',updateBuild); updateBuild();
     grid.append(field('llama.cpp runtime',build,'Changing the runtime requires loading the model again.'),containerField);
 
-    grid.append(field('Model', model, '', true), field('MTP', mtp), field('Agent location', location), field('Agent CLI', cli), field('Agent work directory', workdir), field('Model server options', server, 'Batch, context and backend arguments.', true));
+    grid.append(field('Model', model, '', true), field('MTP', mtp), mtpTokensField, field('Agent location', location), field('Agent CLI', cli), field('Agent work directory', workdir), field('Model server options', server, 'Batch, context and backend arguments.', true));
     ragGrid.append(field('RAG', rag, 'Colon-separated source paths.', true), field('RAG compute', ragCompute, 'Where the embedding model and vector index run.'), field('RAG paths live on', ragPathsLocation, 'Different hosts are synchronized to a per-session snapshot.', true), field('RAG CPU cores', ragThreads, 'Embedding threads on the RAG compute host.'), field('RAG memory (GiB)', ragMemory, 'Hard limit on the RAG compute host; 0 means unlimited.'), field('RAG GPU', ragGpu, 'Uses an available GPU on the RAG compute host.'));
 
     function updateRagLocation() {
@@ -547,6 +564,7 @@ async function modelDialog() {
       updateRagPaths(); updateBuild();
     }
     model.addEventListener('change', () => applyModelDefaults()); applyModelDefaults(true);
+    mtp.addEventListener('change',updateMtpTokens); updateMtpTokens();
     form.append(machineSection, ragSection);
     let replaceLoaded = null;
     if (data.loaded || data.remote_owner) {
@@ -569,7 +587,7 @@ async function modelDialog() {
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (replaceLoaded && !replaceLoaded.checked) { notice('Acknowledge model replacement before loading the new configuration.', true); return; }
-      runOperation(`Start session ${sessionId}`, 'Loading the model and preparing the retained agent terminal…', '/api/load', {session: sessionId, settings: {build_mode:build.value, container_path:containerPath.value, model: model.value, mtp: mtp.value, agent_location: location.value, cli: cli.value, agent_workdir: workdir.value, rag: rag.value, rag_compute: ragCompute.value, rag_paths_location: ragPathsLocation.value, rag_threads: ragThreads.value, rag_memory_gb: ragMemory.value, rag_gpu: ragGpu.value, remote_rag_id:remoteRag.value, replace_loaded: Boolean(replaceLoaded?.checked), expected_owner: data.expected_owner, expected_generation:data.expected_generation, server_options: server.value}}, true);
+      runOperation(`Start session ${sessionId}`, 'Loading the model and preparing the retained agent terminal…', '/api/load', {session: sessionId, settings: {build_mode:build.value, container_path:containerPath.value, model: model.value, mtp: mtp.value, mtp_draft_tokens: mtp.value === 'on' && mtpTokens.value ? Math.max(1, Math.min(parseInt(mtpTokens.value, 10) || mtpMaximum, mtpMaximum)) : null, agent_location: location.value, cli: cli.value, agent_workdir: workdir.value, rag: rag.value, rag_compute: ragCompute.value, rag_paths_location: ragPathsLocation.value, rag_threads: ragThreads.value, rag_memory_gb: ragMemory.value, rag_gpu: ragGpu.value, remote_rag_id:remoteRag.value, replace_loaded: Boolean(replaceLoaded?.checked), expected_owner: data.expected_owner, expected_generation:data.expected_generation, server_options: server.value}}, true);
     });
     openDialog(`Attach session ${sessionId}`, form);
   } catch (error) {
@@ -722,3 +740,8 @@ function makeResizable(panel, target, key) {
 makeResizable(document.querySelector('.monitor-panel'),$('log-output'),'monitor-log');
 makeResizable(document.querySelector('.gpu-overview-panel'),$('gpu-overview'),'gpu-history');
 makeResizable($('terminal-slot'),$('terminal-host'),'terminal');
+
+$('log-output').addEventListener('pointerdown', event => { if (event.button === 0) $('log-output').dataset.selecting = 'true'; });
+window.addEventListener('pointerup', () => { delete $('log-output').dataset.selecting; });
+window.addEventListener('pointercancel', () => { delete $('log-output').dataset.selecting; });
+window.addEventListener('blur', () => { delete $('log-output').dataset.selecting; });

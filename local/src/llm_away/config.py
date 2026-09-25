@@ -150,6 +150,7 @@ class LlamaCppConfig:
         'hydra': {'glm-5.3-flash-q4': [2048, 512], 'glm-5.3-flash-q8': [2048, 512]}})
     server_command: list[str] = field(default_factory=list)
     mtp: str = "auto"
+    mtp_draft_tokens: int | None = None
 
     def __post_init__(self):
         if self.mtp not in ("auto", "on", "off"):
@@ -160,6 +161,8 @@ class LlamaCppConfig:
             controls = {"--spec-type", "--spec-draft-model", "--model-draft", "-md"}
             if any(arg.split("=", 1)[0] in controls for arg in self.extra_args + self.server_extra_args):
                 raise ValueError("Use llamacpp.mtp or manual speculative type/model arguments, not both")
+        if self.mtp_draft_tokens is not None and self.mtp_draft_tokens < 1:
+            raise ValueError("llamacpp.mtp_draft_tokens must be at least 1")
 
 @dataclass(frozen=True)
 class CodexConfig:

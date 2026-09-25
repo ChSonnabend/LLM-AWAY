@@ -31,6 +31,9 @@ llama = payload["llamacpp"]
 mtp = llama.get("mtp", "auto")
 if mtp not in ("auto", "on", "off"):
     sys.exit("invalid MTP mode; expected auto, on, or off")
+mtp_draft_tokens = llama.get("mtp_draft_tokens")
+if mtp_draft_tokens is not None and (not isinstance(mtp_draft_tokens, int) or mtp_draft_tokens < 1):
+    sys.exit("invalid MTP draft token count; expected a positive integer")
 
 def q(value):
     return shlex.quote(str(value))
@@ -136,19 +139,19 @@ def server_command():
         args = [server_cli, "--ctx-size", str(llama.get("context_size", 8192))]
         args.extend(llama.get("server_extra_args") or [])
         return " ".join(q(arg) for arg in args)
-
-    args = [
-        server_cli,
-        "-m",
-        model_path,
-        "--host",
-        "0.0.0.0",
-        "--port",
-        str(payload["server_port"]),
-        "-c",
-        str(llama.get("context_size", 8192)),
-    ]
-    args.extend(llama.get("server_extra_args") or [])
+    else:
+        args = [
+            server_cli,
+            "-m",
+            model_path,
+            "--host",
+            "0.0.0.0",
+            "--port",
+            str(payload["server_port"]),
+            "-c",
+            str(llama.get("context_size", 8192)),
+        ]
+        args.extend(llama.get("server_extra_args") or [])
     return " ".join(q(arg) for arg in args)
 
 def sbatch_options():
@@ -287,6 +290,7 @@ export LLAMACPP_HOST=0.0.0.0
 export LLAMACPP_PORT={server_port_q}
 export LLAMACPP_CTX_SIZE={context_size_q}
 export LLAMACPP_MTP={mtp_q}
+{mtp_draft_tokens_export}
 {mtp_check}
 echo "llm-away: server job on $(hostname -s), ROCm arch $LLAMACPP_ROCM_ARCH" >&2
 {build}
@@ -309,6 +313,8 @@ exec {server_cmd}
         server_port_q=q(payload["server_port"]),
         context_size_q=q(llama.get("context_size", 8192)),
         mtp_q=q(mtp),
+        mtp_draft_tokens_export=("" if mtp_draft_tokens is None else
+                                 f"export LLAMACPP_MTP_DRAFT_TOKENS={q(mtp_draft_tokens)}"),
         mtp_check=("source scripts/lib/llamacpp-env.sh\n"
                    "declare -F llamacpp_apply_mtp_mode >/dev/null || "
                    "{ echo 'Remote wrapper lacks LLAMACPP_MTP support' >&2; exit 2; }") if mtp != "auto" else ":",

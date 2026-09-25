@@ -260,6 +260,12 @@ llamacpp_load_model_config() {
   MODEL_ALIAS=${MODEL_ALIAS:-$MODEL_NAME}
   if [[ ${LLAMACPP_MTP:-auto} == auto && ${MODEL_MTP_DEFAULT:-} == off ]]; then LLAMACPP_MTP=off; fi
   llamacpp_apply_mtp_mode
+  # Apply after model.env so preset defaults can still win when unset.
+  if [[ ${LLAMACPP_MTP_DRAFT_TOKENS:-} =~ ^[0-9]+$ && ${LLAMACPP_MTP:-auto} != off ]]; then
+    local configured_max=${LLAMACPP_SPEC_DRAFT_N_MAX:-$([[ ${MODEL_MTP_EMBEDDED:-0} == 1 ]] && echo 2 || echo 8)}
+    LLAMACPP_SPEC_DRAFT_N_MAX=$(( LLAMACPP_MTP_DRAFT_TOKENS < 1 ? configured_max :
+      (LLAMACPP_MTP_DRAFT_TOKENS > configured_max ? configured_max : LLAMACPP_MTP_DRAFT_TOKENS) ))
+  fi
 }
 
 llamacpp_resolve_model() {

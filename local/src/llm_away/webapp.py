@@ -198,7 +198,8 @@ def load_browser_model(number, settings):
     rag_threads=max(1,int(settings.get('rag_threads') or 2))
     rag_memory_gb=max(0,float(settings.get('rag_memory_gb') or 0))
     args=argparse.Namespace(session=number,model=settings.get('model') or None,
-        mtp=settings.get('mtp','auto'),rag=rag,helper=False,quiet=True,
+        mtp=settings.get('mtp','auto'),mtp_tokens=int(settings['mtp_draft_tokens']) if settings.get('mtp_draft_tokens') not in (None,'') else None,
+        rag=rag,helper=False,quiet=True,
         rag_threads=rag_threads,rag_memory_gb=rag_memory_gb,rag_gpu=settings.get('rag_gpu')=='yes',
         rag_compute=settings.get('rag_compute') or None,rag_paths_location=settings.get('rag_paths_location') or None,
         server_extra_args=extra,mtp_prompted=True,log_helper=True,

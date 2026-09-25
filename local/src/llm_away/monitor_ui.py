@@ -258,17 +258,30 @@ def model_select_win(models,loader,number,current=''):
 
 
 def mtp_select_win(models,number,current=''):
-    """Model dropdown plus MTP choice; returns (model|None, mtp) with no terminal prompts."""
+    """Model dropdown plus MTP choice; returns (model|None, mtp[, draft tokens])."""
     from .models import mtp_label
     model=model_select_win(models,None,number,current)
     if model is None:return None,'auto'
     mtp=model.get('mtp',{})
     if mtp.get('available') and mtp.get('toggle_supported'):
+        try:maximum=max(1,int(mtp.get('draft_n_max') or 8))
+        except (TypeError,ValueError):maximum=8
         choice=dropdown_win('MTP — '+model['name'],['MTP on','MTP off'],'MTP on')
         if choice is None:return model,'auto'
-        mtp='on' if choice=='MTP on' else 'off'
+        if choice!='MTP on':return model,'off'
+        raw=_input_win(f'MTP draft tokens (1-{maximum})',str(maximum),number)
+        if raw is None:return model,'auto'
+        try:tokens=int(raw)
+        except ValueError:tokens=maximum
+        return model,('on',max(1,min(tokens,maximum)))
     else:mtp='auto'
     return model,mtp
+
+
+def _input_win(title,default,number):
+    """Small curses text prompt; returns stripped text or None on Esc."""
+    values=_form_screen(title,[('text','Value',None,str(default))],[str(default)])
+    return None if values is None else str(values[0]).strip()
 
 
 class Canceled(Exception):pass
@@ -390,6 +403,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
         try:curses.curs_set(0)
         except curses.error:pass
         win.keypad(True);win.timeout(200)
+        curses.mousemask(0)
         if curses.has_colors():
             curses.start_color()
             try:curses.use_default_colors()

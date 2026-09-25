@@ -58,6 +58,19 @@ def _choose_inline(options, prompt, default):
             sequence += os.read(fd, 1)
             if len(sequence) > 1 and (sequence[-1:] in b'ABCDHF~' or len(sequence) >= 8):
                 break
+        # tmux mouse tracking emits SGR (\x1b[<b;x;yM/m) and X10 (\x1b[M+3)
+        # reports; ignore them so drags don't cancel inline menus.
+        if sequence.startswith(b'[M'):
+            while select.select([fd], [], [], 0.05)[0]:
+                extra = os.read(fd, 1)
+                if not extra:
+                    break
+                sequence += extra
+                if len(sequence) >= 6:
+                    break
+            return b''
+        if sequence.startswith(b'[<'):
+            return b''
         return {b'[A': b'up', b'OA': b'up', b'[B': b'down', b'OB': b'down',
                 b'[H': b'home', b'OH': b'home', b'[1~': b'home',
                 b'[F': b'end', b'OF': b'end', b'[4~': b'end'}.get(sequence, b'escape' if not sequence else b'')

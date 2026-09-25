@@ -192,6 +192,15 @@ class RemoteOwnershipTests(unittest.TestCase):
         self.assertNotIn(key,script)
         self.assertEqual(self.call('credential')['api_key'],key)
 
+    def test_missing_optional_default_does_not_reject_running_model(self):
+        generation=self.call('start')['generation']
+        descriptor=json.loads((self.state/'session.json').read_text())
+        descriptor['llamacpp'].pop('mtp_draft_tokens',None)
+        (self.state/'session.json').write_text(json.dumps(descriptor))
+        self.assertEqual(self.call('start')['generation'],generation)
+        self.cfg=replace(self.cfg,llamacpp=replace(self.cfg.llamacpp,mtp_draft_tokens=4))
+        self.assertIn('Stop the existing model',self.call('start',ok=False))
+
     def test_stale_takeover_rejected(self):
         current=self.call('start')
         self.call('claim',client='two',expected_owner='one',expected_generation=current['generation'])
