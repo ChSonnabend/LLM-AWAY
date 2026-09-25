@@ -277,7 +277,7 @@ def daemon(path):
             from .gpu_history import append
             try:append(path,(kwargs['allocation'] or {}).get('gpu_telemetry'))
             except Exception as exc:print(f'GPU history: {exc}',file=sys.stderr,flush=True)
-    def stop_model(caller=None):
+    def stop_model(caller=None,local_only=False):
         nonlocal child,cfg
         from .serve_registration import remove
         from .terminals import engine
@@ -296,6 +296,9 @@ def daemon(path):
             try:child.wait(timeout=10)
             except subprocess.TimeoutExpired:child.kill();child.wait()
         child=None
+        if local_only:
+            state(model='',client_pid=None,client_identity='',provider_pid=None,provider_identity='')
+            return
         before=remote(cfg,token,port,'status')
         remote(cfg,token,port,'stop')
         if allocation_pending(before):
@@ -390,9 +393,15 @@ def daemon(path):
                             child=subprocess.Popen([sys.executable,'-m','llm_away.resources','provider',str(path)],stdin=subprocess.DEVNULL)
                             state(provider_pid=child.pid,provider_identity=identity(child.pid))
                             answer={'port':cfg.server.port}
-                        elif action in ('stop','release'):
+                        elif action=='release':
+                            # Release must not wait for a crashed model to acknowledge stop.
+                            remote(cfg,token,port,'release',explicit_release=True)
+                            state(phase='RELEASED',allocation=dict(data.get('allocation') or {},active=False))
+                            try:stop_model(request.get('client_pid'),local_only=True)
+                            except Exception as exc:print('Allocation released; local cleanup: '+str(exc),flush=True)
+                            answer={'ok':True}
+                        elif action=='stop':
                             stop_model(request.get('client_pid'))
-                            if action=='release':remote(cfg,token,port,'release',explicit_release=True);state(phase='RELEASED')
                             answer={'ok':True}
                         else:raise ValueError('Unknown operation')
                     except Exception as exc:answer={'rpc_error':str(exc)}
@@ -786,17 +795,6 @@ def release_session(number):
         data['phase']='RELEASED';write(path/'session.json',data);return
     if data.get('native'):
         return rpc(path,'release')
-    # Stop the foreground run wrapper (which terminates its Codex child) first.
-    current=data
-    try:current=json.loads((path/'attachment.json').read_text())
-    except (OSError,ValueError):pass
-    pid=current.get('client_pid');born=current.get('client_identity')
-    if pid and born and identity(pid)==born:
-        try:os.kill(pid,signal.SIGTERM)
-        except ProcessLookupError:pass
-        deadline=time.monotonic()+7
-        while time.monotonic()<deadline and identity(pid)==born:time.sleep(0.2)
-        if identity(pid)==born:raise RuntimeError('Agent did not stop; allocation retained. Stop the agent and retry.')
     try:
         if allocation_pending(data.get('allocation') or {}):
             raise RuntimeError('Pending allocation has no model process; bypassing daemon model stop')

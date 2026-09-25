@@ -201,7 +201,7 @@ def load_browser_model(number, settings):
     if data.get('config'):
         from .model_preferences import save
         save(resources.config(data['config']),args.model,settings)
-    return f'Session {number} started. Use Attach to open its agent terminal.'
+    return f'Session {number} is preparing in the background. Chat opens when the model is ready.'
 
 
 def restart_native_session(number, settings):
@@ -230,7 +230,7 @@ def session_rows():
         model_state=display_state(row,allocation)
         rows.append({
             'id':row['id'], 'host':allocation.get('worker_host') or row.get('host',''), 'gpus':row.get('gpus',0),
-            'phase':row.get('phase',''), 'model':row.get('model',''),
+            'phase':row.get('phase',''), 'model':display_model(row,allocation),
             'native':row.get('native',False), 'native_cli':row.get('native_cli',''),
             'job_id':'' if row.get('config',{}).get('backend_type')=='direct' else allocation.get('job_id',''), 'node':allocation.get('worker_host') or allocation.get('host',''),
             'model_state':model_state, 'busy':row.get('_busy',False),
@@ -267,7 +267,7 @@ def safe_details(row):
         ('Worker PID: '+str(allocation.get('worker_pid') or allocation.get('job_id') or '—') if row.get('config',{}).get('backend_type')=='direct' else 'Job: '+str(allocation.get('job_id') or '—')),
         'GPUs: '+str(row.get('gpus',0)),
         'Scheduler state: '+str(allocation.get('slurm_state') or row.get('phase') or '—'),
-        'Model: '+str(row.get('model') or 'none'),
+        'Model: '+str(display_model(row,allocation) or 'none'),
         'Model state: '+display_state(row,allocation),
         'Local monitor PID: '+str(row.get('pid') or '—'),
         'Model loader PID: '+str(row.get('provider_pid') or '—'),
@@ -281,6 +281,13 @@ def safe_details(row):
     if row.get('_stale'): lines.append('Status: daemon may be offline or stale')
     if row.get('error'): lines.append('Error: '+str(row['error']))
     return lines
+
+
+def display_model(row,allocation):
+    if allocation.get('model_state') in ('STARTING','LOADING','LOADED','READY','RUNNING'):
+        shared=allocation.get('session') or {}
+        return (shared.get('model') or {}).get('name') or row.get('model','')
+    return row.get('model','')
 
 
 def display_state(row, allocation):

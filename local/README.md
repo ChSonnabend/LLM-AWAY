@@ -486,3 +486,10 @@ Update the checkout on both clients and the remote host. Concurrent agents runni
 remote host require terminal worker version 4 (new allocations use it); local agents can attach
 to an existing loaded allocation after updating the remote control script. Model replacement
 still requires explicit takeover and disconnects attachments to the previous model generation.
+
+Managed resource models use one llama.cpp inference slot. Requests from attached machines
+queue at the model server; conversation histories remain separate. This serializes individual
+inference requests, not whole agent conversations. Existing models keep their current slot
+configuration until their next load. The web UI prepares models in the background and opens
+the Chats tab after readiness. GLM presets use the pinned CUDA build only on CUDA; native
+ROCm uses the configured ROCm build instead.

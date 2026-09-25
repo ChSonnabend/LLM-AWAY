@@ -320,6 +320,11 @@ llamacpp_binary() {
     echo "${!env_name}"
     return 0
   fi
+  # Model-specific CUDA builds must never override native ROCm binaries.
+  if [[ $tool == server && $backend == cuda && -x ${LLAMACPP_MODEL_CUDA_SERVER:-} ]]; then
+    echo "$LLAMACPP_MODEL_CUDA_SERVER"
+    return 0
+  fi
   if [[ ${LLAMACPP_IN_CONTAINER:-0} == 1 && -x /app/llama-$tool ]]; then
     echo "/app/llama-$tool"
     return 0

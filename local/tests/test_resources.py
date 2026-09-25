@@ -59,7 +59,7 @@ HTTPServer(('127.0.0.1',int(os.environ['LLAMACPP_PORT'])),Handler).serve_forever
                         time.sleep(.2)
                     self.fail('Timed out: '+ '\n'.join((p/'session.log').read_text() for p in paths))
                 for p in paths:wait(lambda:rpc(p,'status').get('allocation',{}).get('active'))
-                original=[rpc(p,'status')['allocation']['job_id'] for p in paths]
+                original=[rpc(p,'status')['allocation']['worker_pid'] for p in paths]
                 for p in paths:rpc(p,'start',model={'alias':'fixture','name':'fixture'},mtp='off',client_pid=os.getpid())
                 from urllib.request import urlopen
                 def healthy(port):
@@ -81,11 +81,11 @@ HTTPServer(('127.0.0.1',int(os.environ['LLAMACPP_PORT'])),Handler).serve_forever
                     self.assertFalse((root/'.state/resources'/saved['token']/'release').exists())
                     processes.append(subprocess.Popen([sys.executable,'-m','llm_away.resources','daemon',str(paths[i])],stdout=logs[i],stderr=logs[i]))
                     wait(lambda:rpc(paths[i],'status').get('allocation',{}).get('active'))
-                    self.assertEqual(rpc(paths[i],'status')['allocation']['job_id'],original[i])
+                    self.assertEqual(rpc(paths[i],'status')['allocation']['worker_pid'],original[i])
                     self.assertEqual(rpc(paths[i],'status')['provider_pid'],saved['provider_pid'])
                 rpc(paths[0],'stop',client_pid=os.getpid())
                 self.assertTrue(healthy(ports[3]))
-                self.assertEqual(rpc(paths[0],'status')['allocation']['job_id'],original[0])
+                self.assertEqual(rpc(paths[0],'status')['allocation']['worker_pid'],original[0])
                 rpc(paths[0],'start',model={'alias':'fixture','name':'fixture'},mtp='off',client_pid=os.getpid())
                 wait(lambda:healthy(ports[0]))
                 for p in paths:rpc(p,'release',client_pid=os.getpid())

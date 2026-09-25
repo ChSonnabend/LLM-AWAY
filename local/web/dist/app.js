@@ -7,6 +7,7 @@ let terminalId = null;
 let terminalOffset = 0;
 let terminalPoll = null;
 const chatTerminals = new Map();
+const pendingChats = new Set();
 let sessionsBusy = false;
 let logBusy = false;
 let dialogToken = 0;
@@ -103,7 +104,10 @@ async function runOperation(title, description, endpoint, payload, closeOnSucces
     view.querySelector('p').textContent = result.message;
     await loadSessions();
     if (result.state === 'done' && endpoint === '/api/load') {
-      await terminalWindow(`Session ${payload.session}`, `run --session ${payload.session} --resume\n`);
+      pendingChats.add(String(payload.session));
+      notice(result.message, false);
+      if (token === dialogToken) closeDialog();
+      await loadSessions();
     } else if (result.state === 'done' && closeOnSuccess) {
       window.setTimeout(() => { if (token === dialogToken) closeDialog(); }, 500);
     }
@@ -134,7 +138,7 @@ function renderChats(rows) {
   for (const row of rows) {
     const key = String(row.id);
     const nativeReady = Boolean(row.phase && String(row.phase).toUpperCase() === 'RUNNING');
-    const ready = Boolean(row.terminal) && (nativeReady || ['LOADED', 'READY', 'RUNNING'].includes(String(row.model_state || '').toUpperCase()));
+    const ready = Boolean(row.terminal) && ((row.native && nativeReady) || ['LOADED', 'READY', 'RUNNING'].includes(String(row.model_state || '').toUpperCase()));
     let card = cards.querySelector(`[data-session="${key}"]`);
     if (!card) {
       card = node('article', 'panel chat-card'); card.dataset.session = key;
@@ -149,6 +153,12 @@ function renderChats(rows) {
     const screen = card.querySelector('.chat-terminal');
     if (!ready && chatTerminals.has(key)) closeChatTerminal(key, screen);
     else if (!ready) screen.textContent = 'Load the model and attach its agent to open this terminal.';
+    if (pendingChats.has(key) && ready) {
+      pendingChats.delete(key);
+      document.querySelector('[data-page="chats"]')?.click();
+    } else if (pendingChats.has(key) && ['ERROR','EXITED','FAILED','STOPPED'].includes(String(row.model_state).toUpperCase())) {
+      pendingChats.delete(key); notice(`Session ${row.id} failed to load. See its model log.`, true);
+    }
     if (ready && !$('chats-view').hidden) ensureChatTerminal(row, screen);
   }
 }

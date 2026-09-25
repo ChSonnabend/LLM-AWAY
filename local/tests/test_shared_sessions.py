@@ -154,6 +154,12 @@ class RemoteOwnershipTests(unittest.TestCase):
             self.assertEqual(shared_sessions.import_session(self.cfg,item),0)
             self.assertEqual(json.loads(path.read_text())['config']['ssh']['host'],'epn000')
 
+    def test_managed_models_use_one_shared_inference_slot(self):
+        self.cfg=replace(self.cfg,llamacpp=replace(self.cfg.llamacpp,server_extra_args=['--parallel','4']))
+        generation=self.call('start')['generation']
+        script=(self.state/(generation+'.sh')).read_text()
+        self.assertLess(script.index('--parallel 4'),script.rindex('--parallel 1'))
+
     def test_release_requires_explicit_intent_and_is_audited(self):
         self.call('start')
         self.assertIn('Explicit release required',self.call('release',ok=False))

@@ -309,7 +309,8 @@ def start():
         env['LLAMACPP_VISIBLE_DEVICES']=l['visible_devices']
         if l['visible_devices']: env['CUDA_VISIBLE_DEVICES' if l['backend']=='cuda' else 'ROCR_VISIBLE_DEVICES']=l['visible_devices']
         if l['container'] and l['container_runtime']=='docker': env.update(LLAMACPP_HOST='0.0.0.0',LLAMACPP_PUBLISH_ADDRESS='127.0.0.1')
-    args=[str(root/l['server_cli']),'--ctx-size',str(l['context_size'])]+l['server_extra_args']
+    # One server-side slot serializes requests from every attached machine.
+    args=[str(root/l['server_cli']),'--ctx-size',str(l['context_size'])]+l['server_extra_args']+['--parallel','1']
     script='#!/bin/bash\nset -e\ncd '+shlex.quote(str(root))+'\n'
     script+='unset MODEL_DRAFT_GGUF LLAMACPP_SPEC_TYPE LLAMACPP_EXTRA_ARGS LLAMACPP_VISIBLE_DEVICES\n'
     script+='\n'.join('export '+a+'='+shlex.quote(b) for a,b in env.items())+'\n'

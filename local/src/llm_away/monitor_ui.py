@@ -105,6 +105,10 @@ def snapshots(store):
         try:
             data=json.loads(path.read_text())
             if (path.parent/'discovery-retired').exists() or data.get('phase')=='RELEASED':continue
+            allocation=data.get('allocation') or {}
+            if allocation.get('model_state') in ('STARTING','LOADING','LOADED','READY','RUNNING'):
+                shared=allocation.get('session') or {}
+                data['model']=(shared.get('model') or {}).get('name') or data.get('model','')
             if data.get('native'):
                 from .native_sessions import status
                 data=status(path.parent,data)
