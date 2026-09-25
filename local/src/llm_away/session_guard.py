@@ -12,6 +12,9 @@ import time
 import uuid
 
 
+GUARD_VERSION = 2  # Remote runner loss detaches; it never releases the allocation.
+
+
 def read(path):
     return json.loads(path.read_text())
 
@@ -68,10 +71,10 @@ def register(path, pid=None):
         if data.get('phase')=='RELEASED':raise ValueError('Session already released')
         try:
             old=read(path/'runner.json')
-            if (old.get('token')==data['token'] and old.get('pid')==pid and same_birth(old.get('identity'),born)
+            if (old.get('guard_version')==GUARD_VERSION and old.get('token')==data['token'] and old.get('pid')==pid and same_birth(old.get('identity'),born)
                     and live(old.get('guard_pid'),old.get('guard_identity'),old.get('guard_key'))):return
         except (OSError,ValueError):pass
-        record=dict(pid=pid,identity=born,process_key=process_key(pid),token=data['token'],generation=uuid.uuid4().hex)
+        record=dict(pid=pid,identity=born,process_key=process_key(pid),token=data['token'],generation=uuid.uuid4().hex,guard_version=GUARD_VERSION)
         write(path/'runner.json',record)
         with (path/'session.log').open('a') as log:
             child=subprocess.Popen([sys.executable,'-m','llm_away.session_guard',str(path),record['generation']],
@@ -97,6 +100,24 @@ def ensure(path, data):
         record=read(path/'runner.json')
         if record.get('token')==data['token']:
             if record.get('finished'):return None
+            if not data.get('native') and record.get('guard_version')!=GUARD_VERSION:
+                # Old Python watchdogs retain their destructive cleanup policy in
+                # memory after a checkout update. Fence them under the same lock
+                # they take before cleanup; they exit on their next iteration.
+                from .resources import write
+                with locked(path):
+                    record=read(path/'runner.json')
+                    if record.get('token')!=data['token'] or record.get('finished'):return None
+                    if record.get('guard_version')==GUARD_VERSION:return record['pid']
+                    record.update(generation=uuid.uuid4().hex,guard_version=GUARD_VERSION,
+                                  guard_pid=None,guard_identity='',guard_key='')
+                    write(path/'runner.json',record)
+                    with (path/'session.log').open('a') as log:
+                        child=subprocess.Popen([sys.executable,'-m','llm_away.session_guard',str(path),record['generation']],
+                            stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
+                    record.update(guard_pid=child.pid,guard_identity=identity(child.pid),guard_key=process_key(child.pid))
+                    write(path/'runner.json',record)
+                return record['pid']
             if live(record.get('guard_pid'),record.get('guard_identity'),record.get('guard_key')):return record['pid']
             if live(record['pid'],record['identity'],record.get('process_key')):
                 register(path,record['pid']);return record['pid']

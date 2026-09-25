@@ -26,7 +26,7 @@ class GuardTests(unittest.TestCase):
 
     def test_process_key_survives_timestamp_changes(self):
         key=guard.process_key(os.getpid())
-        self.assertTrue(key)
+        if not key:self.skipTest('Linux /proc process identity')
         with patch('llm_away.resources.identity',return_value='unrelated locale/timezone'):
             self.assertTrue(guard.live(os.getpid(),'old timestamp',key))
             self.assertFalse(guard.live(os.getpid(),'old timestamp',key+'0'))
@@ -39,13 +39,43 @@ class GuardTests(unittest.TestCase):
         with patch.object(guard,'process_key',return_value=''):
             self.assertTrue(guard.live(os.getpid(),'born','key'))
 
-    def test_ensure_does_not_replace_live_legacy_guard(self):
+    def test_ensure_preserves_current_guard_across_locale_change(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
-            (root/'runner.json').write_text(json.dumps(dict(token='test',pid=os.getpid(),identity='Do Sep 24 14:30:23 2026',guard_pid=os.getpid(),guard_identity='Do Sep 24 14:30:23 2026')))
+            (root/'runner.json').write_text(json.dumps(dict(token='test',guard_version=guard.GUARD_VERSION,pid=os.getpid(),identity='Do Sep 24 14:30:23 2026',guard_pid=os.getpid(),guard_identity='Do Sep 24 14:30:23 2026')))
             with patch('llm_away.resources.identity',return_value='Thu Sep 24 14:30:23 2026'),patch.object(guard.subprocess,'Popen') as spawn:
                 self.assertEqual(guard.ensure(root,dict(token='test')),os.getpid())
                 spawn.assert_not_called()
+
+    def test_monitor_fences_old_watchdog_without_touching_remote_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);data=dict(token='test',phase='RUNNING',model='loaded',provider_pid=123)
+            (root/'session.json').write_text(json.dumps(data))
+            (root/'runner.json').write_text(json.dumps(dict(token='test',generation='old',pid=456,
+                identity='born',guard_pid=789,guard_identity='guard-born')))
+            with patch('llm_away.resources.identity',return_value='born'),patch.object(guard,'process_key',return_value='key'), \
+                 patch.object(guard.subprocess,'Popen') as spawn,patch('llm_away.resources.remote') as remote, \
+                 patch.object(guard,'cleanup') as cleanup:
+                spawn.return_value.pid=999
+                self.assertEqual(guard.ensure(root,data),456)
+                record=json.loads((root/'runner.json').read_text())
+                self.assertNotEqual(record['generation'],'old')
+                self.assertEqual(record['guard_version'],guard.GUARD_VERSION)
+                self.assertEqual(record['guard_pid'],999)
+                # The already-running old loop exits without attempting cleanup.
+                guard.watch(root,'old')
+                cleanup.assert_not_called();remote.assert_not_called()
+                with patch.object(guard,'live',return_value=True):guard.ensure(root,data)
+                spawn.assert_called_once()
+            self.assertEqual(json.loads((root/'session.json').read_text()),data)
+            with patch.object(guard,'live',return_value=False),patch('llm_away.resources.identity',return_value=''), \
+                 patch('llm_away.resources.remote') as remote,patch('builtins.print'):
+                guard.watch(root,record['generation'])
+                remote.assert_not_called()
+            saved=json.loads((root/'session.json').read_text())
+            self.assertTrue(saved['monitor_detached'])
+            self.assertEqual(saved['provider_pid'],123)
+            self.assertEqual(saved['model'],'loaded')
 
     def test_stopped_and_released_sessions_are_not_adopted(self):
         for phase in ('STOPPED','RELEASED'):
@@ -65,7 +95,7 @@ class GuardTests(unittest.TestCase):
             root=Path(tmp)
             (root/'session.json').write_text(json.dumps(dict(token='test',phase='RUNNING')))
             (root/'runner.json').write_text(json.dumps(dict(token='test',generation='one',pid=os.getpid(),identity='old',process_key='different-boot:1')))
-            with patch.object(guard,'cleanup') as cleanup,patch('builtins.print') as log:
+            with patch.object(guard,'process_key',return_value='current-boot:2'),patch.object(guard,'cleanup') as cleanup,patch('builtins.print') as log:
                 guard.watch(root,'one')
                 cleanup.assert_called_once()
                 self.assertEqual(json.loads(log.call_args.args[0])['event'],'runner_lost')
