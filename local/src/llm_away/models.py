@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from copy import deepcopy
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -63,16 +64,49 @@ def choose_mtp(model: dict, current: str = "auto", requested: str | None = None,
     return mode
 
 
-def discover_models(config: AppConfig) -> list[dict]:
+def catalogue_path(config):
+    key=(config.ssh.connection,config.ssh.destination,config.remote.workdir,config.llamacpp.models_dir)
+    digest=hashlib.sha256(json.dumps(key).encode()).hexdigest()
+    return Path(__file__).resolve().parents[2]/'run/model-catalogues'/(digest+'.json')
+
+
+def cached_models(config):
+    try:
+        record=json.loads(catalogue_path(config).read_text())
+        if isinstance(record.get('models'),list):return record
+    except (OSError,ValueError):pass
+    return {}
+
+
+def save_catalogue(config,models):
+    try:
+        path=catalogue_path(config);path.parent.mkdir(parents=True,exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode='w',dir=path.parent,delete=False) as stream:
+            json.dump({'time':time.time(),'models':models},stream);temporary=stream.name
+        os.replace(temporary,path)
+    except OSError:pass # Cache failure must not prevent model selection.
+
+
+def discover_models(config: AppConfig, *, allow_cached=False) -> list[dict]:
+    cached=cached_models(config) if allow_cached else {}
+    if cached and time.time()-cached.get("time",0)<60:return deepcopy(cached["models"])
     script = Path(__file__).with_name("remote_models.py").read_text(encoding="utf-8")
-    command = ["ssh", "-o", "BatchMode=yes", "-o",
+    command = ["ssh", "-x", "-o", "BatchMode=yes", "-o",
                f"ConnectTimeout={config.ssh.connect_timeout_seconds}",
+               "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2",
                config.ssh.destination, "python3 - " + shlex.join([config.remote.workdir, config.llamacpp.models_dir])]
     if config.ssh.connection == "local":
         command = [sys.executable, '-', config.remote.workdir, config.llamacpp.models_dir]
-    for attempt in range(max(1, config.ssh.retries)):
-        result = subprocess.run(command, input=script, text=True, capture_output=True,
-                                timeout=max(60, config.ssh.connect_timeout_seconds + 30))
+    attempts=1 if allow_cached else max(1,config.ssh.retries)
+    for attempt in range(attempts):
+        try:
+            result = subprocess.run(command, input=script, text=True, capture_output=True,
+                                    timeout=10 if allow_cached else max(20,config.ssh.connect_timeout_seconds+10))
+        except subprocess.TimeoutExpired:
+            if cached:return deepcopy(cached['models'])
+            if attempt+1<attempts:
+                time.sleep(config.ssh.retry_delay_seconds);continue
+            raise ValueError('Model discovery on '+config.ssh.destination+' timed out. Check SSH connectivity; the allocation is retained.') from None
         if result.returncode == 0:
             models = json.loads(result.stdout)
             if not isinstance(models, list) or any(
@@ -90,8 +124,10 @@ def discover_models(config: AppConfig) -> list[dict]:
                         or not isinstance(mtp.get("draft_size_bytes"), int)
                         or any(not isinstance(mtp.get(key), str) for key in ("draft_path", "draft_n_max", "spec_type"))):
                         raise ValueError("Remote returned invalid MTP metadata")
+            save_catalogue(config,models)
             return models
-        if result.returncode != 255 or attempt + 1 >= max(1, config.ssh.retries):
+        if cached:return deepcopy(cached["models"])
+        if result.returncode != 255 or attempt + 1 >= attempts:
             raise ValueError("Remote model discovery failed: " + (result.stderr.strip() or result.stdout.strip()))
         time.sleep(config.ssh.retry_delay_seconds)
     raise ValueError("Remote model discovery failed")

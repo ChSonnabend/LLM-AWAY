@@ -454,6 +454,7 @@ async function modelDialog() {
     const form = node('form', 'form');
     const grid = node('div', 'form-grid');
     const modelOptions = data.models.map(model => ({value: model.name, label: `${model.alias || model.name} · ${(model.size_bytes / 1073741824).toFixed(1)} GiB`}));
+    if (data.discovery_warning) notice(data.discovery_warning, true);
     const model = selectControl(modelOptions, data.models.find(item => item.alias === data.current || item.name === data.current)?.name || data.models[0]?.name || '');
     const mtp = selectControl(['auto', 'on', 'off'], 'auto');
     const location = selectControl(['local', 'remote'], data.agent_location || 'local');

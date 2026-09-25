@@ -3,12 +3,15 @@
 Preset: `glm-5.3-flash-q4`, Unsloth `UD-Q4_K_XL` (~199.7 GB),
 750,000-token context, layer split across the allocated GPUs, reasoning enabled.
 The preset advertises its context to `run`, including allocations created earlier.
-MTP uses the embedded prediction heads (2 draft tokens); no separate download is needed. Vision weights are not included.
+MTP uses the embedded prediction heads (2 draft tokens); no separate download is needed.
+For GLM, `auto` now keeps MTP off: initializing the draft context twice exceeded a
+64 GiB Slurm host-RAM limit. Explicit `on` remains available when enough host RAM
+is allocated; GPU VRAM alone does not cover this requirement. Vision weights are not included.
 
 From the Mac, use the existing two-GPU allocation:
 
 ```sh
-run --session 2 --model glm-5.3-flash-q4 --mtp on
+run --session 2 --model glm-5.3-flash-q4 --mtp off
 res-mon --logs 2
 ```
 
@@ -31,3 +34,8 @@ build only `llama-server`. Use an allocated compute node, not a login node.
 The server uses FP16 caches and small prompt batches for compatibility and memory
 headroom. Loading verifies memory allocation, not speed or accuracy at 750k tokens.
 Source: https://unsloth.ai/docs/models/glm-5.3-flash
+
+For native ROCm, run `remote/bin/build-glm5next-rocm` on the allocated compute host.
+It builds the same pinned source in `remote/builds/glm5next-rocm-<architecture>`
+without replacing general-purpose llama.cpp binaries. The GLM presets require this
+compatible build; ordinary older ROCm builds reject the `glm5next` architecture.

@@ -653,7 +653,7 @@ def run_agent(args):
         if reuse:
             model=dict(alias=data['model'],name=cfg.llamacpp.model_name,context_size=cfg.llamacpp.context_size)
         else:
-            models=discover_models(cfg)
+            models=discover_models(cfg,allow_cached=True)
             if not args.model and sys.stdin.isatty() and not getattr(args,'quiet',False):
                 from .monitor_ui import mtp_select_win
                 model,args.mtp=mtp_select_win(models,args.session,cfg.llamacpp.model_name)

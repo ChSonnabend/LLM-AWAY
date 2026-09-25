@@ -17,6 +17,8 @@ class ModelTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        cache=patch("llm_away.models.catalogue_path",return_value=self.root/"catalogue.json")
+        cache.start();self.addCleanup(cache.stop)
         self.config = self.root / "model.toml"
         self.config.write_text('# Keep this comment\n[model]\nname = "old"\n'
                                '[llamacpp]\nmodel_name = "old"\ncontext_size = 12345\n'

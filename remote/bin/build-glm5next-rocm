@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Build GLM5-Next support separately from the general-purpose ROCm runtime.
+set -euo pipefail
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$root/scripts/lib/llamacpp-env.sh"
+arch=$(llamacpp_detect_rocm_arch)
+source_dir="$root/builds/glm5next-src"
+revision=86ebfef2c6a0f3359a2a07d2c215d61b0fa885c9
+mkdir -p "$root/builds"
+exec 9>"$root/builds/glm5next-build.lock"
+flock -n 9 || { echo 'A GLM5-Next build is already running.' >&2; exit 1; }
+if [[ ! -d "$source_dir/.git" ]]; then git init "$source_dir"; fi
+if ! git -C "$source_dir" cat-file -e "$revision^{commit}" 2>/dev/null; then
+  git -C "$source_dir" fetch --depth=1 https://github.com/unslothai/llama.cpp.git "$revision"
+fi
+git -C "$source_dir" checkout --detach "$revision"
+export PATH="/opt/rocm/bin:$PATH"
+export LLAMACPP_SOURCE_DIR="$source_dir" LLAMACPP_BUILD_DIR="$root/builds/glm5next-rocm-$arch"
+export LLAMACPP_BACKEND=rocm LLAMACPP_ROCM_ARCH="$arch" LLAMACPP_CONTAINER=''
+export LLAMACPP_BUILD_TARGETS=llama-server JOBS="${JOBS:-8}"
+export LLAMACPP_CMAKE_ARGS='-DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF'
+exec "$root/bin/build-llama"

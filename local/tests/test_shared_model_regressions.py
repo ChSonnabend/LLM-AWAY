@@ -15,7 +15,7 @@ ROOT=Path(__file__).resolve().parents[2]
 class SharedModelRegressions(unittest.TestCase):
     def test_glm_presets_select_native_rocm_and_keep_cuda_override(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);native=root/'builds/rocm-gfx906/bin/llama-server'
+            root=Path(tmp);native=root/'builds/glm5next-rocm-gfx906/bin/llama-server'
             native.parent.mkdir(parents=True);native.touch();native.chmod(0o755)
             cuda=root/'cuda-server';cuda.touch();cuda.chmod(0o755)
             for quant in ('q4','q8'):
@@ -30,6 +30,13 @@ llamacpp_binary server cuda
                 result=subprocess.run(['bash','-c',script,'test',str(ROOT),quant,tmp],text=True,capture_output=True)
                 self.assertEqual(result.returncode,0,result.stderr)
                 self.assertEqual(result.stdout.splitlines(),[str(native),str(cuda)])
+
+    def test_glm_auto_disables_mtp_but_explicit_on_is_preserved(self):
+        for mode,expected in [('auto','off'),('on','on')]:
+            script='source "$1/remote/scripts/lib/llamacpp-env.sh"; LLAMACPP_MTP=$2; llamacpp_load_model_config glm-5.3-flash-q4; echo "$LLAMACPP_MTP"'
+            result=subprocess.run(['bash','-c',script,'test',str(ROOT),mode],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout.strip(),expected)
 
     def test_remote_loading_model_display_overrides_empty_or_stale_local_model(self):
         allocation={'model_state':'LOADING','session':{'model':{'name':'glm-5.3-flash-q4'}}}

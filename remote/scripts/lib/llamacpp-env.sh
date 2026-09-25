@@ -258,6 +258,7 @@ llamacpp_load_model_config() {
   fi
 
   MODEL_ALIAS=${MODEL_ALIAS:-$MODEL_NAME}
+  if [[ ${LLAMACPP_MTP:-auto} == auto && ${MODEL_MTP_DEFAULT:-} == off ]]; then LLAMACPP_MTP=off; fi
   llamacpp_apply_mtp_mode
 }
 
@@ -318,6 +319,12 @@ llamacpp_binary() {
   if [[ -n ${!env_name:-} ]]; then
     [[ -x ${!env_name} ]] || llamacpp_die "configured binary is missing: ${!env_name}"
     echo "${!env_name}"
+    return 0
+  fi
+  if [[ $tool == server && $backend == rocm && ${LLAMACPP_MODEL_BUILD:-} == glm5next ]]; then
+    local compatible="${LLAMACPP_INSTALLATION_DIR:-$root}/builds/glm5next-rocm-$arch/bin/llama-server"
+    [[ -x $compatible ]] || llamacpp_die "GLM5-Next requires a compatible ROCm build; run remote/bin/build-glm5next-rocm on the compute host"
+    echo "$compatible"
     return 0
   fi
   # Model-specific CUDA builds must never override native ROCm binaries.

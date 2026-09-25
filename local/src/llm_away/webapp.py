@@ -106,7 +106,18 @@ def model_options(number):
     cfg=resources.replace(cfg,llamacpp=resources.replace(cfg.llamacpp,
         model_batch_defaults=current.llamacpp.model_batch_defaults,
         model_host_batch_defaults=current.llamacpp.model_host_batch_defaults))
-    models=resources.discover_models(cfg)
+    from . import shared_sessions
+    allocation=shared_sessions.current(path)
+    warning=''
+    try:models=resources.discover_models(cfg,allow_cached=True)
+    except ValueError as exc:models=[];warning=str(exc)
+    shared=allocation.get('session') or {}
+    if not models and allocation.get('model_state') in ('STARTING','LOADING','LOADED','READY') and shared:
+        llama=shared['llamacpp'];alias=shared['model']['name']
+        models=[{'name':llama.get('model_name') or alias,'alias':alias,'size_bytes':0,
+                 'context_size':llama.get('context_size',0),'mtp':{}}]
+        warning=(warning or 'The model catalogue is unavailable.')+' Showing the running model; it can still be attached.'
+    elif warning:raise ValueError(warning)
     public=[]
     for model in models:
         mtp=model.get('mtp',{})
@@ -115,8 +126,6 @@ def model_options(number):
                            'configured':bool(mtp.get('configured')),'available':bool(mtp.get('available')),
                            'toggle_supported':bool(mtp.get('toggle_supported')),
                            'embedded':bool(mtp.get('embedded'))}})
-    from . import shared_sessions
-    allocation=shared_sessions.current(path)
     owner=allocation.get('owner') or {}
     foreign=bool(owner and owner.get('id')!=shared_sessions.client_identity())
     loaded=allocation.get('model_state') in ('STARTING','LOADING','LOADED','READY','RUNNING')
@@ -126,8 +135,8 @@ def model_options(number):
     rag=selection.get('rag_config') or {}
     from .model_preferences import read
     preferences=read(cfg)
-    return {'remote_rags':allocation.get('remote_rags',{}),'preferences':preferences,'container_path':preferences.get('_container_path',cfg.llamacpp.container),
-            'build_mode':'container' if cfg.llamacpp.container else 'native','native':False,'models':public,'current':data.get('model') or cfg.llamacpp.model_name,'loaded':loaded,
+    return {'discovery_warning':warning,'remote_rags':allocation.get('remote_rags',{}),'preferences':preferences,'container_path':preferences.get('_container_path',cfg.llamacpp.container),
+            'build_mode':'container' if cfg.llamacpp.container else 'native','native':False,'models':public,'current':((shared.get('llamacpp') or {}).get('model_name') if loaded else '') or data.get('model') or cfg.llamacpp.model_name,'loaded':loaded,
             'remote_owner':owner.get('label','') if foreign else '',
             'expected_owner':owner.get('id',''),'expected_generation':allocation.get('generation',''),
             'can_attach':allocation.get('model_state') in ('STARTING','LOADING','LOADED','READY') and bool(allocation.get('session')),
