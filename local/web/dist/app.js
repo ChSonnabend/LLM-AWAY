@@ -138,7 +138,7 @@ function renderChats(rows) {
   for (const row of rows) {
     const key = String(row.id);
     const nativeReady = Boolean(row.phase && String(row.phase).toUpperCase() === 'RUNNING');
-    const ready = Boolean(row.terminal) && ((row.native && nativeReady) || ['LOADED', 'READY', 'RUNNING'].includes(String(row.model_state || '').toUpperCase()));
+    const ready = Boolean(row.attached && row.terminal) && ((row.native && nativeReady) || ['LOADED', 'READY', 'RUNNING'].includes(String(row.model_state || '').toUpperCase()));
     let card = cards.querySelector(`[data-session="${key}"]`);
     if (!card) {
       card = node('article', 'panel chat-card'); card.dataset.session = key;
@@ -232,7 +232,7 @@ function openSession(row) {
   const state = String(row.model_state || '').toUpperCase();
   if (row.native) { terminalWindow(`Session ${row.id}`, `run --session ${row.id} --resume\n`); return; }
   const loaded = Boolean(row.model) && ['LOADED', 'READY', 'RUNNING'].includes(state);
-  if (loaded) {
+  if (loaded && row.attached) {
     terminalWindow(`Session ${row.id}`, `run --session ${row.id} --resume\n`);
   } else {
     modelDialog();
@@ -252,7 +252,7 @@ async function loadSessions() {
     if (!data.sessions.length) {
       const row = node('tr');
       const cell = node('td', 'empty', 'No active allocations');
-      cell.colSpan = 7;
+      cell.colSpan = 8;
       row.append(cell);
       body.append(row);
       selected = null;
@@ -263,7 +263,7 @@ async function loadSessions() {
     for (const row of data.sessions) {
       const tr = node('tr');
       tr.dataset.id = row.id;
-      const values = [row.id, row.model_state || row.phase || '—', row.model || (row.native ? `Native ${row.native_cli || 'CLI'}` : 'No model'), row.node || row.host || '—', row.gpus || 0, row.job_id || '—', row.time_left || '∞'];
+      const values = [row.id, row.model_state || row.phase || '—', row.model || (row.native ? `Native ${row.native_cli || 'CLI'}` : 'No model'), row.node || row.host || '—', row.gpus || 0, row.job_id || '—', row.time_left || '∞', row.attached ? 'Yes' : 'No'];
       values.forEach(value => tr.append(node('td', '', String(value))));
       tr.title = row.model && ['LOADED', 'READY', 'RUNNING'].includes(String(row.model_state || '').toUpperCase())
         ? 'Double-click to attach or choose a conversation'
@@ -453,6 +453,12 @@ async function modelDialog() {
     }
     const form = node('form', 'form');
     const grid = node('div', 'form-grid');
+    const machineSection = node('details', 'attach-section');
+    machineSection.open = !data.can_attach;
+    machineSection.append(node('summary', '', 'Machine & model loading'), grid);
+    const ragSection = node('details', 'attach-section'); ragSection.open = true;
+    const ragGrid = node('div', 'form-grid');
+    ragSection.append(node('summary', '', 'RAG'), ragGrid);
     const modelOptions = data.models.map(model => ({value: model.name, label: `${model.alias || model.name} · ${(model.size_bytes / 1073741824).toFixed(1)} GiB`}));
     if (data.discovery_warning) notice(data.discovery_warning, true);
     const model = selectControl(modelOptions, data.models.find(item => item.alias === data.current || item.name === data.current)?.name || data.models[0]?.name || '');
@@ -468,7 +474,7 @@ async function modelDialog() {
     const ragPathsLocation = selectControl([{value: 'local', label: 'Local paths'}, {value: 'remote', label: 'Remote paths'}, {value: 'shared', label: 'Shared: local = remote'}], data.rag_paths_location || data.agent_location || 'local');
     const remoteRag = selectControl([{value:'',label:'This machine’s RAG settings'}, ...Object.entries(data.remote_rags || {}).map(([id,config]) => ({value:id,label:config.paths.join(', ')}))], '');
     const remoteRagField = field('RAG configuration',remoteRag,'Local RAG belongs to this terminal. Remote RAG sources and indexes can be reused by either machine.',true);
-    grid.append(remoteRagField);
+    ragGrid.append(remoteRagField);
     remoteRag.addEventListener('change', () => {
       const saved = data.remote_rags?.[remoteRag.value];
       if (saved) {
@@ -487,7 +493,9 @@ async function modelDialog() {
     build.addEventListener('change',updateBuild); updateBuild();
     grid.append(field('llama.cpp runtime',build,'Changing the runtime requires loading the model again.'),containerField);
 
-    grid.append(field('Model', model, '', true), field('MTP', mtp), field('Agent location', location), field('Agent CLI', cli), field('Agent work directory', workdir), field('RAG', rag, 'Colon-separated source paths.', true), field('RAG compute', ragCompute, 'Where the embedding model and vector index run.'), field('RAG paths live on', ragPathsLocation, 'Different hosts are synchronized to a per-session snapshot.', true), field('RAG CPU cores', ragThreads, 'Embedding threads on the RAG compute host.'), field('RAG memory (GiB)', ragMemory, 'Hard limit on the RAG compute host; 0 means unlimited.'), field('RAG GPU', ragGpu, 'Uses an available GPU on the RAG compute host.'), field('Model server options', server, 'Batch, context and backend arguments.', true));
+    grid.append(field('Model', model, '', true), field('MTP', mtp), field('Agent location', location), field('Agent CLI', cli), field('Agent work directory', workdir), field('Model server options', server, 'Batch, context and backend arguments.', true));
+    ragGrid.append(field('RAG', rag, 'Colon-separated source paths.', true), field('RAG compute', ragCompute, 'Where the embedding model and vector index run.'), field('RAG paths live on', ragPathsLocation, 'Different hosts are synchronized to a per-session snapshot.', true), field('RAG CPU cores', ragThreads, 'Embedding threads on the RAG compute host.'), field('RAG memory (GiB)', ragMemory, 'Hard limit on the RAG compute host; 0 means unlimited.'), field('RAG GPU', ragGpu, 'Uses an available GPU on the RAG compute host.'));
+
     function updateRagLocation() {
       const remote = location.value === 'remote';
       workdir.placeholder = remote ? 'Absolute directory on the remote host' : 'Default local project directory';
@@ -515,23 +523,25 @@ async function modelDialog() {
       updateRagPaths(); updateBuild();
     }
     model.addEventListener('change', () => applyModelDefaults()); applyModelDefaults(true);
-    form.append(grid);
+    form.append(machineSection, ragSection);
     let replaceLoaded = null;
     if (data.loaded || data.remote_owner) {
       const warning = node('label', 'replace-warning');
       replaceLoaded = document.createElement('input'); replaceLoaded.type = 'checkbox';
       warning.append(replaceLoaded, node('span', '', data.remote_owner ? `This session is allocated on ${data.remote_owner}. Acknowledge to release its model and start the new model and terminal on this machine.` : 'A model is already loaded. Stop it and replace the model and flags for all attached machines. To change only this terminal’s RAG, use Attach to loaded model.'));
-      form.append(warning);
+      machineSection.append(warning);
     }
     const actions = node('div', 'form-actions');
     const attach = node('button', '', 'Attach existing terminal'); attach.type = 'button'; attach.addEventListener('click', () => terminalWindow(`Session ${sessionId}`, `run --session ${sessionId} --resume\n`));
     const submit = node('button', 'primary', 'Load and start'); submit.type = 'submit';
     if (data.can_attach) {
-      const reuse = node('button', '', 'Attach to loaded model'); reuse.type = 'button';
+      const reuse = node('button', 'primary', 'Attach to loaded model'); reuse.type = 'button';
       reuse.onclick = () => runOperation(`Attach session ${sessionId}`, 'Connecting to the shared model and preparing this machine’s terminal and RAG…', '/api/load', {session:sessionId,settings:{attach_existing:true,expected_owner:data.expected_owner,expected_generation:data.expected_generation,agent_location:location.value,cli:cli.value,agent_workdir:workdir.value,rag:rag.value,rag_compute:ragCompute.value,rag_paths_location:ragPathsLocation.value,rag_threads:ragThreads.value,rag_memory_gb:ragMemory.value,rag_gpu:ragGpu.value,remote_rag_id:remoteRag.value}}, true);
       actions.append(reuse);
     }
-    actions.append(attach, submit); form.append(actions);
+    attach.hidden = !selected?.attached;
+    const modelActions = node('div', 'form-actions'); modelActions.append(submit); machineSection.append(modelActions);
+    actions.append(attach); form.append(actions);
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (replaceLoaded && !replaceLoaded.checked) { notice('Acknowledge model replacement before loading the new configuration.', true); return; }

@@ -538,6 +538,16 @@ def allocate(args):
     print(f'Session {number} allocating in background. Use: res-mon --logs {number}\nThen: run --session {number}')
 
 
+def locally_attached(data):
+    """A live provider on this client connected to the current model generation."""
+    allocation=data.get('allocation') or {}
+    generation=data.get('attachment_generation')
+    if generation and generation!=allocation.get('generation'):
+        return False
+    return bool(data.get('model') and data.get('provider_exit') is None and
+                data.get('provider_identity') and identity(data.get('provider_pid'))==data['provider_identity'])
+
+
 def run_agent(args):
     from .serve_registration import register
     helper=getattr(args,'helper',False)
@@ -633,8 +643,12 @@ def run_agent(args):
                 terminals.ensure(path,current,selection)
                 if not args.detach:terminals.attach(path,current,selection)
                 return
-        loaded=bool(data.get('model') and data.get('provider_exit') is None and
-                    data.get('provider_identity') and identity(data.get('provider_pid'))==data['provider_identity'])
+        loaded=locally_attached(data)
+        if not loaded and not args.model and data.get('allocation',{}).get('model_state') in ('STARTING','LOADING','LOADED','READY','RUNNING'):
+            raise ValueError('The model is loaded or loading remotely, but this machine is not attached. '
+                             'In the web UI, select the session, open Attach, and choose Attach to loaded model '
+                             '(with optional RAG settings). Then reopen the terminal. '
+                             'Use --model NAME only if you intend to load a model instead.')
         if loaded:
             reuse=(not args.model or args.model in (data['model'],cfg.llamacpp.model_name))
             if not args.model and not args.detach and not getattr(args,'resume',False):

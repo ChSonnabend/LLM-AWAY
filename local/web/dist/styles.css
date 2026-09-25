@@ -195,3 +195,8 @@ input:focus, select:focus { border-color: var(--accent-strong); box-shadow: 0 0 
 .resizing-panel iframe { pointer-events:none; }
 
 #terminal-slot:has(#terminal-host[hidden]) > .panel-resizer, .monitor-panel:has(#log-output[hidden]) > .panel-resizer { display:none; }
+
+.attach-section { border: 1px solid var(--border, #334155); border-radius: 8px; padding: 14px; }
+.attach-section summary { cursor: pointer; font-weight: 600; }
+.attach-section[open] summary { margin-bottom: 16px; }
+.attach-section .form-actions, .attach-section .replace-warning { margin-top: 16px; }

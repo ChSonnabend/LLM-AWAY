@@ -31,6 +31,15 @@ llamacpp_binary server cuda
                 self.assertEqual(result.returncode,0,result.stderr)
                 self.assertEqual(result.stdout.splitlines(),[str(native),str(cuda)])
 
+    def test_glm_refuses_an_incompatible_general_rocm_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            native=Path(tmp)/'builds/rocm-gfx906/bin/llama-server'
+            native.parent.mkdir(parents=True);native.touch();native.chmod(0o755)
+            script='source "$1/remote/scripts/lib/llamacpp-env.sh"; source "$1/remote/models/glm-5.3-flash-q4/model.env"; unset LLAMA_SERVER; LLAMACPP_INSTALLATION_DIR=$2; LLAMACPP_ROCM_ARCH=gfx906; llamacpp_binary server rocm'
+            result=subprocess.run(['bash','-c',script,'test',str(ROOT),tmp],capture_output=True,text=True)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('build-glm5next-rocm',result.stderr)
+
     def test_glm_auto_disables_mtp_but_explicit_on_is_preserved(self):
         for mode,expected in [('auto','off'),('on','on')]:
             script='source "$1/remote/scripts/lib/llamacpp-env.sh"; LLAMACPP_MTP=$2; llamacpp_load_model_config glm-5.3-flash-q4; echo "$LLAMACPP_MTP"'

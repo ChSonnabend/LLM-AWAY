@@ -243,6 +243,7 @@ def session_rows():
             'native':row.get('native',False), 'native_cli':row.get('native_cli',''),
             'job_id':'' if row.get('config',{}).get('backend_type')=='direct' else allocation.get('job_id',''), 'node':allocation.get('worker_host') or allocation.get('host',''),
             'model_state':model_state, 'busy':row.get('_busy',False),
+            'attached':bool(row.get('_terminal')) if row.get('native') else resources.locally_attached(row),
             'terminal':row.get('_terminal',False), 'error':row.get('error',''),
             'agent_text':str(agent.get('text') or '')[-32768:],
             'gpu_lines':telemetry.get('lines',[]), 'gpu_timestamp':telemetry.get('timestamp'),
