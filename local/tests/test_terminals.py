@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import subprocess
 import tempfile
 import time
 import unittest
@@ -13,6 +14,43 @@ ROOT=Path(__file__).resolve().parents[2]
 E=runpy.run_path(str(ROOT/'remote/bin/resource-terminal'))
 
 class TerminalTests(unittest.TestCase):
+    def setUp(self):
+        # Real tmux tests must never change the user's server or key bindings.
+        self.socket_dir=tempfile.TemporaryDirectory(prefix='away-tmux-')
+        self.env=patch.dict(os.environ,{'TMUX_TMPDIR':self.socket_dir.name})
+        self.env.start()
+        self.addCleanup(self.socket_dir.cleanup)
+        self.addCleanup(self.env.stop)
+        self.addCleanup(lambda: subprocess.run(['tmux','-L','default','kill-server'],
+                        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL))
+
+    def test_legacy_agent_stays_reachable_until_it_exits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state=Path(temp)
+            (state/'terminal.json').write_text(json.dumps({'token':'legacy-test'}))
+            legacy=['tmux','-L','llm-away-legacy-test']
+            subprocess.check_call(legacy+['-f','/dev/null','new-session','-d','-s','away-legacy-test','sleep 60'])
+            try:
+                self.assertTrue(E['alive'](state))
+                self.assertEqual(E['tmux'](state)[-1],'llm-away-legacy-test')
+                E['stop'](state)
+                self.assertFalse(E['alive'](state))
+                self.assertEqual(E['tmux'](state)[-1],'default')
+            finally:
+                subprocess.run(legacy+['kill-server'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+
+    def test_attach_restores_cursor_even_on_failure(self):
+        import io
+        output=io.StringIO()
+        output.isatty=lambda:True
+        globals_=E['attach'].__globals__
+        with patch.dict(globals_,{'configure':lambda state:None,'tmux':lambda state:['tmux'],
+                                 'name':lambda state:'away-test'}), \
+             patch.object(E['sys'],'stdout',output), \
+             patch.object(E['subprocess'],'call',side_effect=OSError('attach failed')):
+            with self.assertRaises(OSError):E['attach'](Path('/unused'))
+        self.assertEqual(output.getvalue(),'\x1b[0 q\x1b[?25h'*2)
+
     def test_remote_agent_rag_client_points_at_local_bridge(self):
         with tempfile.TemporaryDirectory() as temp:
             cfg=replace(AppConfig(),ssh=replace(AppConfig().ssh,connection='ssh',host='cluster'))
@@ -66,6 +104,14 @@ class TerminalTests(unittest.TestCase):
                         time.sleep(.05)
                     self.assertIn('RECEIVED:hello from Space',output)
                     self.assertTrue(E['alive'](root))
+                    env=dict(os.environ);env.pop('TMUX',None)
+                    sessions=subprocess.check_output(['tmux','ls','-F','#{session_name}'],env=env,text=True)
+                    self.assertIn(E['name'](root),sessions.splitlines())
+                    style=subprocess.check_output(E['tmux'](root)+['show-options','-wv','-t',E['name'](root),'cursor-style'],text=True)
+                    self.assertEqual(style.strip(),'block')
+                    overrides=subprocess.check_output(E['tmux'](root)+['show-options','-sv','terminal-overrides'],text=True)
+                    E['configure'](root)
+                    self.assertEqual(overrides,subprocess.check_output(E['tmux'](root)+['show-options','-sv','terminal-overrides'],text=True))
                     # Starting again attaches to the same existing conversation.
                     E['start'](root,spec)
                     self.assertIn('RECEIVED:hello from Space',E['capture'](root)['text'])

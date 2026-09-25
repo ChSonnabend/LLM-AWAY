@@ -59,6 +59,9 @@ def _terminal_screen(screen):
     finally:
         _active_window = _shell_mode = None
         termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+        # Cursor visibility is an escape-sequence mode, not a termios flag.
+        if sys.stdout.isatty():
+            sys.stdout.write('\x1b[0 q\x1b[?25h');sys.stdout.flush()
 
 
 def terminal_operation(func, *args):
