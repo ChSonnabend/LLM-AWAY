@@ -3,6 +3,7 @@ from dataclasses import asdict, replace
 import fcntl
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -21,22 +22,71 @@ def client_identity():
     return identifier
 
 
+def discovery_profiles(cfg):
+    """Saved hosts plus every concrete SSH alias, without borrowing host paths."""
+    from .onboarding import ssh_hosts
+    profiles=[cfg.with_host(host.name) for host in cfg.host_configs()]
+    known={profile.ssh.host for profile in profiles if profile.ssh.connection=='ssh'}
+    aliases,_=ssh_hosts()
+    for alias in aliases:
+        if alias in known:continue
+        profiles.append(replace(cfg,ssh=replace(cfg.ssh,connection='ssh',host=alias,user=''),
+            remote=replace(cfg.remote,resource_state_dir=''),active_host='',hosts={},saved_hosts={}))
+    return profiles
+
+
+def probe_framework(profile):
+    """Only inspect conventional/configured paths; never install on a probed host."""
+    candidates=list(dict.fromkeys([profile.remote.workdir,'~/LLM-AWAY/remote','~/remote']))
+    script="""import json,os,sys
+from pathlib import Path
+for candidate in json.load(sys.stdin):
+    if not candidate:continue
+    root=Path(os.path.expandvars(candidate)).expanduser()
+    if (root/'bin/resource-control').is_file():
+        print(json.dumps(str(root.resolve())));break
+else:print('null')
+"""
+    command=['python3','-c',script]
+    if profile.ssh.connection!='local':
+        command=['ssh','-x','-o','BatchMode=yes','-o','ConnectTimeout=10',
+                 profile.ssh.destination,shlex.join(command)]
+    result=subprocess.run(command,input=json.dumps(candidates),text=True,capture_output=True,timeout=20)
+    if result.returncode:raise RuntimeError(result.stderr.strip() or 'Framework probe failed')
+    root=json.loads(result.stdout)
+    if not root:return None
+    return replace(profile,remote=replace(profile.remote,workdir=root))
+
+
 def discover():
     from . import resources as r
+    from concurrent.futures import ThreadPoolExecutor
     cfg=r.load_config(os.environ.get('LLM_REMOTE_CONFIG',str(r.ROOT/'config/model.toml')))
-    profiles=[cfg.with_host(host.name) for host in cfg.host_configs()]
-    imported=0;errors=[];seen=set()
-    for profile in profiles:
-        key=(profile.ssh.destination,profile.remote.workdir,profile.remote.resource_state_dir)
-        if key in seen:continue
-        seen.add(key)
+    profiles=[];seen=set()
+    for profile in discovery_profiles(cfg):
+        key=(profile.ssh.connection,profile.ssh.destination,profile.remote.workdir,profile.remote.resource_state_dir)
+        if key not in seen:profiles.append(profile);seen.add(key)
+    def scan(profile):
         try:
-            result=r.remote(profile,'0'*32,0,'list')
-            for item in result['sessions']:
-                imported+=import_session(profile,item)
-        except Exception as exc:errors.append(f'{profile.ssh.destination}: {exc}')
-    message=f'Discovered {imported} additional remote allocations.'
-    if errors:message+=' '+ '; '.join(errors)
+            found=probe_framework(profile)
+            if found is None:return profile,[],None,False
+            result=r.remote(found,'0'*32,0,'list')
+            return found,result['sessions'],None,True
+        except Exception as exc:
+            detail=str(exc)
+            if 'Unknown action' in detail:
+                detail='Update remote/bin/resource-control on this host to enable discovery'
+            return profile,[],detail,False
+    imported=0;errors=[];frameworks=0
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for profile,items,error,found in pool.map(scan,profiles):
+            frameworks+=int(found)
+            if error:errors.append(f'{profile.ssh.destination}: {error}');continue
+            for item in items:
+                try:imported+=import_session(profile,item)
+                except Exception as exc:errors.append(f'{profile.ssh.destination}: {exc}')
+    message=f'Discovered {imported} additional remote allocations across {frameworks} framework hosts ({len(profiles)} hosts checked).'
+    if errors:message+=' Unavailable hosts: '+ '; '.join(errors)
     return message
 
 

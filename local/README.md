@@ -437,3 +437,26 @@ remembered in the browser. GPU history stays at the selected time until returnin
 to live view, and a vertical cursor marker accompanies the hover values.
 
 See [session 22's confirmed host-memory failure](docs/job-22-failure.md).
+
+### Dashboard updates and SSH discovery
+
+From the repository root after updating the checkout, launch
+`./local/bin/res-mon-web` again. It checks the
+running dashboard's code revision and replaces an outdated dashboard process.
+To force this explicitly, use `./local/bin/res-mon-web --restart` (add `--port`
+if using a non-default port). This restarts the browser dashboard, not allocation
+workers or loaded models; open browser terminals may need reattaching. It also
+handles legacy dashboard processes that do not yet expose a code revision.
+
+A browser refresh alone does not reload Python. Errors about an unexpected
+`model_host_batch_defaults` argument, or discovery asking to select an allocation,
+can indicate old Python code serving newer files. Update the Linux checkout and
+restart its dashboard using the command above.
+
+**Tools → Discover remote jobs** works with no selected allocation. It checks saved
+host profiles and concrete aliases in SSH configuration (including `Include`
+files). Each host is probed at its configured remote directory, then
+`~/LLM-AWAY/remote` and `~/remote`. Hosts without the framework are skipped;
+unreachable hosts are reported while discovery continues elsewhere. Discovery
+requires the updated `remote/bin/resource-control` on participating hosts and
+uses the configured remote state directory for saved profiles.

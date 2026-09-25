@@ -5,6 +5,7 @@ import argparse
 import contextlib
 import fcntl
 import io
+import hashlib
 import json
 import os
 from http import HTTPStatus
@@ -31,6 +32,17 @@ WEB_ROOT=ROOT/'web'/'dist'
 LOGO_PATH=ROOT.parent/'docs'/'llm-away-logo.jpeg'
 JOBS={}
 JOBS_LOCK=threading.Lock()
+
+
+def source_revision():
+    digest=hashlib.sha256()
+    for source in sorted(Path(__file__).parent.glob('*.py')):
+        digest.update(source.name.encode());digest.update(source.read_bytes())
+    return digest.hexdigest()
+
+
+# Capture the code generation at import, not when an HTTP request arrives.
+RUNTIME_REVISION=source_revision()
 
 
 def start_job(label, function):
@@ -426,6 +438,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed=urlparse(self.path)
         try:
+            if parsed.path=='/api/runtime':
+                self._json({'revision':RUNTIME_REVISION});return
             if parsed.path=='/api/sessions':self._json({'sessions':session_rows(),'time':time.time()});return
             if parsed.path=='/api/gpu-history':
                 from .gpu_history import append, read
@@ -518,6 +532,42 @@ def dashboard_running(port):
     except Exception:return False
 
 
+def dashboard_current(port):
+    try:
+        with urlopen(f'http://127.0.0.1:{port}/api/runtime',timeout=1) as response:
+            return json.loads(response.read()).get('revision')==RUNTIME_REVISION
+    except Exception:return False
+
+
+def dashboard_processes(output,port):
+    """Select only this user's dedicated dashboard processes on the requested port."""
+    matches=[]
+    for line in output.splitlines():
+        try:
+            pid,uid,command=line.strip().split(None,2)
+            args=shlex.split(command)
+            module=args.index('-m')
+            if not Path(args[0]).name.startswith(('python','pypy')):continue
+            if args[module+1]!='llm_away.webapp' or '--serve' not in args:continue
+            actual=int(args[args.index('--port')+1]) if '--port' in args else 8766
+            if int(uid)==os.getuid() and int(pid)!=os.getpid() and actual==port:matches.append(int(pid))
+        except (ValueError,IndexError):continue
+    return matches
+
+
+def stop_dashboard(port):
+    output=subprocess.check_output(['ps','-eo','pid=,uid=,args='],text=True)
+    processes=dashboard_processes(output,port)
+    if not processes:raise RuntimeError('An outdated service occupies the dashboard port; stop that dashboard process and retry')
+    for pid in processes:
+        try:os.kill(pid,signal.SIGTERM)
+        except ProcessLookupError:pass
+    deadline=time.monotonic()+5
+    while dashboard_running(port):
+        if time.monotonic()>=deadline:raise RuntimeError('Dashboard has not stopped yet; retry shortly')
+        time.sleep(.1)
+
+
 def open_dashboard(port):
     url=f'http://127.0.0.1:{port}/'
     print(f'LLM-AWAY dashboard: {url}',flush=True)
@@ -567,13 +617,19 @@ def serve(port=8766,open_browser=True):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port',type=int,default=8766)
+    parser.add_argument("--restart",action="store_true",help="Restart the dashboard process while retaining resource allocations")
     parser.add_argument("--serve",action="store_true",help=argparse.SUPPRESS)
     args=parser.parse_args()
     if not 1024<=args.port<=65535:parser.error('--port must be 1024–65535')
     if args.serve:
         serve(args.port,open_browser=False)
         return
-    if not dashboard_running(args.port):
+    running=dashboard_running(args.port)
+    if running and (args.restart or not dashboard_current(args.port)):
+        print('Restarting dashboard to load current code; resource allocations are retained.',flush=True)
+        stop_dashboard(args.port)
+        running=False
+    if not running:
         log=Path(__file__).resolve().parents[2]/'run/dashboard.log'
         log.parent.mkdir(parents=True,exist_ok=True)
         def log_tail():
