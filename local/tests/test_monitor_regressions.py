@@ -21,6 +21,7 @@ from llm_away.monitor_ui import _terminal_screen, _form_screen, mtp_select_win, 
 before=termios.tcgetattr(0)
 for fail in (False,True,False):
  def run(win):
+  curses.curs_set(0)
   win.addstr(0,0,'monitor');win.refresh();curses.nonl()
   if fail:raise ValueError('exit')
   curses.ungetch(10);curses.ungetch(curses.KEY_DOWN)
@@ -55,6 +56,7 @@ print('FIRST\\nSECOND',flush=True)
             self.assertIn(b'FIRST\r\nSECOND\r\n',output)
             self.assertNotIn(b'HIDDEN BACKGROUND OUTPUT',output)
             self.assertEqual(output.count(b'\x1b[?1049l'),3)
+            self.assertEqual(output.count(b'\x1b[0 q\x1b[?25h'),3)
         finally:os.close(master);os.close(slave)
 
     def test_mtp_uses_top_level_screen(self):

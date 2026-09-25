@@ -26,7 +26,18 @@ def tmux(state=None):
     bundled=Path(__file__).resolve().parents[2]/'local/run/tools/bin/tmux'
     binary=shutil.which('tmux') or (str(bundled) if bundled.is_file() else None)
     if not binary:raise ValueError('tmux is required on the agent host. On macOS: brew install tmux')
-    return [binary,'-L','llm-'+name(state) if state is not None else 'llm-away','-f','/dev/null']
+    # The user's default tmux socket keeps every agent visible to plain `tmux ls`.
+    command=[binary,'-L','default']
+    if state is not None and (Path(state)/'terminal.json').exists():
+        target=name(state)
+        if subprocess.call(command+['has-session','-t','='+target],
+                           stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)!=0:
+            # Preserve access to agents started before the default-socket fix.
+            legacy=[binary,'-L','llm-'+target]
+            if subprocess.call(legacy+['has-session','-t','='+target],
+                               stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)==0:
+                return legacy
+    return command
 
 
 def name(state):
@@ -51,16 +62,23 @@ def start(state,spec):
     if error.exists():error.unlink()
     path=state/'terminal.json';tmp=state/'terminal.tmp';tmp.write_text(json.dumps(spec));os.chmod(str(tmp),0o600);os.replace(str(tmp),str(path))
     command='exec '+' '.join(shlex.quote(x) for x in [sys.executable,__file__,'worker',str(state)])
-    subprocess.check_call(tmux(state)+['new-session','-d','-s',name(state),'-x','120','-y','35','-e','PATH='+os.environ.get('PATH',''),command])
+    identity=[] if spec.get('resource_session_id') is None else [
+        arg for key,value in (('LLM_AWAY_SESSION_ID',spec['resource_session_id']),
+                              ('LLM_AWAY_SESSION_TOKEN',spec['token'])) for arg in ('-e',key+'='+str(value))]
+    subprocess.check_call(tmux(state)+['new-session','-d','-s',name(state),'-x','120','-y','35',
+        '-e','PATH='+os.environ.get('PATH',''),*identity,command])
     configure(state)
 
 
 def configure(state):
     target=name(state)
-    for option,value in [('remain-on-exit','off'),('history-limit','100000'),('mouse','on'),('mode-keys','vi')]:
+    for option,value in [('remain-on-exit','off'),('history-limit','100000'),('mouse','on'),('mode-keys','vi'),('cursor-style','block')]:
         subprocess.check_call(tmux(state)+['set-option','-t',target,option,value])
     subprocess.check_call(tmux(state)+['set-option','-g','set-clipboard','on'])
-    subprocess.check_call(tmux(state)+['set-option','-as','terminal-overrides',',*:Ms=\\E]52;c;%p2%s\\007'])
+    override=',*:Ms=\\E]52;c;%p2%s\\007'
+    current=subprocess.check_output(tmux(state)+['show-options','-sv','terminal-overrides'],universal_newlines=True)
+    if override[1:] not in current:
+        subprocess.check_call(tmux(state)+['set-option','-as','terminal-overrides',override])
     copy=clipboard_command()
     for table in ('copy-mode','copy-mode-vi'):
         action=['copy-pipe-and-cancel',' '.join(shlex.quote(x) for x in copy)] if copy else ['copy-selection-and-cancel']
@@ -79,6 +97,18 @@ def configure(state):
         subprocess.check_call(tmux(state)+['bind-key','-n','C-v','run-shell',script])
     else:
         subprocess.check_call(tmux(state)+['bind-key','-n','C-v','paste-buffer','-p'])
+
+
+def attach(state):
+    configure(state)
+    def visible_cursor():
+        if sys.stdout.isatty():
+            sys.stdout.write('\x1b[0 q\x1b[?25h');sys.stdout.flush()
+    visible_cursor()
+    try:
+        return subprocess.call(tmux(state)+['attach-session','-t','='+name(state)])
+    finally:
+        visible_cursor()
 
 
 def send(state,text):
@@ -288,6 +318,7 @@ def worker(state):
 if __name__=='__main__':
     if sys.argv[1]=='worker':worker(sys.argv[2])
     elif sys.argv[1]=='stop':stop(sys.argv[2])
+    elif sys.argv[1]=='attach':sys.exit(attach(sys.argv[2]))
     elif sys.argv[1]=='rag-stdio':rag_stdio(sys.argv[2])
     elif sys.argv[1]=='rag-socket-server':rag_socket_server(sys.argv[2])
     elif sys.argv[1]=='rag-socket-client':rag_socket_client(sys.argv[2])

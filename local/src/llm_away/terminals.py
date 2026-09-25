@@ -99,12 +99,12 @@ def attach(path,data,selection):
         (path/'resume-requested').touch()
     if selection['location']=='local':
         e=engine()
-        e['configure'](path)
-        return subprocess.call(e['tmux'](path)+['attach-session','-t',e['name'](path)])
+        return e['attach'](path)
     cfg=config(data['config']);a=remote(cfg,data['token'],data['remote_port'],'status')
     from .shared_sessions import client_key
-    terminal_id=data['token']+'-'+client_key()
-    command=['tmux','-L','llm-away-'+terminal_id,'attach-session','-t','away-'+terminal_id]
+    state_base=cfg.remote.resource_state_dir or (cfg.remote.workdir+'/.state')
+    state=state_base.rstrip('/')+'/resources/'+data['token']+'/clients/'+client_key()
+    command=[cfg.remote.workdir+'/bin/resource-terminal','attach',state]
     if cfg.backend_type=='slurm_server':
         command=['srun','--jobid='+str(a['job_id']),'--overlap','--nodes=1','--ntasks=1','--pty',*command]
     elif cfg.backend_type=='kubernetes':
