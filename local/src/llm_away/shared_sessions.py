@@ -53,6 +53,44 @@ else:print('null')
     return replace(profile,remote=replace(profile.remote,workdir=root))
 
 
+def direct_profile(profile,item,profiles=None):
+    """A worker hostname is display metadata, not a client-side SSH address."""
+    worker=item.get('worker_host','').split('.')[0].lower()
+    if item.get('session',{}).get('backend_type')!='direct' or not worker:return profile
+    if profile.ssh.connection=='local' or profile.ssh.host.lower()==worker:return profile
+    if profiles is None:
+        from . import resources as r
+        profiles=discovery_profiles(r.load_config(os.environ.get('LLM_REMOTE_CONFIG',str(r.ROOT/'config/model.toml'))))
+    for candidate in profiles:
+        if candidate.ssh.host.split('.')[0].lower()==worker:
+            return replace(profile,ssh=candidate.ssh)
+    raise ValueError('Configure an SSH host for direct worker '+item['worker_host']+'; discovery will not use its internal hostname as an SSH address')
+
+
+def reconcile(scans,active_tokens):
+    """Hide ended allocations only after a successful scan and explicit status check."""
+    from . import resources as r
+    removed=0
+    for saved in r.STORE.glob('[0-9]*/session.json'):
+        try:data=json.loads(saved.read_text())
+        except (OSError,ValueError):continue
+        path=saved.parent
+        if data.get('native') or data.get('token') in active_tokens or (path/'discovery-retired').exists():continue
+        try:cfg=r.config(data['config'])
+        except (KeyError,ValueError):continue
+        for profile in scans:
+            same_store=(cfg.remote.workdir==profile.remote.workdir and cfg.remote.resource_state_dir==profile.remote.resource_state_dir)
+            same_host=cfg.ssh.host.split('.')[0]==profile.ssh.host.split('.')[0]
+            if not same_store or not same_host:continue
+            try:status=r.remote(profile,data['token'],data['remote_port'],'status')
+            except Exception:continue # SSH failures are not proof that an allocation ended.
+            if status.get('active') is False:
+                r.write(path/'discovery-retired',{'allocation':status})
+                removed+=1
+            break
+    return removed
+
+
 def discover():
     from . import resources as r
     from concurrent.futures import ThreadPoolExecutor
@@ -72,16 +110,20 @@ def discover():
             if 'Unknown action' in detail:
                 detail='Update remote/bin/resource-control on this host to enable discovery'
             return profile,[],detail,False
-    imported=0;errors=[];frameworks=0;checked=[]
+    imported=0;errors=[];frameworks=0;checked=[];scanned=[];active_tokens=set()
     with ThreadPoolExecutor(max_workers=4) as pool:
         for profile,items,error,found in pool.map(scan,profiles):
             checked.append(profile.ssh.destination)
             frameworks+=int(found)
             if error:errors.append(f'{profile.ssh.destination}: {error}');continue
+            if found:scanned.append(profile)
+            active_tokens.update(item['token'] for item in items)
             for item in items:
                 try:imported+=import_session(profile,item)
                 except Exception as exc:errors.append(f'{profile.ssh.destination}: {exc}')
+    removed=reconcile(scanned,active_tokens)
     message=f'Discovered {imported} additional remote allocations across {frameworks} framework hosts ({len(profiles)} hosts checked).'
+    message+=f' Removed {removed} ended allocations from monitoring.'
     message+=' Checked hosts: '+(', '.join(checked) or 'none')+'.'
     if errors:message+=' Unavailable hosts: '+ '; '.join(errors)
     return message
@@ -89,14 +131,14 @@ def discover():
 
 def import_session(profile,item):
     from . import resources as r
-    if item.get('session',{}).get('backend_type')=='direct' and item.get('worker_host'):
-        profile=replace(profile,ssh=replace(profile.ssh,host=item['worker_host']))
+    profile=direct_profile(profile,item)
     r.STORE.mkdir(parents=True,exist_ok=True,mode=0o700)
     with (r.STORE/'registry.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)
         for saved in r.STORE.glob('[0-9]*/session.json'):
             old=json.loads(saved.read_text())
             if old.get('token')==item['token']:
+                (saved.parent/'discovery-retired').unlink(missing_ok=True)
                 if item.get('worker_host') and item.get('session',{}).get('backend_type')=='direct':
                     old['config']['ssh']=asdict(profile.ssh);old['host']=profile.ssh.destination
                     old['allocation']=item;r.write(saved,old)

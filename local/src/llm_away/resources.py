@@ -39,8 +39,12 @@ def write(path, data):
 
 def config(data):
     base=AppConfig()
-    return replace(base,**{key:type(getattr(base,key))(**value) if is_dataclass(getattr(base,key)) else value
+    cfg=replace(base,**{key:type(getattr(base,key))(**value) if is_dataclass(getattr(base,key)) else value
                           for key,value in data.items() if key not in ('hosts','saved_hosts')})
+    if cfg.backend_type=='direct' and cfg.ssh.host.endswith('.internal'):
+        from .shared_sessions import direct_profile
+        cfg=direct_profile(cfg,{'worker_host':cfg.ssh.host,'session':{'backend_type':'direct'}})
+    return cfg
 
 def allocation_pending(status):
     """True while a scheduler allocation has no compute node to run a model."""
@@ -249,6 +253,10 @@ def daemon(path):
     if settings.exists():
         cfg=replace(cfg,gateway=replace(cfg.gateway,startup_timeout_seconds=load_config(settings).gateway.startup_timeout_seconds))
         data['config']=asdict(cfg)
+    if cfg.backend_type=='direct':
+        from .shared_sessions import direct_profile
+        cfg=direct_profile(cfg,dict(data.get('allocation') or {},session={'backend_type':'direct'}))
+        data['config']=asdict(cfg);data['host']=cfg.ssh.destination
     token=data['token'];port=data['remote_port'];child=None;offset=0;last=None
     if cfg.ssh.connection!='local':
         os.environ['LLM_AWAY_SSH_CONTROL']=str((path/'ssh.sock').resolve())
@@ -336,6 +344,9 @@ def daemon(path):
             return False
     try:
         while True:
+            if (path/'discovery-retired').exists():
+                cleanup_ended_allocation(path,data)
+                break
             if detach_requested:
                 print('Local monitor stopping; remote allocation and model retained.',flush=True)
                 break
@@ -398,7 +409,8 @@ def daemon(path):
                     s,new_offset,new_logs=remote_poll.result()
                     offset=new_offset
                     if cfg.backend_type=='direct' and s.get('worker_host') and cfg.ssh.connection!='local':
-                        cfg=replace(cfg,ssh=replace(cfg.ssh,host=s['worker_host']))
+                        from .shared_sessions import direct_profile
+                        cfg=direct_profile(cfg,dict(s,session={'backend_type':'direct'}))
                         state(config=asdict(cfg),host=cfg.ssh.destination)
                     from .shared_sessions import client_identity
                     owner=(s.get('owner') or {}).get('id')
@@ -882,12 +894,13 @@ def restart_session(number):
         history.append({k:data.get(k) for k in ('token','phase','error','allocation')})
         # Never allocate a second job while recovering an unacknowledged reserve:
         # reuse its token. A confirmed ended job needs a fresh token.
-        if data.get('allocation_cleaned'):data['token']=uuid.uuid4().hex
+        if data.get('allocation_cleaned') or (path/'discovery-retired').exists():data['token']=uuid.uuid4().hex
         data.update(config=asdict(cfg),phase='STARTING',error='',model='',pid=None,
                     allocation_cleaned=False,provider_pid=None,provider_identity='',provider_exit=None,
                     client_pid=None,client_identity='')
         data.pop('allocation',None)
         write(path/'session.json',data)
+        (path/'discovery-retired').unlink(missing_ok=True)
         (path/'control.sock').unlink(missing_ok=True)
         with (path/'session.log').open('a') as log:
             log.write('Restart requested using current host settings.\n');log.flush()

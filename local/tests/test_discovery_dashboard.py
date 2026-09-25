@@ -18,6 +18,42 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual([p.ssh.host for p in profiles],['saved'])
         self.assertEqual(profiles[0].remote.resource_state_dir,'/private/saved')
 
+    def test_internal_worker_name_preserves_configured_ssh_route(self):
+        cfg=AppConfig();gateway=replace(cfg,ssh=replace(cfg.ssh,host='gateway'))
+        configured=replace(cfg,ssh=replace(cfg.ssh,host='epn000'))
+        item={'worker_host':'epn000.internal','session':{'backend_type':'direct'}}
+        self.assertEqual(shared.direct_profile(gateway,item,[configured]).ssh.host,'epn000')
+        corrupted=replace(cfg,ssh=replace(cfg.ssh,host='epn000.internal'))
+        self.assertEqual(shared.direct_profile(corrupted,item,[configured]).ssh.host,'epn000')
+        self.assertEqual(shared.direct_profile(configured,item,[]).ssh.host,'epn000')
+        with self.assertRaisesRegex(ValueError,'Configure an SSH host'):
+            shared.direct_profile(gateway,item,[])
+
+    def test_discovery_retires_only_confirmed_ended_allocations(self):
+        from dataclasses import asdict
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);cfg=AppConfig()
+            def saved(number,token,profile=cfg):
+                path=root/str(number);path.mkdir()
+                (path/'session.json').write_text(json.dumps({'config':asdict(profile),'token':token,'remote_port':123}))
+                return path
+            ended=saved(1,'ended');active=saved(2,'active');uncertain=saved(3,'uncertain')
+            offline=saved(4,'offline',replace(cfg,ssh=replace(cfg.ssh,host='offline')))
+            def status(profile,token,port,action):
+                if token=='uncertain':raise RuntimeError('SSH failed')
+                self.assertEqual(action,'status')
+                return {'active':False,'slurm_state':'CANCELLED'}
+            with patch.object(resources,'STORE',root),patch.object(resources,'remote',side_effect=status):
+                self.assertEqual(shared.reconcile([cfg],{'active'}),1)
+            self.assertTrue((ended/'discovery-retired').exists())
+            self.assertTrue((ended/'session.json').exists())
+            from llm_away import monitor_ui
+            with patch('llm_away.session_guard.ensure',side_effect=AssertionError('Retired session must not be monitored')):
+                self.assertEqual(monitor_ui.snapshots(ended.parent/'missing'),[])
+                isolated=root/'retired-only';isolated.mkdir();ended.rename(isolated/'1')
+                self.assertEqual(monitor_ui.snapshots(isolated),[])
+            for path in (active,uncertain,offline):self.assertFalse((path/'discovery-retired').exists())
+
     def test_saved_profiles_exclude_bundled_default_host(self):
         cfg=replace(AppConfig(),saved_hosts={
             'example':{'_builtin':True,'backend_type':'slurm_server'},

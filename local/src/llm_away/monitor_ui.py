@@ -104,7 +104,7 @@ def snapshots(store):
     for path in store.glob('*/session.json'):
         try:
             data=json.loads(path.read_text())
-            if data.get('phase')=='RELEASED':continue
+            if (path.parent/'discovery-retired').exists() or data.get('phase')=='RELEASED':continue
             if data.get('native'):
                 from .native_sessions import status
                 data=status(path.parent,data)
