@@ -10,6 +10,12 @@ from llm_away import webapp
 
 
 class WebAppTests(unittest.TestCase):
+    def setUp(self):
+        # Remote reads are independently covered by test_shared_sessions.
+        from llm_away import shared_sessions
+        for name,kwargs in [('ensure_daemon',{}),('current',{'side_effect':lambda path:json.loads((path/'session.json').read_text()).get('allocation',{})})]:
+            mocked=patch.object(shared_sessions,name,**kwargs);mocked.start();self.addCleanup(mocked.stop)
+
     def test_cleanup_requires_preview_and_rejects_changed_paths(self):
         with self.assertRaisesRegex(ValueError,'preview expired'):
             webapp.cleanup_released('unknown')

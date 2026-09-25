@@ -140,7 +140,7 @@ function renderChats(rows) {
       const title = node('div'); title.append(node('span', 'kicker', `SESSION ${row.id}`), node('h2'));
       heading.append(title, node('span', 'chat-status'));
       const screen = node('div', 'chat-terminal'); screen.dataset.session = key;
-      card.append(heading, screen); cards.append(card);
+      card.append(heading, screen); cards.append(card); makeResizable(card,screen,`chat-${key}`);
     }
     card.querySelector('h2').textContent = row.model || (nativeReady ? `Native ${row.native_cli || 'CLI'}` : 'No model selected');
     const status = card.querySelector('.chat-status'); status.className = `chat-status ${ready ? 'ready' : ''}`; status.textContent = ready ? `Terminal · ${row.time_left || '∞'}` : `${row.model_state || row.phase || 'Unavailable'} · ${row.time_left || '∞'}`;
@@ -174,7 +174,7 @@ async function ensureChatTerminal(row, host) {
     xterm.onData(data => api('/api/terminal/input', {method: 'POST', body: JSON.stringify({id: item.id, data})}).catch(error => notice(error.message, true)));
     const resize = () => {
       if (!host.clientWidth) return;
-      const cols = Math.max(50, Math.floor(host.clientWidth / 8.1)); const rows = 28;
+      const cols = Math.max(50, Math.floor(host.clientWidth / 8.1)); const rows = Math.max(6,Math.floor((host.clientHeight-20)/17));
       if (xterm.cols === cols && xterm.rows === rows) return;
       xterm.resize(cols, rows); api('/api/terminal/resize', {method: 'POST', body: JSON.stringify({id: item.id, cols, rows})}).catch(() => {});
     };
@@ -211,6 +211,7 @@ $('gpu-overview').addEventListener('load', () => {
 });
 window.addEventListener('message', event => {
   if (event.origin !== window.location.origin || event.data?.type !== 'metrics-height') return;
+  if ($('gpu-overview').dataset.userSized) return;
   $('gpu-overview').style.height = `${Math.max(360, Math.min(1600, Number(event.data.height) || 410))}px`;
 });
 
@@ -305,6 +306,7 @@ function toolsDialog() {
     run: () => runOperation(label, `${description}…`, '/api/actions', {action, session: sessionId, confirmed: true})
   });
   const options = [
+    run('Discover remote jobs', 'Find existing allocations on configured hosts', 'discover-remote'),
     run('Refresh res-mon', 'Remove ended allocations while preserving uncertain sessions', 'refresh-monitor'),
     {label:'Cleanup', description:'Review every cleanup path before confirming.', danger:true, run:cleanupDialog},
   ];
@@ -452,6 +454,14 @@ async function modelDialog() {
     const ragCompute = selectControl(['local', 'remote'], data.rag_compute || data.agent_location || 'local');
     const ragPathsLocation = selectControl([{value: 'local', label: 'Local paths'}, {value: 'remote', label: 'Remote paths'}, {value: 'shared', label: 'Shared: local = remote'}], data.rag_paths_location || data.agent_location || 'local');
     const server = inputControl(data.server_options_by_model?.[model.value] || '');
+    const build = selectControl([{value:'native',label:'Native llama.cpp build'},{value:'container',label:'Container'}],data.build_mode || 'native');
+    const containerPath = inputControl(data.container_path || '');
+    containerPath.placeholder = '/remote/path/llama-server.sif';
+    const containerField = field('Container path',containerPath,'Path on the model host.',true);
+    const updateBuild = () => { containerField.hidden = build.value !== 'container'; containerPath.required = build.value === 'container'; };
+    build.addEventListener('change',updateBuild); updateBuild();
+    grid.append(field('llama.cpp runtime',build,'Changing the runtime requires loading the model again.'),containerField);
+
     grid.append(field('Model', model, '', true), field('MTP', mtp), field('Agent location', location), field('Agent CLI', cli), field('Agent work directory', workdir), field('RAG', rag, 'Colon-separated source paths.', true), field('RAG compute', ragCompute, 'Where the embedding model and vector index run.'), field('RAG paths live on', ragPathsLocation, 'Different hosts are synchronized to a per-session snapshot.', true), field('RAG CPU cores', ragThreads, 'Embedding threads on the RAG compute host.'), field('RAG memory (GiB)', ragMemory, 'Hard limit on the RAG compute host; 0 means unlimited.'), field('RAG GPU', ragGpu, 'Uses an available GPU on the RAG compute host.'), field('Model server options', server, 'Batch, context and backend arguments.', true));
     function updateRagLocation() {
       const remote = location.value === 'remote';
@@ -468,23 +478,39 @@ async function modelDialog() {
         : `Paths are synchronized once from ${source} storage to ${ragCompute.value} RAG compute.`;
     }
     location.addEventListener('change', updateRagLocation);ragCompute.addEventListener('change',updateRagPaths);ragPathsLocation.addEventListener('change',updateRagPaths);updateRagLocation();
-    model.addEventListener('change', () => { server.value = data.server_options_by_model?.[model.value] || ''; });
+    function applyModelDefaults(initial = false) {
+      const saved = data.preferences?.[model.value] || {};
+      const current = data.models.find(item => item.name === model.value);
+      const sameModel = current && [current.name,current.alias].includes(data.current);
+      rag.value = saved.rag ?? (initial && sameModel ? data.rag || '' : '');
+      ragCompute.value = saved.rag_compute || (initial && sameModel ? data.rag_compute : '') || location.value;
+      ragPathsLocation.value = saved.rag_paths_location || (initial && sameModel ? data.rag_paths_location : '') || location.value;
+      build.value = saved.build_mode || data.build_mode || 'native';
+      server.value = data.server_options_by_model?.[model.value] || '';
+      updateRagPaths(); updateBuild();
+    }
+    model.addEventListener('change', () => applyModelDefaults()); applyModelDefaults(true);
     form.append(grid);
     let replaceLoaded = null;
-    if (data.loaded) {
+    if (data.loaded || data.remote_owner) {
       const warning = node('label', 'replace-warning');
       replaceLoaded = document.createElement('input'); replaceLoaded.type = 'checkbox';
-      warning.append(replaceLoaded, node('span', '', 'A model is already loaded. Stop it and replace its model, flags, agent settings, and RAG configuration.'));
+      warning.append(replaceLoaded, node('span', '', data.remote_owner ? `This session is allocated on ${data.remote_owner}. Acknowledge to release its model and start the new model and terminal on this machine.` : 'A model is already loaded. Stop it and replace its model, flags, agent settings, and RAG configuration.'));
       form.append(warning);
     }
     const actions = node('div', 'form-actions');
     const attach = node('button', '', 'Attach existing terminal'); attach.type = 'button'; attach.addEventListener('click', () => terminalWindow(`Session ${sessionId}`, `run --session ${sessionId} --resume\n`));
     const submit = node('button', 'primary', 'Load and start'); submit.type = 'submit';
+    if (data.can_attach) {
+      const reuse = node('button', '', data.remote_owner ? 'Take over and reuse loaded model' : 'Reuse loaded model'); reuse.type = 'button';
+      reuse.onclick = () => runOperation(`Attach session ${sessionId}`, 'Taking ownership and connecting to the existing model without reloading it…', '/api/load', {session:sessionId,settings:{attach_existing:true,expected_owner:data.expected_owner,expected_generation:data.expected_generation,agent_location:location.value,cli:cli.value,agent_workdir:workdir.value,rag:rag.value,rag_compute:ragCompute.value,rag_paths_location:ragPathsLocation.value}}, true);
+      actions.append(reuse);
+    }
     actions.append(attach, submit); form.append(actions);
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (replaceLoaded && !replaceLoaded.checked) { notice('Acknowledge model replacement before loading the new configuration.', true); return; }
-      runOperation(`Start session ${sessionId}`, 'Loading the model and preparing the retained agent terminal…', '/api/load', {session: sessionId, settings: {model: model.value, mtp: mtp.value, agent_location: location.value, cli: cli.value, agent_workdir: workdir.value, rag: rag.value, rag_compute: ragCompute.value, rag_paths_location: ragPathsLocation.value, rag_threads: ragThreads.value, rag_memory_gb: ragMemory.value, rag_gpu: ragGpu.value, replace_loaded: Boolean(replaceLoaded?.checked), server_options: server.value}}, true);
+      runOperation(`Start session ${sessionId}`, 'Loading the model and preparing the retained agent terminal…', '/api/load', {session: sessionId, settings: {build_mode:build.value, container_path:containerPath.value, model: model.value, mtp: mtp.value, agent_location: location.value, cli: cli.value, agent_workdir: workdir.value, rag: rag.value, rag_compute: ragCompute.value, rag_paths_location: ragPathsLocation.value, rag_threads: ragThreads.value, rag_memory_gb: ragMemory.value, rag_gpu: ragGpu.value, replace_loaded: Boolean(replaceLoaded?.checked), expected_owner: data.expected_owner, expected_generation:data.expected_generation, server_options: server.value}}, true);
     });
     openDialog(`Attach session ${sessionId}`, form);
   } catch (error) {
@@ -611,3 +637,29 @@ pingBrowser();
 setInterval(pingBrowser, 15000);
 window.addEventListener('pageshow', pingBrowser);
 window.addEventListener('pagehide', () => navigator.sendBeacon('/api/browser/close', JSON.stringify({id: browserLease})));
+
+
+// A full-width drag edge keeps resizing usable for both mouse and touch input.
+function makeResizable(panel, target, key) {
+  const handle = node('div','panel-resizer'); handle.tabIndex=0; handle.setAttribute('role','separator');
+  handle.setAttribute('aria-label','Resize '+key); handle.setAttribute('aria-orientation','horizontal');
+  const storageKey='llm-away-height-'+key;
+  const apply = height => {
+    target.style.height = `${Math.max(140,Math.min(1800,height))}px`;
+    target.dataset.userSized='1';
+    try { localStorage.setItem(storageKey,target.style.height); } catch {}
+    resizeTerminal();
+  };
+  try { const saved=parseFloat(localStorage.getItem(storageKey)); if(Number.isFinite(saved)) apply(saved); } catch {}
+  handle.onpointerdown = event => {
+    event.preventDefault(); const initial=target.getBoundingClientRect().height; const y=event.clientY;
+    handle.setPointerCapture(event.pointerId); document.body.classList.add('resizing-panel');
+    handle.onpointermove = move => apply(initial+move.clientY-y);
+    handle.onpointerup = handle.onpointercancel = () => { handle.onpointermove=null; document.body.classList.remove('resizing-panel'); };
+  };
+  handle.onkeydown = event => { if(['ArrowUp','ArrowDown'].includes(event.key)) {event.preventDefault();apply(target.getBoundingClientRect().height+(event.key==='ArrowUp'?-20:20));} };
+  panel.append(handle);
+}
+makeResizable(document.querySelector('.monitor-panel'),$('log-output'),'monitor-log');
+makeResizable(document.querySelector('.gpu-overview-panel'),$('gpu-overview'),'gpu-history');
+makeResizable($('terminal-slot'),$('terminal-host'),'terminal');

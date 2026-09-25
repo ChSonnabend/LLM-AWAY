@@ -4,6 +4,8 @@ const history = new Map();
 const historyCursors = new Map();
 let refreshing = false;
 let selectedSession = '';
+let intervalSeconds = 3600;
+let viewEnd = null;
 const pageParameters = new URLSearchParams(window.location.search);
 let requestedSession = pageParameters.get('session') || '';
 if (pageParameters.get('embed') === '1') document.body.classList.add('embedded');
@@ -65,7 +67,7 @@ function gpuColors(count) {
   });
 }
 
-function draw(canvas, series) {
+function draw(canvas, series, first, last) {
   const ratio = window.devicePixelRatio || 1;
   const width = canvas.clientWidth, height = canvas.clientHeight;
   canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
@@ -77,8 +79,7 @@ function draw(canvas, series) {
   }
   const allPoints = series.flatMap(item => item.points);
   if (!allPoints.length) return;
-  const first = allPoints.reduce((value, point) => Math.min(value, point.time), Infinity);
-  const last = Math.max(allPoints.reduce((value, point) => Math.max(value, point.time), -Infinity), first + 1);
+
   const plot = (points, color, value) => {
     ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
     points.forEach((point, index) => {
@@ -88,10 +89,12 @@ function draw(canvas, series) {
     });
     ctx.stroke();
   };
+  ctx.save(); ctx.beginPath(); ctx.rect(left, top, plotWidth, plotHeight); ctx.clip();
   for (const item of series) {
     plot(item.points, item.colors.vram, point => point.total ? point.used / point.total * 100 : 0);
     plot(item.points, item.colors.utilization, point => point.utilization);
   }
+  ctx.restore();
   ctx.fillStyle = '#778398'; ctx.fillText(new Date(first * 1000).toLocaleTimeString(), left, height - 8);
   const end = new Date(last * 1000).toLocaleTimeString(); ctx.fillText(end, width - right - ctx.measureText(end).width, height - 8);
 }
@@ -122,7 +125,51 @@ function render() {
   }
   heading.append(title, legend);
   const canvas = document.createElement('canvas'); canvas.className = 'metric-chart combined-metric-chart';
-  card.append(heading, canvas); cards.append(card); draw(canvas, series); reportHeight();
+  const controls = document.createElement('div'); controls.className = 'metric-controls';
+  const interval = document.createElement('select'); interval.setAttribute('aria-label', 'Visible time interval');
+  for (const [seconds, label] of [[600,'10 mins'],[1800,'30 mins'],[3600,'1h'],[7200,'2h'],[18000,'5h'],[36000,'10h']]) {
+    const option = new Option(label, String(seconds)); option.selected = seconds === intervalSeconds; interval.add(option);
+  }
+  interval.onchange = () => { intervalSeconds = Number(interval.value); render(); };
+  const latestTime = Math.max(...series.map(item => item.points[item.points.length - 1].time));
+  const earliestTime = Math.min(...series.map(item => item.points[0].time));
+  let end = viewEnd === null ? latestTime : Math.max(Math.min(viewEnd, latestTime), Math.min(earliestTime + intervalSeconds, latestTime));
+  let start = end - intervalSeconds;
+  const scroll = document.createElement('input'); scroll.type = 'range'; scroll.className = 'metric-scroll';
+  scroll.setAttribute('aria-label', 'Scroll through GPU history'); scroll.min = Math.min(earliestTime + intervalSeconds, latestTime); scroll.max = latestTime; scroll.step = '1'; scroll.value = end;
+  const redraw = () => { end = viewEnd === null ? latestTime : viewEnd; start = end - intervalSeconds; scroll.value = end; live.textContent = viewEnd === null ? 'Live' : 'Back to live'; draw(canvas, series.map(item => ({...item, points:item.points.filter(point => point.time >= start && point.time <= end)})), start, end); };
+  scroll.oninput = () => { viewEnd = Number(scroll.value) >= latestTime - 1 ? null : Number(scroll.value); redraw(); };
+  const live = document.createElement('button'); live.textContent = viewEnd === null ? 'Live' : 'Back to live'; live.onclick = () => { viewEnd = null; render(); };
+  controls.append(interval, live);
+  const plot = document.createElement('div'); plot.className = 'metric-plot';
+  const tooltip = document.createElement('div'); tooltip.className = 'metric-tooltip'; tooltip.hidden = true;
+  const crosshair = document.createElement('div'); crosshair.className='metric-crosshair'; crosshair.hidden=true;
+  canvas.onmousemove = event => {
+    const bounds = canvas.getBoundingClientRect(); const x = event.clientX - bounds.left;
+    if (x < 42 || x > bounds.width - 14) { tooltip.hidden = true; crosshair.hidden=true; return; }
+    crosshair.hidden=false; crosshair.style.left=`${x}px`;
+    const time = start + (x - 42) / (bounds.width - 56) * intervalSeconds;
+    const lines = [];
+    for (const item of series) {
+      const points = item.points.filter(point => point.time >= start && point.time <= end);
+      if (!points.length) continue;
+      const point = points.reduce((a,b) => Math.abs(a.time-time) < Math.abs(b.time-time) ? a : b);
+      lines.push(`${new Date(point.time*1000).toLocaleTimeString()} · GPU ${item.index}: ${point.utilization.toFixed(0)}% · VRAM ${(point.used/1024).toFixed(2)} / ${(point.total/1024).toFixed(2)} GiB`);
+    }
+    tooltip.textContent = lines.join('\n'); tooltip.hidden = !lines.length;
+    tooltip.style.left = `${Math.max(0, Math.min(x + 12, bounds.width - tooltip.offsetWidth))}px`;
+    tooltip.style.top = '20px';
+  };
+  canvas.onmouseleave = () => { tooltip.hidden = true; crosshair.hidden=true; };
+  canvas.addEventListener('wheel', event => {
+    if (!event.deltaX && !event.shiftKey) return;
+    event.preventDefault();
+    viewEnd = Math.max(Number(scroll.min), Math.min(latestTime, end + (event.deltaX || event.deltaY) * intervalSeconds / canvas.clientWidth));
+    if (viewEnd >= latestTime) viewEnd = null;
+    redraw();
+  }, {passive:false});
+  plot.append(canvas, crosshair, tooltip); card.append(heading, controls, plot, scroll); cards.append(card);
+  draw(canvas, series.map(item => ({...item, points:item.points.filter(point => point.time >= start && point.time <= end)})), start, end); reportHeight();
 }
 
 function reportHeight() {
@@ -159,7 +206,9 @@ async function refresh() {
 
 window.addEventListener('message', event => {
   if (event.origin !== window.location.origin || event.data?.type !== 'select-session') return;
-  requestedSession = String(event.data.session || ''); selectedSession = requestedSession; render(); refresh();
+  const next = String(event.data.session || '');
+  if (next === selectedSession) return;
+  requestedSession = next; viewEnd = null; selectedSession = requestedSession; render(); refresh();
 });
 window.addEventListener('resize', render);
 refresh(); setInterval(refresh, 5000);

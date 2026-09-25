@@ -64,6 +64,9 @@ HTTPServer(('127.0.0.1',int(os.environ['LLAMACPP_PORT'])),Handler).serve_forever
                 def healthy(port):
                     with urlopen(f'http://127.0.0.1:{port}/health',timeout=1) as r:return r.status==200
                 for i in range(2):wait(lambda:healthy(ports[3*i]))
+                for path in paths:
+                    token=json.loads((path/'session.json').read_text())['token']
+                    wait(lambda: 'LOADED' in (root/'.state/resources'/token/'worker.state').read_text())
                 rpc(paths[0],'stop',client_pid=os.getpid())
                 self.assertTrue(healthy(ports[3]))
                 self.assertEqual(rpc(paths[0],'status')['allocation']['job_id'],original[0])

@@ -14,3 +14,6 @@ config/*.toml.backup-*
 
 # Machine-local initialization profiles
 config/*.hosts.json
+
+config/*.preferences.json
+config/*.preferences.lock

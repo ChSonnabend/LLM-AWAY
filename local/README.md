@@ -378,3 +378,62 @@ uncertain or running jobs are retained. **5/F5 Cleanup** removes released-sessio
 logs, caches and managed connections after confirmation, retaining session IDs.
 GLM defaults in `[llamacpp.model_batch_defaults]` are Q4: 2048/1024 and Q8:
 2048/512 (batch/microbatch); the model options screen allows overrides.
+
+## Share allocations between machines
+
+Use the same remote Unix account and remote `resource_state_dir` (or the same
+remote repository when that setting is empty). In the browser monitor, choose
+**Tools → Discover remote jobs**. This imports active jobs from the configured
+hosts as local monitor entries, with fresh local provider/tunnel ports. Local
+session numbers may differ; the remote allocation token identifies the job.
+Remote metadata is authoritative for the allocation, model configuration, and
+current owner. Native account-backed CLI sessions are not imported.
+
+Open an imported session to choose either:
+
+- **Take over and reuse loaded model**: transfer ownership, open a new tunnel and
+  agent terminal, and preserve the existing model process and its settings.
+- Check the replacement acknowledgement, then **Load and start**: transfer
+  ownership, stop the old model/remote agent, and load the selected configuration.
+
+Takeover is checked against the owner and model generation shown in the dialog.
+If another client changes either meanwhile, refresh the dialog before retrying.
+Old clients cannot change or release the remote model after transfer; updated
+monitors close their old local provider and terminal on the next poll. Ownership
+persists when a client disconnects, and another client can explicitly take over.
+This is exclusive ownership transfer, not simultaneous sharing of an agent's
+conversation. Reusing a model does not copy local conversations or local RAG data.
+
+Update all participating clients and `remote/bin/resource-control` before using
+this feature. Existing allocations gain discovery metadata on their next status
+poll through the updated control script. The worker's independent health reporting
+requires `remote/bin/resource-worker` to be updated before the allocation starts;
+older workers remain attachable through provider health checks.
+
+Model startup defaults to 1800 seconds (`gateway.startup_timeout_seconds`). The
+terminal excludes scheduler queue time, and provider/tunnel connection failures
+are retried within the startup budget. Restarted monitors read the current timeout.
+A failed provider is shown as an error rather than indefinitely loading.
+
+GPU history displays the latest hour by default. Select 10/30 minutes or 1/2/5/10
+hours, use the horizontal history slider (or horizontal/Shift+wheel scrolling), and
+hover for utilization and VRAM at the nearest sample. **Back to live** returns to
+the newest readings; older history remains available.
+
+### Remembered model launch settings
+
+The model dialog offers **Native llama.cpp build** or **Container**. Container
+mode requires a path on the model host and remembers the last path for that host.
+Changing runtime requires a model reload; reusing a loaded model keeps its runtime.
+RAG paths and their local/remote/shared location are remembered per model and host
+in the machine-local `config/model.preferences.json` file. Clearing the paths also
+clears that model's saved default.
+
+Host-specific batch overrides live under
+`[llamacpp.model_host_batch_defaults.<ssh-host>]`, with separate `[batch, ubatch]`
+values per model. Hydra Q4 now uses `[2048, 512]`. Other hosts retain their defaults.
+Drag the bottom edge of a chat, log, terminal, or GPU panel to resize it; sizes are
+remembered in the browser. GPU history stays at the selected time until returning
+to live view, and a vertical cursor marker accompanies the hover values.
+
+See [session 22's confirmed host-memory failure](docs/job-22-failure.md).

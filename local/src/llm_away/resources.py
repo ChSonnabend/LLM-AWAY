@@ -44,6 +44,9 @@ def allocation_pending(status):
     return status.get('slurm_state') in ('PENDING','CONFIGURING') or not status.get('host')
 
 def remote(cfg, token, port, action, **extra):
+    from .shared_sessions import client_identity
+    extra.setdefault('client_id',client_identity())
+    extra.setdefault('client_label',socket.gethostname())
     command=['python3',cfg.remote.workdir+'/bin/resource-control',action]
     if cfg.ssh.connection!='local':
         # Reuse one authenticated connection for repeated allocation polls.
@@ -143,22 +146,29 @@ class ResourceBackend(SlurmServerBackend):
             if self._closing.is_set(): raise BackendError('Model is stopping')
             if self._ready_model==model and self.http_ready(model): return
             state=self.serverctl('ensure',model)
-            deadline=time.time()+self.config.gateway.startup_timeout_seconds
+            deadline=time.monotonic()+self.config.gateway.startup_timeout_seconds
+            last_error=''
             while not self._closing.is_set():
-                state=self.serverctl('status',model)
+                try:state=self.serverctl('status',model)
+                except (RuntimeError,OSError,subprocess.TimeoutExpired) as exc:
+                    last_error=str(exc)
+                    if time.monotonic()>=deadline:break
+                    self._closing.wait(2);continue
                 if not state.get('active'): raise BackendError('Resource allocation ended')
                 if state.get('model_state')=='EXITED': raise BackendError('Model exited; see res-mon logs')
                 if state.get('slurm_state') in ('PENDING','CONFIGURING') or not state.get('host'):
                     # Scheduler queue time is not model startup time. The desired
                     # model is already recorded and the worker starts it once the
                     # allocation receives a node.
-                    deadline=time.time()+self.config.gateway.startup_timeout_seconds
-                if state.get('host') and state.get('model_state')=='LOADING':
-                    self.ensure_tunnel(state['host'])
-                    if self.http_ready(model): self._ready_model=model;return
-                if time.time()>=deadline:break
+                    deadline=time.monotonic()+self.config.gateway.startup_timeout_seconds
+                if state.get('host') and state.get('model_state') in ('LOADING','LOADED','READY'):
+                    try:
+                        self.ensure_tunnel(state['host'])
+                        if self.http_ready(model): self._ready_model=model;return
+                    except (BackendError,OSError,subprocess.TimeoutExpired) as exc:last_error=str(exc)
+                if time.monotonic()>=deadline:break
                 self._closing.wait(2)
-            raise BackendError('Model startup timed out or was canceled')
+            raise BackendError(f"Model startup timed out after {self.config.gateway.startup_timeout_seconds}s or was canceled; state={state.get('model_state')}, host={state.get('host')}; remote log: {state.get('log_path','unknown')}; last connection error: {last_error or 'none'}")
     def ensure_tunnel(self,host):
         if self.config.backend_type=='kubernetes': KubernetesBackend.ensure_tunnel(self,host)
         else: super().ensure_tunnel(host)
@@ -228,6 +238,11 @@ def cleanup_ended_allocation(path, data):
 def daemon(path):
     data=json.loads((path/'session.json').read_text());cfg=config(data['config'])
     if data.get('allocation_cleaned'):return
+    # Pick up timeout changes when restarting an existing allocation monitor.
+    settings=Path(os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
+    if settings.exists():
+        cfg=replace(cfg,gateway=replace(cfg.gateway,startup_timeout_seconds=load_config(settings).gateway.startup_timeout_seconds))
+        data['config']=asdict(cfg)
     token=data['token'];port=data['remote_port'];child=None;offset=0;last=None
     if cfg.ssh.connection!='local':
         os.environ['LLM_AWAY_SSH_CONTROL']=str((path/'ssh.sock').resolve())
@@ -326,13 +341,26 @@ def daemon(path):
                     try:
                         request=json.loads(client.makefile('rb').readline(1048576));action=request['action']
                         if action=='status': answer=data
+                        elif action=='adopt-config':
+                            if child is not None and child.poll() is None:raise ValueError('Stop the local provider before attaching')
+                            latest=remote(cfg,token,port,'status')
+                            shared=latest.get('session') or {}
+                            if not shared:raise ValueError('Remote model configuration is unavailable')
+                            from .terminals import engine
+                            engine()['stop'](path)
+                            merged=asdict(cfg);merged.update(shared);cfg=config(merged)
+                            state(config=asdict(cfg),allocation=latest,model=cfg.model.name,provider_exit=None)
+                            child=subprocess.Popen([sys.executable,'-m','llm_away.resources','provider',str(path)],stdin=subprocess.DEVNULL)
+                            state(provider_pid=child.pid,provider_identity=identity(child.pid))
+                            answer={'ok':True}
                         elif action=='start':
                             if child is not None and child.poll() is None: raise ValueError('Session already has a running agent/provider')
                             allocation=remote(cfg,token,port,'status')
                             if not allocation.get('active'): raise ValueError('Allocation is not active')
                             cfg=replace(cfg,model=replace(cfg.model,name=request['model']['alias']),
                                 llamacpp=replace(cfg.llamacpp,model_name=request['model']['name'],mtp=request['mtp'],
-                                                 server_extra_args=request.get('server_extra_args',cfg.llamacpp.server_extra_args)))
+                                                 server_extra_args=request.get('server_extra_args',cfg.llamacpp.server_extra_args),
+                                                 container=request.get('container',cfg.llamacpp.container)))
                             if request['model'].get('context_size',0)>0:
                                 cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,context_size=request['model']['context_size']))
                             # A preset without a draft model cannot run MTP; enforce it locally too.
@@ -362,9 +390,23 @@ def daemon(path):
                 try:
                     s,new_offset,new_logs=remote_poll.result()
                     offset=new_offset
-                    if child is not None and child.poll() is None and s.get('model_state')=='LOADING' and provider_ready():
+                    from .shared_sessions import client_identity
+                    owner=(s.get('owner') or {}).get('id')
+                    if owner and owner!=client_identity() and child is not None:
+                        # A new owner fences this client. Never stop its remote model.
+                        from .terminals import engine
+                        engine()['stop'](path)
+                        if child.poll() is None:
+                            child.terminate()
+                            try:child.wait(timeout=5)
+                            except subprocess.TimeoutExpired:child.kill();child.wait()
+                        child=None
+                        state(provider_pid=None,provider_identity='',model='',error='Session ownership moved to another machine')
+                    if child is not None and child.poll() is None and s.get('model_state') in ('LOADING','LOADED','READY') and provider_ready():
                         s['model_state']='LOADED'
-                    state(allocation=s,phase=s['slurm_state'],error='',provider_exit=child.poll() if child else None)
+                    failure='Model provider exited; inspect session log or attach to retry' if child is not None and child.poll() not in (None,0) else ''
+                    if failure and s.get('model_state') in ('STARTING','LOADING','LOADED','READY'):s['model_state']='ERROR'
+                    state(allocation=s,phase=s['slurm_state'],error=failure,provider_exit=child.poll() if child else None)
                     summary=(s['slurm_state'],s.get('model_state'),s.get('host'))
                     if summary!=last:print('Resource state:',summary,flush=True);last=summary
                     if new_logs:print(new_logs,end='',flush=True)
@@ -506,8 +548,11 @@ def run_agent(args):
         settings=Path(os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
         if settings.exists():
             current=load_config(settings)
+            try:current=current.with_host(cfg.ssh.host)
+            except ValueError:pass
             cfg=replace(cfg,codex=current.codex,agent=current.agent,claude=current.claude,
-                        llamacpp=replace(cfg.llamacpp,model_batch_defaults=current.llamacpp.model_batch_defaults))
+                        llamacpp=replace(cfg.llamacpp,model_batch_defaults=current.llamacpp.model_batch_defaults,
+                                         model_host_batch_defaults=current.llamacpp.model_host_batch_defaults))
         location=getattr(args,'agent_location','local')
         reuse=False;resume=bool(getattr(args,'resume',False) and not helper)
         # Local agents can use their own native Codex/Claude account (no remote
@@ -593,6 +638,8 @@ def run_agent(args):
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=shlex.split(options[0])))
         if getattr(args,'server_extra_args',None) is not None:
             cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,server_extra_args=args.server_extra_args))
+        if not reuse and getattr(args,'container',None) is not None:
+            cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,container=args.container))
         rag_command=None
         rag_config=({'paths':args.rag,'threads':getattr(args,'rag_threads',2),
                      'memory_gb':getattr(args,'rag_memory_gb',0),'gpu':getattr(args,'rag_gpu',False),
@@ -872,7 +919,7 @@ def reconnect_session(number):
 
 def model_server_options(cfg, name):
     options=list(cfg.llamacpp.server_extra_args)
-    defaults=cfg.llamacpp.model_batch_defaults.get(name)
+    defaults=cfg.llamacpp.model_host_batch_defaults.get(cfg.ssh.host,{}).get(name, cfg.llamacpp.model_batch_defaults.get(name))
     if not defaults:return options
     result=[];skip=False
     for value in options:

@@ -7,7 +7,7 @@ from urllib.request import urlopen
 
 
 def prepare(path, spec):
-    from .resources import rpc, config, write, identity, remote
+    from .resources import rpc, config, write, identity, remote, allocation_pending
     from .agents import choose_cli
     from . import terminals
     loading=spec['loading'];cfg=config(loading['config'])
@@ -35,7 +35,7 @@ def prepare(path, spec):
     try:
         if not loading['reuse']:
             rpc(path,'start',model=model,mtp=loading['mtp'],
-                server_extra_args=cfg.llamacpp.server_extra_args,client_pid=os.getpid())
+                server_extra_args=cfg.llamacpp.server_extra_args,container=cfg.llamacpp.container,client_pid=os.getpid())
         deadline=time.monotonic()+cfg.gateway.startup_timeout_seconds
         previous=None
         while True:
@@ -50,6 +50,7 @@ def prepare(path, spec):
                 raise RuntimeError('Backend stopped; inspect res-mon logs')
             progress=allocation.get('model_state') or data.get('phase') or 'Waiting for model'
             if progress!=previous:print(progress,flush=True);previous=progress
+            if allocation_pending(allocation):deadline=time.monotonic()+cfg.gateway.startup_timeout_seconds
             if time.monotonic()>=deadline:raise TimeoutError('Model startup timed out; inspect res-mon logs')
             time.sleep(1)
         spec['model']=model['alias']

@@ -111,7 +111,7 @@ class SlurmConfig:
 class GatewayConfig:
     local_port: int = 0
     server_port: int = 8080
-    startup_timeout_seconds: int = 900
+    startup_timeout_seconds: int = 1800
     poll_interval_seconds: int = 5
     idle_timeout_minutes: int = 20
     cancel_on_exit: bool = True
@@ -146,6 +146,8 @@ class LlamaCppConfig:
     server_extra_args: list[str] = field(default_factory=list)
     model_batch_defaults: dict[str, list[int]] = field(default_factory=lambda: {
         'glm-5.3-flash-q4': [2048, 1024], 'glm-5.3-flash-q8': [2048, 512]})
+    model_host_batch_defaults: dict[str, dict[str, list[int]]] = field(default_factory=lambda: {
+        'hydra': {'glm-5.3-flash-q4': [2048, 512], 'glm-5.3-flash-q8': [2048, 512]}})
     server_command: list[str] = field(default_factory=list)
     mtp: str = "auto"
 

@@ -6,6 +6,8 @@ child=''
 seen=''
 prompt_pid=''
 telemetry_pid=''
+ready=''
+health_tick=0
 stop_model() {
     python3 "$(dirname "${BASH_SOURCE[0]}")/resource-terminal" stop "$state" 2>/dev/null || true
     if [[ -n "$prompt_pid" ]]; then
@@ -51,6 +53,8 @@ while [[ ! -f "$state/release" ]]; do
     if [[ -n "$desired" && "$desired" != "$seen" ]]; then
         stop_model
         seen=$desired
+        ready=''
+        health_tick=0
         if [[ -f "$state/$seen.sh" ]]; then
             bash "$state/$seen.sh" >> "$state/model.log" 2>&1 &
             child=$!
@@ -59,6 +63,25 @@ while [[ ! -f "$state/release" ]]; do
             report LOADING
         else
             report IDLE
+        fi
+    fi
+    # Readiness belongs to the allocation, even when no local provider is attached.
+    if [[ -n "$child" && -z "$ready" ]] && (( SECONDS >= health_tick )); then
+        health_tick=$((SECONDS + 5))
+        if python3 - "$state/allocation.json" <<'HEALTH'
+import json, sys
+from urllib.request import urlopen
+try:
+    with open(sys.argv[1]) as stream: port=json.load(stream)['server_port']
+    with urlopen('http://127.0.0.1:%s/health' % port,timeout=1) as response:
+        healthy=response.status==200 and json.load(response).get('status')=='ok'
+    sys.exit(0 if healthy else 1)
+except Exception:
+    sys.exit(1)
+HEALTH
+        then
+            ready=1
+            report LOADED
         fi
     fi
     if [[ -n "$child" ]] && ! kill -0 "$child" 2>/dev/null; then

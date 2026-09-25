@@ -182,3 +182,16 @@ input:focus, select:focus { border-color: var(--accent-strong); box-shadow: 0 0 
   .modal { padding: 9px; }
   .dialog { max-height: calc(100vh - 18px); }
 }
+
+.metric-controls { display:flex; gap:12px; margin:8px 0; }
+.metric-scroll { width:100%; cursor:ew-resize; }
+.metric-plot { position:relative; }
+.metric-tooltip { position:absolute; z-index:3; pointer-events:none; white-space:pre-line; max-width:100%; padding:8px 10px; border:1px solid #46536a; border-radius:6px; background:#141b29; color:#eef2fa; font-size:12px; }
+
+.metric-crosshair { position:absolute; top:16px; bottom:27px; width:1px; background:#dbe8fa; opacity:.7; pointer-events:none; }
+.panel-resizer { height:10px; min-height:10px; cursor:ns-resize; touch-action:none; background:linear-gradient(90deg,transparent 40%,#526078 40%,#526078 60%,transparent 60%) center / 100% 2px no-repeat; }
+.panel-resizer:hover,.panel-resizer:focus { background-color:#283344; outline:none; }
+.resizing-panel { cursor:ns-resize; user-select:none; }
+.resizing-panel iframe { pointer-events:none; }
+
+#terminal-slot:has(#terminal-host[hidden]) > .panel-resizer, .monitor-panel:has(#log-output[hidden]) > .panel-resizer { display:none; }

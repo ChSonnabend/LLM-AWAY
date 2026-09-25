@@ -25,7 +25,7 @@ if action in ('cleanup','cleanup-preview'):
         print(json.dumps({'cleaned':True,'already_missing':True,'paths':[]})); sys.exit(0)
     if state.stat().st_uid != os.getuid():
         raise ValueError('Resource state belongs to another user')
-else:
+elif action!='list':
     state.mkdir(parents=True,exist_ok=True,mode=0o700)
 kind=c['backend_type']; k=c['kubernetes']; sl=c['slurm']
 meta=state/'allocation.json'
@@ -129,8 +129,37 @@ def status():
             s['prompt']['text']=s['prompt'].get('text','')[-32768:]
     terminal=state/'terminal-status.json'
     if terminal.exists():s['terminal']=json.loads(terminal.read_text())
+    owner=state/'owner.json'
+    s['owner']=json.loads(owner.read_text()) if owner.exists() else {}
+    descriptor=state/'session.json'
+    if descriptor.exists():s['session']=json.loads(descriptor.read_text())
     s['log_path']=str(state/'model.log')
     return s
+
+def descriptor():
+    # Store remote execution settings only; local credentials and ports stay local.
+    return {key:c[key] for key in ('backend_type','remote','slurm','kubernetes','model','llamacpp')}
+
+def save_descriptor():
+    write(state/'session.json',json.dumps(descriptor()))
+
+def require_owner():
+    path=state/'owner.json'
+    owner=json.loads(path.read_text()) if path.exists() else {}
+    if owner and owner.get('id')!=p.get('client_id'):
+        raise ValueError('Session allocated on '+owner.get('label','another machine')+'; acknowledge takeover first')
+    return owner
+
+def claim():
+    current=status()
+    if not current.get('active'):raise ValueError('Allocation ended')
+    owner=current.get('owner') or {}
+    if p.get('expected_owner')!=owner.get('id','') or p.get('expected_generation')!=current.get('generation',''):
+        raise ValueError('Session changed; refresh and acknowledge its current owner before retrying')
+    if not p.get('client_id'):raise ValueError('Client identity required')
+    write(state/'owner.json',json.dumps({'id':p['client_id'],'label':p.get('client_label','another machine')}))
+    return status()
+
 
 def reserve():
     if meta.exists(): return status() # Never resubmit an expired allocation silently.
@@ -193,12 +222,22 @@ def reserve():
             child=subprocess.Popen(worker,cwd=str(root),stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
         job=str(child.pid)
     write(meta,json.dumps({'job_id':job,'created':time.time(),'server_port':p['port']}))
+    save_descriptor()
     return status()
 
 def start():
     s=status()
     if not s['active']: raise ValueError('Allocation ended; create a new resource session')
-    if s.get('model_state') in ('STARTING','LOADING'): return s
+    require_owner()
+    if not s.get('owner') and p.get('client_id'):
+        write(state/'owner.json',json.dumps({'id':p['client_id'],'label':p.get('client_label','another machine')}))
+    if s.get('model_state') in ('STARTING','LOADING','LOADED','READY'):
+        previous=s.get('session') or {}
+        def runtime_settings(settings):
+            return {key:value for key,value in settings.items() if key not in ('model_batch_defaults','model_host_batch_defaults')}
+        if previous and (previous.get('model')!=c['model'] or runtime_settings(previous.get('llamacpp',{}))!=runtime_settings(c['llamacpp'])):
+            raise ValueError('Stop the existing model before changing its configuration')
+        return status()
     l=c['llamacpp']
     if l['model_path'] or l['server_command']: raise ValueError('Resource sessions require managed model presets')
     env={'MODEL_NAME':l['model_name'] or c['model']['name'],'LLAMACPP_BACKEND':l['backend'],
@@ -219,14 +258,36 @@ def start():
     script+='if (echo > /dev/tcp/127.0.0.1/'+str(p['port'])+') 2>/dev/null; then echo "Port already in use" >&2; exit 1; fi\n'
     script+='exec '+' '.join(shlex.quote(str(x)) for x in args)+'\n'
     generation=uuid.uuid4().hex
+    save_descriptor()
     write(state/(generation+'.sh'),script);write(state/'desired',generation)
     return status()
+
+if action=='list':
+    result=[]
+    original=c
+    for candidate in sorted(state.parent.glob('*')):
+        if not re.fullmatch('[a-f0-9]{32}',candidate.name) or candidate.is_symlink() or candidate.stat().st_uid!=os.getuid():continue
+        if not (candidate/'allocation.json').exists() or not (candidate/'session.json').exists():continue
+        state=candidate;meta=state/'allocation.json'
+        lock_dir=state.parent/'.locks';lock_dir.mkdir(mode=0o700,exist_ok=True)
+        with open(lock_dir/(candidate.name+'.lock'),'a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            c=dict(original,**json.loads((state/'session.json').read_text()))
+            kind=c['backend_type'];k=c['kubernetes'];sl=c['slurm']
+            item=status()
+            if item.get('active'):result.append(dict(item,token=candidate.name))
+    print(json.dumps({'sessions':result}));sys.exit(0)
 
 lock_dir=state.parent/'.locks'
 lock_dir.mkdir(mode=0o700,exist_ok=True)
 with open(lock_dir/(token+'.lock'),'a') as lock:
     fcntl.flock(lock,fcntl.LOCK_EX)
-    if action=='cleanup' and not any(state.iterdir()):
+    if action not in ('status','reserve','claim','log','agent-info','cleanup-preview'):
+        require_owner()
+    if meta.exists() and not (state/'session.json').exists() and action in ('status','reserve'):
+        save_descriptor()
+    if action=='claim':result=claim()
+    elif action=='cleanup' and not any(state.iterdir()):
         # An earlier cleanup may have removed its metadata before NFS released
         # the old in-directory lock. Empty directories need no further proof.
         state.rmdir();result={'cleaned':True,'already_empty':True}

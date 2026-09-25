@@ -83,7 +83,14 @@ def model_options(number):
                 'agent_cli':selection.get('cli','auto'),'agent_workdir':selection.get('cwd',''),
                 'rag':os.pathsep.join(rag.get('paths') or []),'rag_threads':rag.get('threads',2),
                 'rag_memory_gb':rag.get('memory_gb',0),'rag_gpu':bool(rag.get('gpu',False))}
-    cfg=resources.config(data['config']);models=resources.discover_models(cfg)
+    cfg=resources.config(data['config'])
+    current=resources.load_config(os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
+    try:current=current.with_host(cfg.ssh.host)
+    except ValueError:pass
+    cfg=resources.replace(cfg,llamacpp=resources.replace(cfg.llamacpp,
+        model_batch_defaults=current.llamacpp.model_batch_defaults,
+        model_host_batch_defaults=current.llamacpp.model_host_batch_defaults))
+    models=resources.discover_models(cfg)
     public=[]
     for model in models:
         mtp=model.get('mtp',{})
@@ -92,13 +99,22 @@ def model_options(number):
                            'configured':bool(mtp.get('configured')),'available':bool(mtp.get('available')),
                            'toggle_supported':bool(mtp.get('toggle_supported')),
                            'embedded':bool(mtp.get('embedded'))}})
-    allocation=data.get('allocation') or {}
-    loaded=bool(data.get('model') and allocation.get('model_state') in ('LOADING','LOADED','READY','RUNNING'))
+    from . import shared_sessions
+    allocation=shared_sessions.current(path)
+    owner=allocation.get('owner') or {}
+    foreign=bool(owner and owner.get('id')!=shared_sessions.client_identity())
+    loaded=allocation.get('model_state') in ('STARTING','LOADING','LOADED','READY','RUNNING')
     selection={}
     try:selection=json.loads((path/'agent-selection.json').read_text())
     except (OSError,ValueError):pass
     rag=selection.get('rag_config') or {}
-    return {'native':False,'models':public,'current':data.get('model') or cfg.llamacpp.model_name,'loaded':loaded,
+    from .model_preferences import read
+    preferences=read(cfg)
+    return {'preferences':preferences,'container_path':preferences.get('_container_path',cfg.llamacpp.container),
+            'build_mode':'container' if cfg.llamacpp.container else 'native','native':False,'models':public,'current':data.get('model') or cfg.llamacpp.model_name,'loaded':loaded,
+            'remote_owner':owner.get('label','') if foreign else '',
+            'expected_owner':owner.get('id',''),'expected_generation':allocation.get('generation',''),
+            'can_attach':allocation.get('model_state') in ('STARTING','LOADING','LOADED','READY') and bool(allocation.get('session')),
             'agent_location':selection.get('target_location',selection.get('location','local')),
             'agent_cli':selection.get('cli','auto'),'agent_workdir':selection.get('cwd',''),
             'rag':os.pathsep.join(rag.get('paths') or []),'rag_threads':rag.get('threads',2),
@@ -115,11 +131,34 @@ def allocate_browser(settings):
 def load_browser_model(number, settings):
     number=int(number);path=session_path(number)
     data=json.loads((path/'session.json').read_text())
-    allocation=data.get('allocation') or {}
-    loaded=bool(data.get('model') and allocation.get('model_state') in ('LOADING','LOADED','READY','RUNNING'))
-    if loaded and not settings.get('replace_loaded'):
-        raise ValueError('A model is already loaded; acknowledge replacement before starting another configuration')
-    if loaded:resources.rpc(path,'stop')
+    mode=settings.get('build_mode')
+    container=None
+    if mode is not None:
+        if mode not in ('container','native'):raise ValueError('Choose container or native build')
+        container=str(settings.get('container_path','')).strip() if mode=='container' else ''
+        if mode=='container' and not container:raise ValueError('A container path is required')
+    from . import shared_sessions
+    shared_sessions.ensure_daemon(path)
+    allocation=shared_sessions.current(path)
+    owner=allocation.get('owner') or {}
+    foreign=bool(owner and owner.get('id')!=shared_sessions.client_identity())
+    attach=bool(settings.get('attach_existing'))
+    if foreign and not (settings.get('replace_loaded') or attach):
+        raise ValueError('Session is allocated on another machine; acknowledge replacement or attach to its model')
+    if foreign or attach:
+        allocation=shared_sessions.claim(path,settings.get('expected_owner',''),settings.get('expected_generation',''))
+    loaded=allocation.get('model_state') in ('STARTING','LOADING','LOADED','READY','RUNNING')
+    if attach:
+        if not loaded or not allocation.get('session'):raise ValueError('No running model to attach to')
+        live=data.get('provider_identity') and resources.identity(data.get('provider_pid'))==data['provider_identity']
+        if not live:resources.rpc(path,'adopt-config')
+        shared=allocation['session']
+        settings=dict(settings,model=shared['llamacpp']['model_name'] or shared['model']['name'],
+                      mtp=shared['llamacpp']['mtp'],server_options=shlex.join(shared['llamacpp']['server_extra_args']))
+    else:
+        if loaded and not settings.get('replace_loaded'):
+            raise ValueError('A model is already loaded; acknowledge replacement before starting another configuration')
+        if loaded:resources.rpc(path,'stop')
     extra=shlex.split(str(settings.get('server_options','')))
     rag=[item.strip() for item in str(settings.get('rag','')).split(os.pathsep) if item.strip()]
     rag_threads=max(1,int(settings.get('rag_threads') or 2))
@@ -131,7 +170,11 @@ def load_browser_model(number, settings):
         server_extra_args=extra,mtp_prompted=True,log_helper=True,
         agent_location=settings.get('agent_location','local'),cli=settings.get('cli') or 'auto',
         agent_workdir=settings.get('agent_workdir') or None,agent_args=[],resume=True,detach=True)
+    args.container=container
     resources.run_agent(args)
+    if data.get('config'):
+        from .model_preferences import save
+        save(resources.config(data['config']),args.model,settings)
     return f'Session {number} started. Use Attach to open its agent terminal.'
 
 
@@ -279,6 +322,9 @@ def cleanup_released(token=None):
 
 
 def run_action(action, number=None):
+    if action=='discover-remote':
+        from .shared_sessions import discover
+        return discover()
     if action=='refresh-monitor':return resources.refresh_monitor()
     if action=='cleanup':raise ValueError('Cleanup requires a reviewed preview')
     if number is None:raise ValueError('Select an allocation first')
