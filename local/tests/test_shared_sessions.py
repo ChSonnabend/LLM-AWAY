@@ -137,6 +137,23 @@ class RemoteOwnershipTests(unittest.TestCase):
             self.assertEqual((self.state/'desired').read_text(),generation)
         finally:server.shutdown();server.server_close();thread.join()
 
+    def test_direct_identity_is_compute_host_and_worker_pid(self):
+        (self.state/'worker.state').write_text('IDLE epn000')
+        item=dict(self.call('status'),token=self.token)
+        self.assertEqual(item['backend_type'],'direct')
+        self.assertEqual(item['worker_host'],'epn000')
+        self.assertEqual(item['worker_pid'],'123')
+        self.assertEqual(item['job_id'],'')
+        with patch.object(resources,'STORE',self.root/'client'),patch.object(shared_sessions,'ensure_daemon'):
+            shared_sessions.import_session(self.cfg,item)
+            path=resources.STORE/'1/session.json'
+            data=json.loads(path.read_text())
+            self.assertEqual(data['config']['ssh']['host'],'epn000')
+            self.assertEqual(data['token'],self.token)
+            data['host']='gateway';data['config']['ssh']['host']='gateway';path.write_text(json.dumps(data))
+            self.assertEqual(shared_sessions.import_session(self.cfg,item),0)
+            self.assertEqual(json.loads(path.read_text())['config']['ssh']['host'],'epn000')
+
     def test_release_requires_explicit_intent_and_is_audited(self):
         self.call('start')
         self.assertIn('Explicit release required',self.call('release',ok=False))

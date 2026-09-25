@@ -229,10 +229,10 @@ def session_rows():
         agent=allocation.get('prompt') or {}
         model_state=display_state(row,allocation)
         rows.append({
-            'id':row['id'], 'host':row.get('host',''), 'gpus':row.get('gpus',0),
+            'id':row['id'], 'host':allocation.get('worker_host') or row.get('host',''), 'gpus':row.get('gpus',0),
             'phase':row.get('phase',''), 'model':row.get('model',''),
             'native':row.get('native',False), 'native_cli':row.get('native_cli',''),
-            'job_id':allocation.get('job_id',''), 'node':allocation.get('host',''),
+            'job_id':'' if row.get('config',{}).get('backend_type')=='direct' else allocation.get('job_id',''), 'node':allocation.get('worker_host') or allocation.get('host',''),
             'model_state':model_state, 'busy':row.get('_busy',False),
             'terminal':row.get('_terminal',False), 'error':row.get('error',''),
             'agent_text':str(agent.get('text') or '')[-32768:],
@@ -260,9 +260,11 @@ def safe_details(row):
     else:agent_state='not started'
     lines=[
         'Session: '+str(row.get('id','—')),
-        'Host: '+str(row.get('host') or '—'),
-        'Assigned node: '+str(allocation.get('host') or 'pending'),
-        'Job: '+str(allocation.get('job_id') or '—'),
+        'Host: '+str(allocation.get('worker_host') or row.get('host') or '—'),
+        'Shared allocation: '+str(row.get('token','')[:12] or '—'),
+        'Backend: '+str(row.get('config',{}).get('backend_type','—')),
+        'Assigned node: '+str(allocation.get('worker_host') or allocation.get('host') or 'pending'),
+        ('Worker PID: '+str(allocation.get('worker_pid') or allocation.get('job_id') or '—') if row.get('config',{}).get('backend_type')=='direct' else 'Job: '+str(allocation.get('job_id') or '—')),
         'GPUs: '+str(row.get('gpus',0)),
         'Scheduler state: '+str(allocation.get('slurm_state') or row.get('phase') or '—'),
         'Model: '+str(row.get('model') or 'none'),
@@ -571,17 +573,27 @@ def dashboard_processes(output,port):
             args=shlex.split(command)
             module=args.index('-m')
             if not Path(args[0]).name.startswith(('python','pypy')):continue
-            if args[module+1]!='llm_away.webapp' or '--serve' not in args:continue
-            actual=int(args[args.index('--port')+1]) if '--port' in args else 8766
+            if args[module+1]!='llm_away.webapp' or '--restart' in args:continue
+            actual=int(args[args.index('--port')+1]) if '--port' in args else int(next((a.split('=',1)[1] for a in args if a.startswith('--port=')),'8766'))
             if int(uid)==os.getuid() and int(pid)!=os.getpid() and actual==port:matches.append(int(pid))
         except (ValueError,IndexError):continue
     return matches
 
 
 def stop_dashboard(port):
-    output=subprocess.check_output(['ps','-eo','pid=,uid=,args='],text=True)
+    output=subprocess.check_output(['ps','-ww','-eo','pid=,uid=,args='],text=True)
     processes=dashboard_processes(output,port)
-    if not processes:raise RuntimeError('An outdated service occupies the dashboard port; stop that dashboard process and retry')
+    if not processes:
+        if not port_listening(port):return  # Browser shutdown won the restart race.
+        listener=''
+        command=(['ss','-ltnp',f'sport = :{port}'] if shutil.which('ss') else
+                 ['lsof','-nP',f'-iTCP:{port}','-sTCP:LISTEN'] if shutil.which('lsof') else None)
+        if command:
+            try:listener=subprocess.run(command,capture_output=True,text=True,timeout=3).stdout.strip()[-1500:]
+            except (OSError,subprocess.TimeoutExpired):pass
+        raise RuntimeError(f'Port {port} is occupied but no owned LLM-AWAY dashboard process was found. '
+                           f'Check its listener with ss -ltnp \'sport = :{port}\' or use res-mon-web --port {port+1}. '
+                           'No unrelated process was stopped.'+('\nListener: '+listener if listener else ''))
     for pid in processes:
         try:os.kill(pid,signal.SIGTERM)
         except ProcessLookupError:pass

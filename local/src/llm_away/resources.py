@@ -397,6 +397,9 @@ def daemon(path):
                 try:
                     s,new_offset,new_logs=remote_poll.result()
                     offset=new_offset
+                    if cfg.backend_type=='direct' and s.get('worker_host') and cfg.ssh.connection!='local':
+                        cfg=replace(cfg,ssh=replace(cfg.ssh,host=s['worker_host']))
+                        state(config=asdict(cfg),host=cfg.ssh.destination)
                     from .shared_sessions import client_identity
                     owner=(s.get('owner') or {}).get('id')
                     attached=(s.get('attachment') or {}).get('generation')==s.get('generation') and bool(s.get('generation'))

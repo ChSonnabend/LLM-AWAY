@@ -75,6 +75,16 @@ class DashboardUpgradeTests(unittest.TestCase):
         with patch.object(webapp.subprocess,'check_output',return_value=processes),patch.object(webapp.os,'kill') as kill,patch.object(webapp,'port_listening',return_value=False):webapp.stop_dashboard(8766)
         kill.assert_called_once_with(100,webapp.signal.SIGTERM)
 
+    def test_legacy_foreground_and_equals_port_are_recognized(self):
+        uid=os.getuid()
+        self.assertEqual(webapp.dashboard_processes(
+            f'100 {uid} /very/long/venv/bin/python3 -u -m llm_away.webapp --port=8766',8766),[100])
+
+    def test_restart_tolerates_browser_shutdown_race(self):
+        with patch.object(webapp.subprocess,'check_output',return_value=''),patch.object(webapp,'port_listening',return_value=False),patch.object(webapp.os,'kill') as kill:
+            webapp.stop_dashboard(8766)
+            kill.assert_not_called()
+
     def test_opening_dashboard_restarts_outdated_process(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(webapp,'__file__',str(Path(tmp)/'src/llm_away/webapp.py')),patch.object(webapp.sys,'argv',['res-mon-web']),patch.object(webapp,'dashboard_running',side_effect=[True,True]),patch.object(webapp,'dashboard_current',return_value=False),patch.object(webapp,'stop_dashboard') as stop,patch.object(webapp.subprocess,'Popen') as start,patch.object(webapp,'open_dashboard') as show:

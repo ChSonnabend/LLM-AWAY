@@ -89,12 +89,18 @@ def discover():
 
 def import_session(profile,item):
     from . import resources as r
+    if item.get('session',{}).get('backend_type')=='direct' and item.get('worker_host'):
+        profile=replace(profile,ssh=replace(profile.ssh,host=item['worker_host']))
     r.STORE.mkdir(parents=True,exist_ok=True,mode=0o700)
     with (r.STORE/'registry.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)
         for saved in r.STORE.glob('[0-9]*/session.json'):
             old=json.loads(saved.read_text())
-            if old.get('token')==item['token']:return 0
+            if old.get('token')==item['token']:
+                if item.get('worker_host') and item.get('session',{}).get('backend_type')=='direct':
+                    old['config']['ssh']=asdict(profile.ssh);old['host']=profile.ssh.destination
+                    old['allocation']=item;r.write(saved,old)
+                return 0
         number=1+max([int(p.name) for p in r.STORE.iterdir() if p.name.isdigit()]+[0])
         path=r.STORE/str(number);path.mkdir(mode=0o700)
         data=asdict(profile);data.update(item['session']);cfg=r.config(data)

@@ -536,7 +536,7 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                     def cells(d):
                         cfg=d.get('config',{});a=d.get('allocation',{})
                         return [d['id'],d.get('host','?'),d.get('gpus',0),'native' if d.get('native') else cfg.get('backend_type','?').replace('_server',''),
-                                'STALE' if d.get('_stale') else d.get('phase','?'),'IN USE' if d['_busy'] else 'idle',a.get('job_id','—'),time_left_text(d),d.get('ps') or '—',
+                                'STALE' if d.get('_stale') else d.get('phase','?'),'IN USE' if d['_busy'] else 'idle',('—' if cfg.get('backend_type')=='direct' else a.get('job_id','—')),time_left_text(d),d.get('ps') or '—',
                                 str(d.get('model') or d.get('native_cli') or 'no model')+' / '+str(a.get('host') or 'pending')]
                 else:
                     widths=[5,10,7,8,max(10,w-31)];headers=['ID','STATE','AGENT','PS','HOST / MODEL']
