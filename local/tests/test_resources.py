@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -32,7 +33,7 @@ class Handler(BaseHTTPRequestHandler):
  def log_message(self,*a):pass
 HTTPServer(('127.0.0.1',int(os.environ['LLAMACPP_PORT'])),Handler).serve_forever()
 ''');fake.chmod(0o755)
-            processes=[];paths=[];logs=[];sockets=[]
+            processes=[];paths=[];logs=[];sockets=[];expected_exits={}
             for i in range(6):
                 s=socket.socket();s.bind(('127.0.0.1',0));sockets.append(s)
             ports=[s.getsockname()[1] for s in sockets]
@@ -67,13 +68,28 @@ HTTPServer(('127.0.0.1',int(os.environ['LLAMACPP_PORT'])),Handler).serve_forever
                 for path in paths:
                     token=json.loads((path/'session.json').read_text())['token']
                     wait(lambda: 'LOADED' in (root/'.state/resources'/token/'worker.state').read_text())
+                # Neither graceful monitor shutdown nor a crash may unload the model/job.
+                for i in range(2):
+                    old=processes[i]
+                    if i==0:old.terminate();expected_exits[old.pid]=0
+                    else:old.kill();expected_exits[old.pid]=-signal.SIGKILL
+                    self.assertEqual(old.wait(timeout=15),expected_exits[old.pid])
+                    wait(lambda:json.loads((paths[i]/'session.json').read_text()).get('monitor_detached'))
+                    saved=json.loads((paths[i]/'session.json').read_text())
+                    self.assertTrue(healthy(ports[3*i]))
+                    self.assertNotEqual(saved['phase'],'RELEASED')
+                    self.assertFalse((root/'.state/resources'/saved['token']/'release').exists())
+                    processes.append(subprocess.Popen([sys.executable,'-m','llm_away.resources','daemon',str(paths[i])],stdout=logs[i],stderr=logs[i]))
+                    wait(lambda:rpc(paths[i],'status').get('allocation',{}).get('active'))
+                    self.assertEqual(rpc(paths[i],'status')['allocation']['job_id'],original[i])
+                    self.assertEqual(rpc(paths[i],'status')['provider_pid'],saved['provider_pid'])
                 rpc(paths[0],'stop',client_pid=os.getpid())
                 self.assertTrue(healthy(ports[3]))
                 self.assertEqual(rpc(paths[0],'status')['allocation']['job_id'],original[0])
                 rpc(paths[0],'start',model={'alias':'fixture','name':'fixture'},mtp='off',client_pid=os.getpid())
                 wait(lambda:healthy(ports[0]))
                 for p in paths:rpc(p,'release',client_pid=os.getpid())
-                for child in processes:self.assertEqual(child.wait(timeout=10),0)
+                for child in processes:self.assertEqual(child.wait(timeout=10),expected_exits.get(child.pid,0))
                 for p in paths:self.assertEqual(json.loads((p/'session.json').read_text())['phase'],'RELEASED')
             finally:
                 for p in paths:

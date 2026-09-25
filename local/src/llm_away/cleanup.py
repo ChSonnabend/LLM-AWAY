@@ -138,7 +138,7 @@ def execute(items,selected,expected_remote=None):
                             status=remote(config(data['config']),data['token'],data['remote_port'],'status')
                             if status.get('active'):
                                 raise RuntimeError('Remote allocation is active; preserving its state')
-                            remote(config(data['config']),data['token'],data['remote_port'],'release')
+                            remote(config(data['config']),data['token'],data['remote_port'],'release',explicit_release=True,only_if_inactive=True)
                             result=remote(config(data['config']),data['token'],data['remote_port'],'cleanup')
                             error=None
                         if error:raise error

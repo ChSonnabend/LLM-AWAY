@@ -1,4 +1,4 @@
-"""Release a numbered session when its persistent runner dies unexpectedly."""
+"""Track local runner loss without releasing persistent remote allocations."""
 from contextlib import contextmanager
 import fcntl
 import json
@@ -81,7 +81,7 @@ def register(path, pid=None):
 
 
 def finished(path):
-    """A normal native CLI exit keeps its record available for reopening."""
+    """Mark a local runner finished without changing remote allocation state."""
     from .resources import write
     with locked(path):
         record=read(path/'runner.json')
@@ -140,7 +140,15 @@ def stop_process(pid, born):
 
 
 def cleanup(path, data):
-    from .resources import remote, config, write
+    from .resources import write
+    if not data.get('native'):
+        # A local process disappearing says nothing about remote job lifetime.
+        data.update(pid=None,monitor_detached=True,
+                    error='Local monitor stopped; remote allocation and model retained. Reattach to reconnect.')
+        write(path/'session.json',data)
+        (path/'control.sock').unlink(missing_ok=True)
+        print('Local monitor exited; remote allocation and model retained.',flush=True)
+        return
     from .terminals import engine
     from .serve_registration import remove
     # Attempt every cleanup step even if another step fails.
@@ -155,8 +163,6 @@ def cleanup(path, data):
         except (OSError,ValueError):continue
         attempt(lambda:stop_process(record.get(pid_key),record.get(born_key)))
     attempt(lambda:stop_process(data.get('provider_pid'),data.get('provider_identity')))
-    if not data.get('native'):
-        attempt(lambda:remote(config(data['config']),data['token'],data['remote_port'],'release'))
     if errors:raise RuntimeError('; '.join(errors))
     data.update(phase='RELEASED',model='',error='',provider_pid=None,client_pid=None)
     write(path/'session.json',data)
@@ -176,9 +182,12 @@ def watch(path, generation):
                 print(json.dumps(dict(event='runner_lost',time=time.time(),runner_pid=record['pid'],
                     expected_identity=record['identity'],observed_identity=identity(record['pid']),
                     expected_key=record.get('process_key'),observed_key=process_key(record['pid']),guard_pid=os.getpid())),flush=True)
-                try:cleanup(path,data);return
+                try:
+                    cleanup(path,data)
+                    record['finished']=True;write(path/'runner.json',record)
+                    return
                 except Exception as exc:
-                    data.update(phase='RELEASE FAILED',error='Runner exited; cleanup will retry: '+str(exc))
+                    data.update(error='Local runner exited; cleanup will retry: '+str(exc))
                     write(path/'session.json',data)
                     print(data['error'],flush=True)
         time.sleep(5 if dead else 1)

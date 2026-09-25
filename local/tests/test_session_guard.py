@@ -69,3 +69,19 @@ class GuardTests(unittest.TestCase):
                 guard.watch(root,'one')
                 cleanup.assert_called_once()
                 self.assertEqual(json.loads(log.call_args.args[0])['event'],'runner_lost')
+
+    def test_runner_loss_preserves_remote_allocation_and_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);data=dict(token='test',phase='RUNNING',model='loaded',provider_pid=123,
+                                    allocation={'active':True,'model_state':'LOADED'})
+            (root/'session.json').write_text(json.dumps(data))
+            (root/'runner.json').write_text(json.dumps(dict(token='test',generation='one',pid=456,identity='old')))
+            with patch.object(guard,'live',return_value=False),patch('llm_away.resources.identity',return_value=''),patch('llm_away.resources.remote') as remote,patch.object(guard,'stop_process') as stop:
+                guard.watch(root,'one')
+                remote.assert_not_called();stop.assert_not_called()
+            saved=json.loads((root/'session.json').read_text())
+            self.assertEqual(saved['phase'],'RUNNING')
+            self.assertEqual(saved['model'],'loaded')
+            self.assertEqual(saved['provider_pid'],123)
+            self.assertTrue(saved['monitor_detached'])
+            self.assertTrue(json.loads((root/'runner.json').read_text())['finished'])

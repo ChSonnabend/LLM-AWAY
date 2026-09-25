@@ -70,8 +70,9 @@ class RemoteCleanupTests(unittest.TestCase):
             session=Path(temp)/'1';session.mkdir()
             (session/'session.json').write_text(json.dumps({'phase':'RELEASED','config':asdict(AppConfig()),'token':'a'*32,'remote_port':8080}))
             calls=[]
-            def call(_cfg,_token,_port,action):
+            def call(_cfg,_token,_port,action,**options):
                 calls.append(action)
+                if action=='release':self.assertEqual(options,{'explicit_release':True,'only_if_inactive':True})
                 if action=='cleanup' and calls.count('cleanup') < 4:
                     raise RuntimeError('not explicitly released')
                 if action=='status':return {'active':False}

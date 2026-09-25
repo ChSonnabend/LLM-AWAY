@@ -320,13 +320,20 @@ terminals. These track live MCP connections between numbered sessions, not just
 global helper registrations. Restart existing helper MCP connections once to
 enable tracking; connections from clients outside `res-mon` have no session ID.
 
-**PS** in `res-mon` is the persistent allocation runner PID (native sessions: the
-CLI terminal runner PID). Killing that PID, including with `kill -9`, triggers
-an independent watchdog to stop the agent/provider and release its allocation.
-Cleanup failures remain visible and retry while the watchdog is running; SSH must
-be reachable for remote release. Existing live runners gain watchdogs when viewed
-in `res-mon`. Detaching tmux does not terminate the runner. Normal native CLI exit
-keeps its session available for reopening.
+**PS** in `res-mon` is the local allocation monitor PID (native sessions: the
+CLI terminal runner PID). Stopping or killing an allocation monitor does **not**
+unload its model or release the remote allocation. The watchdog records a lost
+local monitor while preserving the provider and remote state; a restarted monitor
+adopts the existing provider. Use **Release allocation** to cancel the remote job.
+Startup timeouts apply only while waiting for model readiness, not to loaded-model
+lifetime. Remote scheduler limits and remote job termination still apply.
+Normal native CLI exit keeps its native session available for reopening.
+
+Update `remote/bin/resource-control` as well as the clients: remote release now
+requires explicit intent, so old watchdog release requests are rejected. Accepted
+releases write `release-audit.jsonl` in the allocation state directory with the
+requesting client and timestamp. Do not use killing a local monitor as a release
+mechanism.
 
 Terminal handoff restores the terminal settings before attaching or refreshing an
 agent. Tools → F1 starts a fresh conversation with the saved CLI and working directory;
@@ -454,8 +461,9 @@ can indicate old Python code serving newer files. Update the Linux checkout and
 restart its dashboard using the command above.
 
 **Tools → Discover remote jobs** works with no selected allocation. It checks saved
-host profiles and concrete aliases in SSH configuration (including `Include`
-files). Each host is probed at its configured remote directory, then
+LLM-AWAY host profiles and hosts defined in the model configuration; unrelated
+SSH aliases are not contacted. The result lists every host checked. Each configured
+host is probed at its configured remote directory, then
 `~/LLM-AWAY/remote` and `~/remote`. Hosts without the framework are skipped;
 unreachable hosts are reported while discovery continues elsewhere. Discovery
 requires the updated `remote/bin/resource-control` on participating hosts and

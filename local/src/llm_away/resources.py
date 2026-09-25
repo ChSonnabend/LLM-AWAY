@@ -296,7 +296,7 @@ def daemon(path):
                 state(model='',client_pid=None,client_identity='',provider_pid=None,provider_identity='');return
             time.sleep(1)
         raise RuntimeError('Model stop not acknowledged; inspect res-mon logs')
-    state(pid=os.getpid(),phase='RUNNING',error='')
+    state(pid=os.getpid(),phase='RUNNING',error='',monitor_detached=False)
     if child is None:
         try:
             allocation=remote(cfg,token,port,'reserve',session_id=data['id']);state(allocation=allocation,phase=allocation['slurm_state'])
@@ -305,10 +305,10 @@ def daemon(path):
             state(phase='ERROR',error=str(exc));print(exc,flush=True)
     else:
         print('Adopted live provider '+str(child.pid)+'; skipping reserve',flush=True)
-    release_requested=False
+    detach_requested=False
     def interrupted(sig,frame):
-        nonlocal release_requested
-        release_requested=True
+        nonlocal detach_requested
+        detach_requested=True
     signal.signal(signal.SIGTERM,interrupted);signal.signal(signal.SIGINT,interrupted)
     tick=0;remote_poll=None
     from concurrent.futures import ThreadPoolExecutor
@@ -330,8 +330,9 @@ def daemon(path):
             return False
     try:
         while True:
-            if release_requested:
-                stop_model();remote(cfg,token,port,'release');state(phase='RELEASED');break
+            if detach_requested:
+                print('Local monitor stopping; remote allocation and model retained.',flush=True)
+                break
             try:client,_=sock.accept()
             except socket.timeout:client=None
             if client:
@@ -374,7 +375,7 @@ def daemon(path):
                             answer={'port':cfg.server.port}
                         elif action in ('stop','release'):
                             stop_model(request.get('client_pid'))
-                            if action=='release':remote(cfg,token,port,'release');state(phase='RELEASED')
+                            if action=='release':remote(cfg,token,port,'release',explicit_release=True);state(phase='RELEASED')
                             answer={'ok':True}
                         else:raise ValueError('Unknown operation')
                     except Exception as exc:answer={'rpc_error':str(exc)}
@@ -417,7 +418,12 @@ def daemon(path):
                         break
                 except Exception as exc:state(error=str(exc));print('Monitor:',exc,flush=True)
     finally:
-        if child is not None and child.poll() is None:child.terminate()
+        # Keep the provider alive for adoption and leave the remote worker alone.
+        if data.get('phase')!='RELEASED' and not data.get('allocation_cleaned'):
+            state(pid=None,monitor_detached=True)
+        from .session_guard import finished
+        try:finished(path)
+        except (OSError,ValueError):pass
         sock.close();(path/'control.sock').unlink(missing_ok=True)
         remote_pool.shutdown(wait=False,cancel_futures=True)
         os.environ.pop('LLM_AWAY_SSH_CONTROL',None)
@@ -773,7 +779,7 @@ def release_session(number):
             try:os.kill(pid,signal.SIGTERM)
             except ProcessLookupError:pass
         release_error=''
-        try:remote(config(data['config']),data['token'],data['remote_port'],'release')
+        try:remote(config(data['config']),data['token'],data['remote_port'],'release',explicit_release=True)
         except Exception as exc:release_error=str(exc)
         if release_error:
             data.update(phase='RELEASE FAILED',error='Daemon release failed: '+str(rpc_exc)+'; remote cancellation failed: '+release_error)
@@ -940,7 +946,7 @@ def refresh_monitor():
         if data.get('phase')=='RELEASED' or data.get('native'):continue
         try:
             status=remote(config(data['config']),data['token'],data['remote_port'],'status')
-            if allocation_ended(config(data['config']),status) or data.get('allocation_cleaned'):
+            if allocation_ended(config(data['config']),status):
                 release_session(data['id']);removed.append(str(data['id']))
         except Exception as exc:kept.append(str(data['id'])+': '+str(exc))
     return 'Removed ended sessions: '+(', '.join(removed) or 'none')+('; retained uncertain sessions: '+'; '.join(kept) if kept else '')

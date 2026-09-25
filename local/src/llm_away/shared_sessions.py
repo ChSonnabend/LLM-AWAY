@@ -23,16 +23,11 @@ def client_identity():
 
 
 def discovery_profiles(cfg):
-    """Saved hosts plus every concrete SSH alias, without borrowing host paths."""
-    from .onboarding import ssh_hosts
-    profiles=[cfg.with_host(host.name) for host in cfg.host_configs()]
-    known={profile.ssh.host for profile in profiles if profile.ssh.connection=='ssh'}
-    aliases,_=ssh_hosts()
-    for alias in aliases:
-        if alias in known:continue
-        profiles.append(replace(cfg,ssh=replace(cfg.ssh,connection='ssh',host=alias,user=''),
-            remote=replace(cfg.remote,resource_state_dir=''),active_host='',hosts={},saved_hosts={}))
-    return profiles
+    """Only hosts explicitly present in LLM-AWAY settings; never scan SSH aliases."""
+    names=list(dict.fromkeys([name for name,profile in cfg.saved_hosts.items()
+                              if not profile.get('_builtin')]+list(cfg.hosts)))
+    # Do not also probe a bundled example/default host when saved profiles exist.
+    return [cfg.with_host(name) for name in names] if names else [cfg]
 
 
 def probe_framework(profile):
@@ -77,15 +72,17 @@ def discover():
             if 'Unknown action' in detail:
                 detail='Update remote/bin/resource-control on this host to enable discovery'
             return profile,[],detail,False
-    imported=0;errors=[];frameworks=0
+    imported=0;errors=[];frameworks=0;checked=[]
     with ThreadPoolExecutor(max_workers=4) as pool:
         for profile,items,error,found in pool.map(scan,profiles):
+            checked.append(profile.ssh.destination)
             frameworks+=int(found)
             if error:errors.append(f'{profile.ssh.destination}: {error}');continue
             for item in items:
                 try:imported+=import_session(profile,item)
                 except Exception as exc:errors.append(f'{profile.ssh.destination}: {exc}')
     message=f'Discovered {imported} additional remote allocations across {frameworks} framework hosts ({len(profiles)} hosts checked).'
+    message+=' Checked hosts: '+(', '.join(checked) or 'none')+'.'
     if errors:message+=' Unavailable hosts: '+ '; '.join(errors)
     return message
 

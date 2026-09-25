@@ -71,3 +71,13 @@ class ExpiredAllocations(unittest.TestCase):
             result=json.loads((path/'session.json').read_text())
             self.assertTrue(result['allocation_cleaned'])
             self.assertEqual(result['phase'],'TIMEOUT')
+
+    def test_refresh_never_releases_active_job_from_stale_local_cleanup_flag(self):
+        from dataclasses import asdict
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);path=root/'1';path.mkdir()
+            (path/'session.json').write_text(json.dumps({'id':1,'token':'test','remote_port':1,
+                'phase':'CANCELLED','allocation_cleaned':True,'config':asdict(AppConfig())}))
+            with patch.object(resources,'STORE',root),patch.object(resources,'remote',return_value={'active':True,'slurm_state':'RUNNING'}),patch.object(resources,'release_session') as release:
+                resources.refresh_monitor()
+                release.assert_not_called()

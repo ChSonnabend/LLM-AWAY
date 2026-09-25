@@ -11,14 +11,18 @@ from llm_away.config import AppConfig, load_config
 
 
 class DiscoveryTests(unittest.TestCase):
-    def test_ssh_aliases_without_saved_profiles_are_included(self):
+    def test_unconfigured_ssh_aliases_are_not_accessed(self):
         cfg=AppConfig();cfg=replace(cfg,ssh=replace(cfg.ssh,host='saved',user='saved-user'),remote=replace(cfg.remote,resource_state_dir='/private/saved'))
-        with patch('llm_away.onboarding.ssh_hosts',return_value=(['saved','fresh','gateway'],['*.example'])):
+        with patch('llm_away.onboarding.ssh_hosts',side_effect=AssertionError('Must not enumerate SSH aliases')):
             profiles=shared.discovery_profiles(cfg)
-        self.assertEqual([p.ssh.host for p in profiles],['saved','fresh','gateway'])
+        self.assertEqual([p.ssh.host for p in profiles],['saved'])
         self.assertEqual(profiles[0].remote.resource_state_dir,'/private/saved')
-        self.assertEqual(profiles[1].remote.resource_state_dir,'')
-        self.assertEqual(profiles[1].ssh.user,'')
+
+    def test_saved_profiles_exclude_bundled_default_host(self):
+        cfg=replace(AppConfig(),saved_hosts={
+            'example':{'_builtin':True,'backend_type':'slurm_server'},
+            'configured':{'backend_type':'slurm_server','ssh':{'host':'configured'}}})
+        self.assertEqual([p.ssh.host for p in shared.discovery_profiles(cfg)],['configured'])
 
     def test_framework_probe_uses_remote_home_and_skips_missing_installs(self):
         with patch.object(shared.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'"/home/test/LLM-AWAY/remote"','')) as run:
@@ -38,6 +42,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(imported.call_count,2)
         self.assertIn('2 additional remote allocations',result)
         self.assertIn('3 hosts checked',result)
+        self.assertIn('Checked hosts: one, two, gateway.',result)
         self.assertNotIn('Unavailable',result)
 
     def test_unreachable_host_does_not_hide_other_jobs(self):

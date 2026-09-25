@@ -297,7 +297,15 @@ with open(lock_dir/(token+'.lock'),'a') as lock:
     elif action=='stop':
         write(state/'desired',uuid.uuid4().hex);result=status()
     elif action=='release':
-        s=status(); (state/'release').touch()
+        if p.get('explicit_release') is not True:
+            raise ValueError('Explicit release required; local process loss must not cancel remote allocations')
+        s=status()
+        if p.get('only_if_inactive') and s.get('active'):
+            raise ValueError('Allocation is active; preserving it')
+        with (state/'release-audit.jsonl').open('a') as audit:
+            audit.write(json.dumps({'time':time.time(),'client':p.get('client_label',''),
+                'client_id':p.get('client_id',''),'job_id':s.get('job_id'),'explicit_release':True})+'\n')
+        (state/'release').touch()
         if s.get('active'):
             if kind=='slurm_server': call(['scancel',s['job_id']])
             elif kind=='kubernetes': kubectl(['delete','job',s['job_id'],'--wait=false'])

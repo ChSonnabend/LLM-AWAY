@@ -48,6 +48,17 @@ class RemoteOwnershipTests(unittest.TestCase):
         self.call('stop',client='two')
         self.assertNotEqual((self.state/'desired').read_text(),generation)
 
+    def test_release_requires_explicit_intent_and_is_audited(self):
+        self.call('start')
+        self.assertIn('Explicit release required',self.call('release',ok=False))
+        self.assertFalse((self.state/'release').exists())
+        self.assertIn('active',self.call('release',explicit_release=True,only_if_inactive=True,ok=False))
+        self.assertFalse((self.state/'release').exists())
+        self.assertTrue(self.call('release',explicit_release=True)['released'])
+        audit=json.loads((self.state/'release-audit.jsonl').read_text())
+        self.assertEqual(audit['client_id'],'one')
+        self.assertTrue(audit['explicit_release'])
+
     def test_stale_takeover_rejected(self):
         current=self.call('start')
         self.call('claim',client='two',expected_owner='one',expected_generation=current['generation'])
