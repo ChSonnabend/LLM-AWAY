@@ -343,7 +343,7 @@ lock_dir.mkdir(mode=0o700,exist_ok=True)
 with open(lock_dir/(token+'.lock'),'a') as lock:
     fcntl.flock(lock,fcntl.LOCK_EX)
     if action in ('rag-register','terminal-start','terminal-send','terminal-stop'):require_attachment()
-    elif action not in ('status','reserve','claim','attach','log','agent-info','cleanup-preview'):
+    elif action not in ('status','reserve','claim','attach','log','agent-info','cleanup-preview','release'):
         require_owner()
     if meta.exists() and not (state/'session.json').exists() and action in ('status','reserve'):
         save_descriptor()

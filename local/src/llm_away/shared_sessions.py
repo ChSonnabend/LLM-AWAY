@@ -80,9 +80,10 @@ def reconcile(scans,active_tokens):
         except (KeyError,ValueError):continue
         for profile in scans:
             same_store=(cfg.remote.workdir==profile.remote.workdir and cfg.remote.resource_state_dir==profile.remote.resource_state_dir)
-            same_host=cfg.ssh.host.split('.')[0]==profile.ssh.host.split('.')[0]
-            if not same_store or not same_host:continue
-            try:status=r.remote(profile,data['token'],data['remote_port'],'status')
+            if not same_store:continue
+            # Aliases differ across clients. Verify through this session's own
+            # configured connection, not the host used by the inventory scan.
+            try:status=r.remote(cfg,data['token'],data['remote_port'],'status')
             except Exception:continue # SSH failures are not proof that an allocation ended.
             if status.get('active') is False:
                 r.write(path/'discovery-retired',{'allocation':status})

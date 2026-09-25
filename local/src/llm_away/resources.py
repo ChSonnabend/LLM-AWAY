@@ -990,8 +990,10 @@ def refresh_monitor():
         if data.get('phase')=='RELEASED' or data.get('native'):continue
         try:
             status=remote(config(data['config']),data['token'],data['remote_port'],'status')
-            if allocation_ended(config(data['config']),status):
-                release_session(data['id']);removed.append(str(data['id']))
+            if status.get('active') is False:
+                # Retirement is local: never cancel or take ownership during refresh.
+                write(saved.parent/'discovery-retired',{'allocation':status})
+                removed.append(str(data['id']))
         except Exception as exc:kept.append(str(data['id'])+': '+str(exc))
     return 'Removed ended sessions: '+(', '.join(removed) or 'none')+('; retained uncertain sessions: '+'; '.join(kept) if kept else '')
 

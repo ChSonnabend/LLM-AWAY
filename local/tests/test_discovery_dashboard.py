@@ -37,10 +37,10 @@ class DiscoveryTests(unittest.TestCase):
                 path=root/str(number);path.mkdir()
                 (path/'session.json').write_text(json.dumps({'config':asdict(profile),'token':token,'remote_port':123}))
                 return path
-            ended=saved(1,'ended');active=saved(2,'active');uncertain=saved(3,'uncertain')
+            ended=saved(1,'ended',replace(cfg,ssh=replace(cfg.ssh,host='another-alias')));active=saved(2,'active');uncertain=saved(3,'uncertain')
             offline=saved(4,'offline',replace(cfg,ssh=replace(cfg.ssh,host='offline')))
             def status(profile,token,port,action):
-                if token=='uncertain':raise RuntimeError('SSH failed')
+                if token in ('uncertain','offline'):raise RuntimeError('SSH failed')
                 self.assertEqual(action,'status')
                 return {'active':False,'slurm_state':'CANCELLED'}
             with patch.object(resources,'STORE',root),patch.object(resources,'remote',side_effect=status):

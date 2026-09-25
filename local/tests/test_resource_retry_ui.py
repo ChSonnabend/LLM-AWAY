@@ -124,7 +124,18 @@ llamacpp_common_run_args() { :; }
                 p=root/str(n);p.mkdir();(p/'session.json').write_text(json.dumps({'id':n,'config':asdict(AppConfig()),'token':'a','remote_port':1}))
             with patch.object(resources,'STORE',root),patch.object(resources,'remote',side_effect=[{'active':True,'slurm_state':'RUNNING'},{'active':False,'slurm_state':'CANCELLED'},RuntimeError('SSH down')]),patch.object(resources,'release_session') as release:
                 message=resources.refresh_monitor()
-                release.assert_called_once_with(2);self.assertIn('SSH down',message)
+                release.assert_not_called();self.assertTrue((root/'2'/'discovery-retired').exists());self.assertIn('SSH down',message)
+
+    def test_refresh_retires_ended_direct_and_kubernetes_allocations(self):
+        from dataclasses import replace
+        for backend in ('direct','kubernetes'):
+            with self.subTest(backend=backend),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);path=root/'1';path.mkdir()
+                (path/'session.json').write_text(json.dumps({'id':1,'config':asdict(replace(AppConfig(),backend_type=backend)),'token':'a','remote_port':1}))
+                with patch.object(resources,'STORE',root),patch.object(resources,'remote',return_value={'active':False,'slurm_state':'STOPPED'}),patch.object(resources,'release_session') as release:
+                    resources.refresh_monitor()
+                    self.assertTrue((path/'discovery-retired').exists())
+                    release.assert_not_called()
 
     def test_tools_maintenance_actions(self):
         for key,kind in [(curses.KEY_F4,'refresh'),(curses.KEY_F5,'cleanup')]:

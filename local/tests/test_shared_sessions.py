@@ -43,7 +43,7 @@ class RemoteOwnershipTests(unittest.TestCase):
         self.call('claim',client='two',expected_owner='one',expected_generation=generation)
         self.assertEqual(self.call('start',client='two')['generation'],generation)
         self.assertEqual((self.state/'desired').read_text(),generation)
-        for action in ('start','stop','release','prompt'):
+        for action in ('start','stop','prompt'):
             self.assertIn('acknowledge',self.call(action,client='one',ok=False))
         self.call('stop',client='two')
         self.assertNotEqual((self.state/'desired').read_text(),generation)
@@ -170,6 +170,14 @@ class RemoteOwnershipTests(unittest.TestCase):
         audit=json.loads((self.state/'release-audit.jsonl').read_text())
         self.assertEqual(audit['client_id'],'one')
         self.assertTrue(audit['explicit_release'])
+
+    def test_other_client_can_release_but_cannot_stop_model(self):
+        self.call('start')
+        self.assertIn('acknowledge takeover',self.call('stop',client='two',ok=False))
+        self.assertIn('Explicit release required',self.call('release',client='two',ok=False))
+        self.assertTrue(self.call('release',client='two',explicit_release=True)['released'])
+        audit=json.loads((self.state/'release-audit.jsonl').read_text())
+        self.assertEqual(audit['client_id'],'two')
 
     def test_stale_takeover_rejected(self):
         current=self.call('start')
