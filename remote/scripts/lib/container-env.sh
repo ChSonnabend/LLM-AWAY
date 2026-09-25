@@ -20,6 +20,7 @@ llamacpp_enter_container() {
   for path in "${LLAMACPP_MODELS_DIR:-}" "${LLAMACPP_INSTALLATION_DIR:-}"; do
     [[ -z $path ]] || binds+=(--bind "$path:$path:ro")
   done
+  [[ -z ${LLAMACPP_API_KEY_FILE:-} ]] || binds+=(--bind "$LLAMACPP_API_KEY_FILE:$LLAMACPP_API_KEY_FILE:ro")
   # Do not inherit host PATH, module functions, or compiler paths.
   while IFS= read -r name; do
     case "$name" in
@@ -37,6 +38,7 @@ llamacpp_enter_container() {
     for path in "${LLAMACPP_MODELS_DIR:-}" "${LLAMACPP_INSTALLATION_DIR:-}"; do
       [[ -z $path ]] || docker_args+=(--volume "$path:$path:ro")
     done
+    [[ -z ${LLAMACPP_API_KEY_FILE:-} ]] || docker_args+=(--volume "$LLAMACPP_API_KEY_FILE:$LLAMACPP_API_KEY_FILE:ro")
     if [[ -n ${LLAMACPP_PORT:-} ]]; then
       docker_args+=(--publish "${LLAMACPP_PUBLISH_ADDRESS:+$LLAMACPP_PUBLISH_ADDRESS:}$LLAMACPP_PORT:$LLAMACPP_PORT")
     fi

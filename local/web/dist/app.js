@@ -96,14 +96,14 @@ async function runOperation(title, description, endpoint, payload, closeOnSucces
     if (token !== dialogToken) {
       notice(result.message, result.state === 'error');
       await loadSessions();
-      return;
+      return result.state === 'done';
     }
     view.classList.add(result.state === 'done' ? 'success' : 'error');
     view.querySelector('.result-icon').textContent = result.state === 'done' ? '✓' : '!';
     view.querySelector('h3').textContent = result.state === 'done' ? 'Completed' : 'Could not complete';
     view.querySelector('p').textContent = result.message;
     await loadSessions();
-    if (result.state === 'done' && endpoint === '/api/load') {
+    if (result.state === 'done' && ['/api/load','/api/chat/interface'].includes(endpoint)) {
       pendingChats.add(String(payload.session));
       notice(result.message, false);
       if (token === dialogToken) closeDialog();
@@ -111,11 +111,13 @@ async function runOperation(title, description, endpoint, payload, closeOnSucces
     } else if (result.state === 'done' && closeOnSuccess) {
       window.setTimeout(() => { if (token === dialogToken) closeDialog(); }, 500);
     }
+    return result.state === 'done';
   } catch (error) {
     view.classList.add('error');
     view.querySelector('.result-icon').textContent = '!';
     view.querySelector('h3').textContent = 'Could not complete';
     view.querySelector('p').textContent = error.message;
+    return false;
   }
 }
 
@@ -144,22 +146,44 @@ function renderChats(rows) {
       card = node('article', 'panel chat-card'); card.dataset.session = key;
       const heading = node('header', 'chat-heading');
       const title = node('div'); title.append(node('span', 'kicker', `SESSION ${row.id}`), node('h2'));
-      heading.append(title, node('span', 'chat-status'));
+      const controls = node('div', 'chat-controls');
+      const interfaceLabel = node('label', 'chat-interface', 'Interface ');
+      const interfaceSelect = selectControl([{value:'',label:'Select…'}, {value:'codex',label:'Codex'}, {value:'claude',label:'Claude'}, {value:'opencode',label:'OpenCode'}], row.agent_cli || '');
+      interfaceSelect.setAttribute('aria-label', `Chat interface for session ${row.id}`);
+      interfaceSelect.title = 'Switch this session’s agent. Model and RAG are retained; conversations stay in their original interface.';
+      interfaceSelect.addEventListener('change', async () => {
+        if (!interfaceSelect.value) return;
+        const cli = interfaceSelect.value;
+        card.dataset.switching = 'true'; interfaceSelect.disabled = true;
+        try {
+          const switched = await runOperation(`Switch to ${cli}`, 'Restarting this terminal with the selected interface. The loaded model and RAG settings are retained.', '/api/chat/interface', {session:row.id,cli}, true);
+          if (switched) closeChatTerminal(key, card.querySelector('.chat-terminal'));
+        } finally { delete card.dataset.switching; await loadSessions(); }
+      });
+      const reopen = node('button', 'chat-reopen', 'Open terminal');
+      reopen.addEventListener('click', () => interfaceSelect.dispatchEvent(new Event('change')));
+      interfaceLabel.append(interfaceSelect); controls.append(interfaceLabel, reopen, node('span', 'chat-status'));
+      heading.append(title, controls);
       const screen = node('div', 'chat-terminal'); screen.dataset.session = key;
       card.append(heading, screen); cards.append(card); makeResizable(card,screen,`chat-${key}`);
     }
     card.querySelector('h2').textContent = row.model || (nativeReady ? `Native ${row.native_cli || 'CLI'}` : 'No model selected');
+    const interfaceSelect = card.querySelector('.chat-interface select');
+    if (!card.dataset.switching) interfaceSelect.value = row.agent_cli || '';
+    const canOpen = row.native ? !['RELEASED','STOPPED'].includes(row.phase) : row.attached && ['LOADED','READY','RUNNING'].includes(String(row.model_state || '').toUpperCase());
+    interfaceSelect.disabled = Boolean(card.dataset.switching) || !canOpen;
+    const reopen = card.querySelector('.chat-reopen'); reopen.hidden = ready || !canOpen; reopen.disabled = Boolean(card.dataset.switching);
     const status = card.querySelector('.chat-status'); status.className = `chat-status ${ready ? 'ready' : ''}`; status.textContent = ready ? `Terminal · ${row.time_left || '∞'}` : `${row.model_state || row.phase || 'Unavailable'} · ${row.time_left || '∞'}`;
     const screen = card.querySelector('.chat-terminal');
     if (!ready && chatTerminals.has(key)) closeChatTerminal(key, screen);
-    else if (!ready) screen.textContent = 'Load the model and attach its agent to open this terminal.';
+    if (!ready) screen.textContent = canOpen ? 'Model retained. Choose an interface and click Open terminal.' : 'Load the model and attach its agent to open this terminal.';
     if (pendingChats.has(key) && ready) {
       pendingChats.delete(key);
       document.querySelector('[data-page="chats"]')?.click();
     } else if (pendingChats.has(key) && ['ERROR','EXITED','FAILED','STOPPED'].includes(String(row.model_state).toUpperCase())) {
       pendingChats.delete(key); notice(`Session ${row.id} failed to load. See its model log.`, true);
     }
-    if (ready && !$('chats-view').hidden) ensureChatTerminal(row, screen);
+    if (ready && !card.dataset.switching && !$('chats-view').hidden) ensureChatTerminal(row, screen);
   }
 }
 
@@ -194,7 +218,7 @@ async function ensureChatTerminal(row, host) {
     item.observer = new ResizeObserver(() => window.requestAnimationFrame(resize)); item.observer.observe(host);
     window.requestAnimationFrame(resize);
     await api('/api/terminal/input', {method: 'POST', body: JSON.stringify({id: item.id, data: `run --session ${Number(row.id)} --resume\n`})});
-    item.poll = window.setInterval(async () => { try { const data = await api(`/api/terminal/output?id=${encodeURIComponent(item.id)}&offset=${item.offset}`); item.offset = data.offset; if (data.data) { xterm.write(data.data); xterm.scrollToBottom(); } } catch {} }, 120);
+    item.poll = window.setInterval(async () => { try { const data = await api(`/api/terminal/output?id=${encodeURIComponent(item.id)}&offset=${item.offset}`); item.offset = data.offset; if (data.data) { const following = xterm.buffer.active.viewportY >= xterm.buffer.active.baseY; xterm.write(data.data, () => { if (following) xterm.scrollToBottom(); }); } } catch {} }, 120);
   } catch (error) { chatTerminals.delete(key); xterm.write(`\r\nCould not open terminal: ${error.message}\r\n`); }
 }
 
@@ -390,7 +414,7 @@ async function allocationDialog() {
     const host = selectControl(options.hosts.length ? options.hosts : [{value: '', label: 'No saved SSH hosts'}], options.default_host);
     const gpus = inputControl(String(options.default_gpus), 'number'); gpus.min = '0'; gpus.step = '1';
     const slurm = inputControl(options.slurm_options || '');
-    const cli = selectControl(['codex', 'claude'], options.available_clis.includes('codex') ? 'codex' : 'claude');
+    const cli = selectControl(['codex', 'claude', 'opencode'], options.available_clis[0] || 'opencode');
     const hostField = field('SSH host', host, options.hosts.length ? 'Saved host profile' : 'Configure an SSH host first.');
     const gpuField = field('GPUs', gpus, `Backend: ${options.backend}`);
     const slurmField = field('Additional scheduler options', slurm, 'Shell-style Slurm options for this allocation.', true);
@@ -434,7 +458,7 @@ async function modelDialog() {
     if (data.native) {
       const form = node('form', 'form');
       const grid = node('div', 'form-grid');
-      const cli = selectControl(['auto', 'codex', 'claude'], data.agent_cli || 'auto');
+      const cli = selectControl(['auto', 'codex', 'claude', 'opencode'], data.agent_cli || 'auto');
       const workdir = inputControl(data.agent_workdir || ''); workdir.placeholder = 'Default project directory';
       const rag = inputControl(data.rag || ''); rag.placeholder = '/path/to/src:/path/to/README.md';
       const ragThreads = inputControl(String(data.rag_threads || 2), 'number'); ragThreads.min = '1'; ragThreads.step = '1';
@@ -464,7 +488,7 @@ async function modelDialog() {
     const model = selectControl(modelOptions, data.models.find(item => item.alias === data.current || item.name === data.current)?.name || data.models[0]?.name || '');
     const mtp = selectControl(['auto', 'on', 'off'], 'auto');
     const location = selectControl(['local', 'remote'], data.agent_location || 'local');
-    const cli = selectControl(['auto', 'codex', 'claude'], data.agent_cli || 'auto');
+    const cli = selectControl(['auto', 'codex', 'claude', 'opencode'], data.agent_cli || 'auto');
     const workdir = inputControl(data.agent_workdir || ''); workdir.placeholder = 'Default project directory';
     const rag = inputControl(data.rag || ''); rag.placeholder = '/path/to/src:/path/to/README.md';
     const ragThreads = inputControl(String(data.rag_threads || 2), 'number'); ragThreads.min = '1'; ragThreads.step = '1';

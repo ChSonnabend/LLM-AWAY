@@ -69,7 +69,7 @@ def prepare(path, spec):
                 else:spec['rag_config']=rag
         if spec.get('target_location')=='remote':
             info=remote(cfg,data['token'],data['remote_port'],'agent-info')
-            if not info.get('clis'):raise ValueError('Install codex or claude on the compute host')
+            if not info.get('clis'):raise ValueError('Install opencode, codex or claude on the compute host')
             spec['cli']=choose_cli(spec['cli'],info['clis'])
             spec['instructions']=cfg.claude.instructions or cfg.codex.instructions if spec['cli']=='claude' else cfg.codex.instructions
             selection=json.loads((path/'agent-selection.json').read_text())

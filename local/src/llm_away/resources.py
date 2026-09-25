@@ -145,7 +145,7 @@ def rpc_alive(path):
 
 class ResourceBackend(SlurmServerBackend):
     def __init__(self,cfg,token,port):
-        super().__init__(cfg);self.token=token;self.port=port;self.attachment_generation=None
+        super().__init__(cfg);self.token=token;self.port=port;self.attachment_generation=None;self.api_key=''
     def serverctl(self,command,model,extra=None):
         if command=='ensure' and self.attachment_generation:
             return remote(self.config,self.token,self.port,'attach',expected_generation=self.attachment_generation)
@@ -155,6 +155,9 @@ class ResourceBackend(SlurmServerBackend):
             if self._closing.is_set(): raise BackendError('Model is stopping')
             if self._ready_model==model and self.http_ready(model): return
             state=self.serverctl('ensure',model)
+            if state.get('api_key_required'):
+                self.api_key=remote(self.config,self.token,self.port,'credential')['api_key']
+                if not self.api_key:raise BackendError('Remote model requires an API key, but no credential was returned')
             deadline=time.monotonic()+self.config.gateway.startup_timeout_seconds
             last_error=''
             while not self._closing.is_set():
@@ -207,6 +210,8 @@ def provider(path):
     signal.signal(signal.SIGTERM,stop)
     try:
         backend.ensure_ready(cfg.model.name)
+        from .security import write_key
+        write_key(path/'api-key',backend.api_key)
         print('Model ready: '+cfg.model.name,flush=True)
         serve(cfg,backend,warm=False)
     finally: backend.close()
@@ -470,8 +475,8 @@ def allocate(args):
     mode=getattr(args,'mode',None) or ['native','custom'][choose_option(
         ['Native CLI','Custom model'],'Session type',default=1)]
     if mode=='native':
-        cli=getattr(args,'cli',None) or ['claude','codex'][choose_option(
-            ['claude','codex'],'Native CLI',default=1)]
+        cli=getattr(args,'cli',None) or ['claude','codex','opencode'][choose_option(
+            ['claude','codex','opencode'],'Native CLI',default=1)]
         host=None
         if connection=='ssh':
             from .onboarding import ssh_hosts, select_host
@@ -548,6 +553,21 @@ def locally_attached(data):
                 data.get('provider_identity') and identity(data.get('provider_pid'))==data['provider_identity'])
 
 
+def acquire_agent_lease(lease, reconfigure=False):
+    # Killing tmux returns before its worker has reaped the CLI and released
+    # client.lock. Wait for that shutdown only during an explicit agent switch.
+    deadline=time.monotonic()+(12 if reconfigure else 0)
+    while True:
+        try:
+            fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic()>=deadline:
+                raise ValueError('Previous agent is still shutting down; retry opening the terminal shortly' if reconfigure
+                                 else 'Another run command owns this session') from None
+            time.sleep(0.1)
+
+
 def run_agent(args):
     from .serve_registration import register
     helper=getattr(args,'helper',False)
@@ -583,8 +603,7 @@ def run_agent(args):
             return
     # Advisory lease prevents two foreground clients from sharing one model slot.
     with open(path/'client.lock','a') as lease:
-        try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:raise ValueError('Another run command owns this session')
+        acquire_agent_lease(lease,getattr(args,'reconfigure_agent',False))
         try:data=rpc(path,'status')
         except OSError:
             # A daemon can exit while its provider remains live. Restart it and
@@ -619,8 +638,8 @@ def run_agent(args):
             choice=choose_option(['Session model (AWAY inference)','Native CLI (own model/account)'],
                                  'Local agent model',default=0)
             if choice==1:
-                available=[name for name in ('codex','claude') if shutil.which(name)]
-                if not available:raise ValueError('No codex or claude CLI on PATH for native mode')
+                available=[name for name in ('codex','claude','opencode') if shutil.which(name)]
+                if not available:raise ValueError('No opencode, codex or claude CLI on PATH for native mode')
                 preference=getattr(args,'cli',None) or os.environ.get('LLM_AWAY_CLI') or cfg.agent.cli
                 native_cli=choose_cli(preference,available) if len(available)>1 else available[0]
                 agent_cwd=getattr(args,'agent_workdir',None) or os.getcwd()
@@ -685,7 +704,7 @@ def run_agent(args):
         selected_cli=None
         if location=='local' and not helper:
             if getattr(args,'quiet',False) and preference=='auto':
-                preference=next((cli for cli in ('codex','claude') if shutil.which(cli)), 'codex')
+                preference=next((cli for cli in ('codex','claude','opencode') if shutil.which(cli)), 'codex')
             selected_cli=choose_cli(preference)
         mtp=cfg.llamacpp.mtp if reuse else args.mtp if getattr(args,'mtp_prompted',False) else choose_mtp(model,cfg.llamacpp.mtp,args.mtp)
         if not reuse:
@@ -709,10 +728,13 @@ def run_agent(args):
         agent_instructions=(cfg.claude.instructions or cfg.codex.instructions
                             if selected_cli=='claude' else cfg.codex.instructions)
         if rag_config:
-            agent_instructions+=('\nRAG is available through the exact function '
-                                 '`mcp__project_search__search_project`. Invoke that full function name with '
-                                 '`{"query":"what to find","limit":6}`. Never call `mcp__project_search` by itself, '
-                                 'and do not look for RAG in MCP resource listings.')
+            if selected_cli=='opencode':
+                agent_instructions+='\nUse the project_search MCP search_project tool to search the configured RAG sources.'
+            else:
+                agent_instructions+=('\nRAG is available through the exact function '
+                                     '`mcp__project_search__search_project`. Invoke that full function name with '
+                                     '`{"query":"what to find","limit":6}`. Never call `mcp__project_search` by itself, '
+                                     'and do not look for RAG in MCP resource listings.')
         # Native/local allocations keep RAG local. Scheduled allocations prepare
         # it after the job is ready and bridge its stdio back to a local agent.
         if not helper:
@@ -954,10 +976,11 @@ def reconnect_session(number):
         raise ValueError('Native sessions do not use a model SSH tunnel')
     if not data.get('model') or data.get('provider_exit') is not None:
         raise ValueError('Load a model before reconnecting')
+    from .security import headers as auth_headers
     server=data['config']['server']
     payload={'model':data['model'],'messages':[{'role':'user','content':'.'}]}
     request=Request(f"http://127.0.0.1:{int(server['port'])}/v1/messages/count_tokens",
-                    data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+                    data=json.dumps(payload).encode(),headers={'Content-Type':'application/json',**auth_headers(path)})
     with urlopen(request,timeout=60) as response:
         if response.status!=200:raise RuntimeError('Provider did not acknowledge reconnect')
         response.read(4096)
@@ -1203,7 +1226,7 @@ def main():
     alloc=sub.add_parser('allocate');alloc.add_argument('--config',default=os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml')))
     alloc.add_argument('--host');alloc.add_argument('--connection',choices=['ssh','local']);alloc.add_argument('--restart',action='store_true');alloc.add_argument('--gpus',type=int)
     alloc.add_argument('--mode',choices=['native','custom'],help='Native account CLI or custom model allocation')
-    alloc.add_argument('--cli',choices=['claude','codex'],help='CLI to launch in native mode')
+    alloc.add_argument('--cli',choices=['claude','codex','opencode'],help='CLI to launch in native mode')
     run=sub.add_parser('run');run.add_argument('--session','-s',required=True,type=int);run.add_argument('--model');run.add_argument('--mtp',choices=['auto','on','off']);run.add_argument('--rag',action='append',metavar='PATH',help='Local code/docs file or folder; repeat for multiple paths');run.add_argument('agent_args',nargs=argparse.REMAINDER)
     run.add_argument('--agent-location',choices=['local','remote'],default='local')
     run.add_argument('--agent-workdir',help='Project directory on the selected agent host')
@@ -1212,14 +1235,14 @@ def main():
     run.add_argument('--rag-paths-location',choices=['local','remote','shared'],help='Where RAG source paths are visible')
     run.add_argument('--rag-memory-gb',type=float,default=0,help='Local RAG memory limit in GiB; 0 is unlimited')
     run.add_argument('--rag-gpu',action='store_true',help='Use an available local CoreML, CUDA, or ROCm provider for RAG')
-    run.add_argument('--cli',choices=['auto','codex','claude'],help='Agent CLI; auto asks only when both are installed')
+    run.add_argument('--cli',choices=['auto','codex','claude','opencode'],help='Agent CLI; auto asks when multiple CLIs are installed')
     run.add_argument('--detach',action='store_true',help='Start or reuse the tmux agent without attaching')
     run.add_argument('--helper',action='store_true',help='Load/reuse the model and register it as a Codex MCP helper; --rag selects folders, default current directory')
     run.add_argument('--log-helper',dest='log_helper',action='store_true',default=True,help='Log helper questions, excerpts, and responses to run/resources/ID/helper.log (default)')
     run.add_argument('--no-log-helper',dest='log_helper',action='store_false',help='Disable helper traffic logging')
     run.add_argument('--resume',action='store_true',help='Open the saved-conversation picker when reopening an exited agent')
     prompt=sub.add_parser('prompt');prompt.add_argument('--session','-s',required=True,type=int);prompt.add_argument('text')
-    prompt.add_argument('--agent-location',choices=['local','remote']);prompt.add_argument('--cli',choices=['codex','claude']);prompt.add_argument('--agent-workdir')
+    prompt.add_argument('--agent-location',choices=['local','remote']);prompt.add_argument('--cli',choices=['codex','claude','opencode']);prompt.add_argument('--agent-workdir')
     mon=sub.add_parser('monitor');mon.add_argument('--list',action='store_true');mon.add_argument('--logs',type=int);mon.add_argument('--kill',type=int);mon.add_argument('--release',action='store_true');mon.add_argument('--refresh',type=int);mon.add_argument('--model')
     for name in ('daemon','provider'):sub.add_parser(name).add_argument('path',type=Path)
     args=parser.parse_args()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import hmac
 import os
 from pathlib import Path
 import signal
@@ -33,10 +34,18 @@ class ProviderHandler(BaseHTTPRequestHandler):
     backend: Backend
     config: AppConfig
 
+    def authorized(self):
+        key=getattr(self.backend,'api_key','')
+        if not key or hmac.compare_digest(self.headers.get('Authorization','').encode(), ('Bearer '+key).encode()):return True
+        self.close_connection=True
+        self.write_json({'error':{'message':'Invalid or missing API key','type':'authentication_error'}},status=401)
+        return False
+
     def do_GET(self) -> None:
         if self.path == "/health":
             self.write_json({"status": "ok", "model": self.config.model.name})
             return
+        if not self.authorized():return
         if self.path == "/v1/models":
             self.write_json(models_list(self.config.model.name))
             return
@@ -44,6 +53,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
+            if not self.authorized():return
             self._do_POST()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             # Escape/Ctrl+C in Codex closes this request, not the gateway.
@@ -93,17 +103,17 @@ class ProviderHandler(BaseHTTPRequestHandler):
         except OSError as exc:
             print('Model query log unavailable: '+str(exc),file=sys.stderr)
 
-    def handle_anthropic(self, payload: dict) -> None:
+    def handle_anthropic(self, payload: dict, anthropic=True) -> None:
         """Preserve native Anthropic tool blocks and SSE from llama.cpp."""
         if not hasattr(self.backend, "ensure_ready") or not hasattr(self.backend, "local_url"):
             raise BackendError("Claude Code requires a persistent llama.cpp server backend")
         self.backend.ensure_ready(self.config.model.name)
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", **getattr(self.backend,"auth_headers",lambda: {})()}
         for name in ("anthropic-version", "anthropic-beta"):
             if self.headers.get(name):
                 headers[name] = self.headers[name]
         request = Request(self.backend.local_url(self.path),
-                          data=json.dumps(normalize_anthropic_system(payload)).encode(), headers=headers)
+                          data=json.dumps(normalize_anthropic_system(payload) if anthropic else payload).encode(), headers=headers)
         try:
             upstream = urlopen(request, timeout=self.config.llamacpp.inference_timeout_seconds)
         except HTTPError as exc:
@@ -120,6 +130,8 @@ class ProviderHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
 
     def handle_chat(self, payload: dict) -> None:
+        if getattr(self.backend,"native_tools",False):
+            return self.handle_anthropic(payload,anthropic=False)
         model = payload.get("model") or self.config.model.name
         raw_prompt = messages_to_prompt(payload.get("messages", []))
         prompt = self.compact_prompt(raw_prompt)

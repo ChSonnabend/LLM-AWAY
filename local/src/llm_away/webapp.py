@@ -84,7 +84,7 @@ def allocation_options():
         'default_gpus':cfg.slurm.gpus or (0 if cfg.llamacpp.backend=='cpu' else 1),
         'slurm_options':shlex.join(cfg.slurm.custom_options),
         'backend':cfg.backend_type,
-        'available_clis':[name for name in ('codex','claude') if shutil.which(name)],
+        'available_clis':[name for name in ('codex','claude','opencode') if shutil.which(name)],
     }
 
 
@@ -203,7 +203,7 @@ def load_browser_model(number, settings):
         rag_compute=settings.get('rag_compute') or None,rag_paths_location=settings.get('rag_paths_location') or None,
         server_extra_args=extra,mtp_prompted=True,log_helper=True,
         agent_location=settings.get('agent_location','local'),cli=settings.get('cli') or 'auto',
-        agent_workdir=settings.get('agent_workdir') or None,agent_args=[],resume=True,detach=True)
+        agent_workdir=settings.get('agent_workdir') or None,agent_args=list(settings.get('agent_args') or []),resume=True,detach=True)
     args.container=container
     args.reconfigure_agent=attach
     resources.run_agent(args)
@@ -229,6 +229,48 @@ def restart_native_session(number, settings):
     return f'Session {number} agent restarted with the saved settings.'
 
 
+def switch_chat_interface(number, cli):
+    """Restart this client's agent, preserving model ownership and RAG settings."""
+    if cli not in ('codex','claude','opencode'):raise ValueError('Choose Codex, Claude or OpenCode')
+    path=session_path(number)
+    data=json.loads((path/'session.json').read_text())
+    selection=json.loads((path/'agent-selection.json').read_text())
+    location=selection.get('target_location',selection.get('location','local'))
+    from .agents import choose_cli
+    if data.get('native'):
+        from . import native_sessions, terminals
+        host=selection.get('native_host')
+        if host:
+            result=subprocess.run(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=10',host,
+                                   'command -v '+shlex.quote(cli)],capture_output=True,timeout=15)
+            if result.returncode:raise ValueError(cli+' is unavailable on '+host)
+        else:choose_cli(cli)
+        with native_sessions.locked(path):
+            if data.get('phase')=='RELEASED':raise ValueError('Session has been released')
+            terminals.engine()['stop'](path)
+            selection['cli']=cli;data.update(native_cli=cli,phase='STARTING',error='')
+            resources.write(path/'agent-selection.json',selection)
+            resources.write(path/'session.json',data)
+        native_sessions.run(path,argparse.Namespace(detach=True))
+    else:
+        from . import shared_sessions
+        allocation=shared_sessions.current(path)
+        if allocation.get('model_state') not in ('LOADED','READY','RUNNING'):
+            raise ValueError('Wait until the model is loaded before switching interfaces')
+        if location=='remote':
+            info=resources.remote(resources.config(data['config']),data['token'],data['remote_port'],'agent-info')
+            choose_cli(cli,info.get('clis',[]))
+        else:choose_cli(cli)
+        rag=selection.get('rag_config') or {}
+        settings=dict(attach_existing=True,expected_generation=allocation.get('generation',''),
+                      cli=cli,agent_location=location,agent_workdir=selection.get('cwd',''),agent_args=selection.get('extra_args',[]),
+                      rag=os.pathsep.join(rag.get('paths') or []),rag_threads=rag.get('threads',2),
+                      rag_memory_gb=rag.get('memory_gb',0),rag_gpu='yes' if rag.get('gpu') else 'no',
+                      rag_compute=rag.get('compute'),rag_paths_location=rag.get('paths_location'))
+        load_browser_model(number,settings)
+    return f'Session {number} is opening {cli}. Conversations remain saved in their original interface.'
+
+
 def session_rows():
     """Return monitor information without exposing session tokens or config."""
     rows=[]
@@ -237,10 +279,13 @@ def session_rows():
         telemetry=allocation.get('gpu_telemetry') or {}
         agent=allocation.get('prompt') or {}
         model_state=display_state(row,allocation)
+        try:selection=json.loads((resources.STORE/str(row['id'])/'agent-selection.json').read_text())
+        except (OSError,ValueError):selection={}
         rows.append({
             'id':row['id'], 'host':allocation.get('worker_host') or row.get('host',''), 'gpus':row.get('gpus',0),
             'phase':row.get('phase',''), 'model':display_model(row,allocation),
             'native':row.get('native',False), 'native_cli':row.get('native_cli',''),
+            'agent_cli':selection.get('cli') or row.get('native_cli',''),
             'job_id':'' if row.get('config',{}).get('backend_type')=='direct' else allocation.get('job_id',''), 'node':allocation.get('worker_host') or allocation.get('host',''),
             'model_state':model_state, 'busy':row.get('_busy',False),
             'attached':bool(row.get('_terminal')) if row.get('native') else resources.locally_attached(row),
@@ -279,6 +324,7 @@ def safe_details(row):
         'Scheduler state: '+str(allocation.get('slurm_state') or row.get('phase') or '—'),
         'Model: '+str(display_model(row,allocation) or 'none'),
         'Model state: '+display_state(row,allocation),
+        'Model API authentication: '+('enabled' if allocation.get('api_key_required') else 'reload model to enable'),
         'Local monitor PID: '+str(row.get('pid') or '—'),
         'Model loader PID: '+str(row.get('provider_pid') or '—'),
         'Model flags: '+(shlex.join(llama.get('server_extra_args') or []) if row.get('model') else ''),
@@ -537,6 +583,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if self.path=='/api/load':
                 number=body.get('session');settings=dict(body.get('settings') or {})
                 identifier=start_job('Start session',lambda:load_browser_model(number,settings))
+                self._json({'job':identifier});return
+            if self.path=='/api/chat/interface':
+                number=body.get('session');cli=str(body.get('cli',''))
+                identifier=start_job('Switch interface',lambda:switch_chat_interface(number,cli))
                 self._json({'job':identifier});return
             if self.path=='/api/native':
                 number=body.get('session');settings=dict(body.get('settings') or {})

@@ -375,7 +375,7 @@ def allocation_wizard():
     settings=dict(connection=connection,native=mode.startswith('Native'),host=host,gpus=gpus,
                   slurm_options=slurm_options)
     if settings['native']:
-        cli=dropdown_win('Native CLI',['codex','claude'],'codex')
+        cli=dropdown_win('Native CLI',['codex','claude','opencode'],'codex')
         if cli is None:return None
         settings['cli']=cli
     return settings

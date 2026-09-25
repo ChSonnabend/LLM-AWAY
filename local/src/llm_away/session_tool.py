@@ -10,10 +10,11 @@ from urllib.request import Request, build_opener, ProxyHandler
 from urllib.error import URLError
 from .resources import path_for, rpc, identity
 from .rag import Index, roots_for
+from .security import headers as auth_headers
 
 
 
-def helper_endpoint(data, opener):
+def helper_endpoint(data, opener, path=None):
     """Ask the owning provider to repair a lost tunnel without generating text."""
     gateway=data['config']['gateway']
     base=f"http://127.0.0.1:{int(gateway['local_port'])}"
@@ -26,7 +27,7 @@ def helper_endpoint(data, opener):
     provider=f"http://127.0.0.1:{int(data['config']['server']['port'])}"
     request=Request(provider+'/v1/messages/count_tokens',
                     data=json.dumps({'model':data['model'],'messages':[{'role':'user','content':'.'}]}).encode(),
-                    headers={'Content-Type':'application/json'})
+                    headers={'Content-Type':'application/json',**(auth_headers(path) if path else {})})
     with opener.open(request,timeout=60) as response:response.read(4096)
     with opener.open(base+'/health',timeout=5) as response:
         if response.status!=200:raise ValueError('Session tunnel is not ready')
@@ -102,8 +103,8 @@ def main():
                 with log_path.open('a') as log:
                     log.write(json.dumps(entry)+'\n')
             # Use the existing tunnel so llama-server enforces the output token budget.
-            url=helper_endpoint(data,opener)+'/v1/chat/completions'
-            request=Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+            url=helper_endpoint(data,opener,path)+'/v1/chat/completions'
+            request=Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json',**auth_headers(path)})
             with opener.open(request,timeout=240) as response:
                 raw=response.read(1048577)
             if len(raw)>1048576:raise ValueError('Model response exceeded 1 MiB')

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Headless CLI execution shared by local and remote workers (Python 3.6+)."""
 import json
+import hmac
 import os
 from pathlib import Path
 import shutil
@@ -13,14 +14,39 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
 
+def api_key(request):
+    path=Path(request.get('api_key_file') or str(Path(request.get('state') or '.')/'api-key'))
+    return path.read_text().strip() if path.is_file() else ''
+
+
+def opencode_config(request, base_url):
+    model=request['model']
+    context=int(request.get('context_window') or 32768)
+    config={'$schema':'https://opencode.ai/config.json','model':'away/'+model,
+            'small_model':'away/'+model,'enabled_providers':['away'],'share':'disabled','autoupdate':False,
+            'provider':{'away':{'npm':'@ai-sdk/openai-compatible','name':'LLM-AWAY',
+                'options':{'baseURL':base_url.rstrip('/')+'/v1','apiKey':'{env:LLM_AWAY_API_KEY}'},
+                'models':{model:{'name':model,'limit':{'context':context,'output':min(16384,context)}}}}}}
+    if request.get('instructions'):
+        config['agent']={'build':{'prompt':request['instructions']}}
+    if request.get('rag_command'):
+        config['mcp']={'project_search':{'type':'local','command':request['rag_command'],'enabled':True}}
+    return config
+
+
 def agent_command(request, base_url, session_id=None):
     cli=request['cli']
-    if cli not in ('codex','claude') or not shutil.which(cli):
+    if cli not in ('codex','claude','opencode') or not shutil.which(cli):
         raise ValueError('Selected agent CLI is not installed here: '+cli)
-    model=request['model'];env=dict(os.environ)
-    if cli=='claude':
-        for key in ('ANTHROPIC_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY'):env.pop(key,None)
-        env.update(ANTHROPIC_BASE_URL=base_url,ANTHROPIC_AUTH_TOKEN='llm-away',ANTHROPIC_MODEL=model,
+    model=request['model'];env=dict(os.environ);key=api_key(request)
+    env['LLM_AWAY_API_KEY']=key or 'llm-away'
+    if cli=='opencode':
+        env['OPENCODE_CONFIG_CONTENT']=json.dumps(opencode_config(request,base_url))
+        command=['opencode','run','--format','json','--model','away/'+model]
+        if session_id:command+=['--session',session_id]
+    elif cli=='claude':
+        for name in ('ANTHROPIC_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY'):env.pop(name,None)
+        env.update(ANTHROPIC_BASE_URL=base_url,ANTHROPIC_AUTH_TOKEN=key or 'llm-away',ANTHROPIC_MODEL=model,
                    ANTHROPIC_DEFAULT_OPUS_MODEL=model,ANTHROPIC_DEFAULT_SONNET_MODEL=model,
                    ANTHROPIC_DEFAULT_HAIKU_MODEL=model,CLAUDE_CODE_SUBAGENT_MODEL=model,
                    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1',DISABLE_PROMPT_CACHING='1')
@@ -35,6 +61,7 @@ def agent_command(request, base_url, session_id=None):
                  '-c','model_providers.away_agent.base_url='+json.dumps(base_url+'/v1'),
                  '-c','model_providers.away_agent.wire_api="responses"',
                  '-c','model_providers.away_agent.requires_openai_auth=false']
+        if key:command+=['-c','model_providers.away_agent.env_key="LLM_AWAY_API_KEY"']
         if request.get('context_window'):
             command+=['-c','model_context_window='+str(int(request['context_window']))]
         if request.get('auto_compact_token_limit'):
@@ -50,18 +77,21 @@ def agent_command(request, base_url, session_id=None):
     return command,env
 
 
-def claude_proxy(base_url):
+def claude_proxy(base_url, key=""):
     # Older llama.cpp builds turn separate Anthropic system blocks into multiple
     # system messages. Keep one leading string, preserving native tool blocks.
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
+            if key and not hmac.compare_digest(self.headers.get('Authorization','').encode(), ('Bearer '+key).encode()):
+                self.send_error(401,'Invalid or missing API key');return
             try:
                 payload=json.loads(self.rfile.read(int(self.headers.get('Content-Length',0))))
                 system=payload.get('system')
                 if isinstance(system,list):payload['system']='\n\n'.join(b.get('text','') for b in system if b.get('type')=='text')
                 headers={'Content-Type':'application/json'}
-                for key in ('anthropic-version','anthropic-beta'):
-                    if self.headers.get(key):headers[key]=self.headers[key]
+                if key:headers['Authorization']='Bearer '+key
+                for name in ('anthropic-version','anthropic-beta'):
+                    if self.headers.get(name):headers[name]=self.headers[name]
                 request=Request(base_url+self.path,data=json.dumps(payload).encode(),headers=headers)
                 try:response=urlopen(request,timeout=900)
                 except HTTPError as exc:response=exc
@@ -84,7 +114,7 @@ def run_agent(request,base_url,cwd,history_path,emit):
     history_path=Path(history_path)
     key=[request['cli'],request['model'],str(cwd)]
     history=json.loads(history_path.read_text()) if history_path.exists() else {}
-    proxy=claude_proxy(base_url) if request['cli']=='claude' else None
+    proxy=claude_proxy(base_url,api_key(request)) if request['cli']=='claude' else None
     if proxy:base_url='http://127.0.0.1:'+str(proxy.server_port)
     command,env=agent_command(request,base_url,history.get('id') if history.get('key')==key else None)
     if not Path(cwd).is_dir():raise ValueError('Agent working directory does not exist: '+str(cwd))
@@ -96,11 +126,12 @@ def run_agent(request,base_url,cwd,history_path,emit):
         for line in child.stdout:
             try:event=json.loads(line)
             except ValueError:emit(line);continue
-            ident=event.get('session_id') or (event.get('thread_id') if event.get('type')=='thread.started' else None)
+            ident=event.get('sessionID') or event.get('session_id') or (event.get('thread_id') if event.get('type')=='thread.started' else None)
             if ident:
                 temporary=history_path.with_suffix('.tmp');temporary.write_text(json.dumps({'key':key,'id':ident}));os.replace(str(temporary),str(history_path))
             if event.get('is_error') or event.get('type') in ('error','turn.failed'):failed=True
-            if event.get('type')=='assistant':
+            if request['cli']=='opencode' and event.get('type')=='text':emit(event.get('part',{}).get('text','')+'\n')
+            elif event.get('type')=='assistant':
                 for part in event.get('message',{}).get('content',[]):
                     if part.get('type')=='text':emit(part.get('text','')+'\n')
                     elif part.get('type')=='tool_use':emit('[tool: '+part.get('name','')+']\n')

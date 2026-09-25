@@ -131,7 +131,7 @@ def helper_environment(command, spec):
 
 def resume_picker(command, spec):
     """Select a saved conversation explicitly; never silently resume the latest."""
-    if spec.get('resume'):
+    if spec.get('resume') and spec['cli']!='opencode':
         command.insert(1, '--resume' if spec['cli']=='claude' else 'resume')
     return command
 
@@ -247,11 +247,14 @@ def worker(state):
             child.wait()
             return
         if spec['cli']=='claude':
-            proxy=engine['claude_proxy'](base_url);base_url='http://127.0.0.1:'+str(proxy.server_port)
+            proxy=engine['claude_proxy'](base_url,engine['api_key'](spec));base_url='http://127.0.0.1:'+str(proxy.server_port)
         command,env=engine['agent_command'](spec,base_url)
         if spec['cli']=='claude':
             for option in ('--print','--verbose'):command.remove(option)
             index=command.index('--output-format');del command[index:index+2]
+        elif spec['cli']=='opencode':
+            command.remove('run');index=command.index('--format');del command[index:index+2]
+            if spec.get('resume'):print('OpenCode: use /sessions to choose a saved conversation.',flush=True)
         else:
             for option in ('exec','--json','--skip-git-repo-check','-'):command.remove(option)
             command.insert(1,'--no-alt-screen')
@@ -260,7 +263,7 @@ def worker(state):
         if spec.get('rag_command'):
             rag=spec['rag_command']
             if spec['cli']=='claude':command+=['--mcp-config',json.dumps({'mcpServers':{'project_search':{'command':rag[0],'args':rag[1:]}}})]
-            else:command+=['-c','mcp_servers.project_search.command='+json.dumps(rag[0]),'-c','mcp_servers.project_search.args='+json.dumps(rag[1:])]
+            elif spec['cli']=='codex':command+=['-c','mcp_servers.project_search.command='+json.dumps(rag[0]),'-c','mcp_servers.project_search.args='+json.dumps(rag[1:])]
         cwd=Path(spec['cwd']) if spec.get('cwd') else state/'agent-workspace'
         if not spec.get('cwd'):cwd.mkdir(exist_ok=True)
         if not cwd.is_dir():raise ValueError('Working directory does not exist: '+str(cwd))

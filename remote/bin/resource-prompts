@@ -19,6 +19,8 @@ def save(path, value):
 
 def execute(state, request_path):
     request = json.loads(request_path.read_text())
+    request['api_key_file']=str(state/'api-key')
+    key=(state/'api-key').read_text().strip() if (state/'api-key').exists() else ''
     result_path = request_path.with_suffix('.result')
     result = {'id': request['id'], 'status': 'RUNNING', 'text': '', 'error': ''}
     save(result_path, result)
@@ -41,7 +43,7 @@ def execute(state, request_path):
         payload = {'model':request['model'], 'messages':messages,
                    'max_tokens':request['max_tokens'], 'stream':True}
         http = Request('http://127.0.0.1:%d/v1/chat/completions' % request['port'],
-                       data=json.dumps(payload).encode(), headers={'Content-Type':'application/json'})
+                       data=json.dumps(payload).encode(), headers=dict({'Content-Type':'application/json'},**({'Authorization':'Bearer '+key} if key else {})))
         opener = build_opener(ProxyHandler({}))
         completed = False
         last_write = 0
@@ -69,7 +71,7 @@ def execute(state, request_path):
 
 def main(state):
     queue = state/'prompts';queue.mkdir(exist_ok=True)
-    (state/'prompt-worker.ready').write_text(json.dumps({'version':4,'tmux':bool(shutil.which('tmux')),'clis':[name for name in ('codex','claude') if shutil.which(name)]}))
+    (state/'prompt-worker.ready').write_text(json.dumps({'version':4,'tmux':bool(shutil.which('tmux')),'clis':[name for name in ('codex','claude','opencode') if shutil.which(name)]}))
     signal.signal(signal.SIGTERM,lambda *args:sys.exit('Worker stopped'))
     terminal=runpy.run_path(str(Path(__file__).with_name('resource-terminal')))
     try:
@@ -81,7 +83,7 @@ def main(state):
                 launch=target/'terminal-launch.json'
                 if launch.exists():
                     try:
-                        spec=json.loads(launch.read_text());spec['base_url']='http://127.0.0.1:'+str(spec['port'])
+                        spec=json.loads(launch.read_text());spec['base_url']='http://127.0.0.1:'+str(spec['port']);spec['api_key_file']=str(state/'api-key')
                         terminal['start'](target,spec)
                     except Exception as exc:save(target/'terminal-status.json',{'status':'FAILED','error':str(exc)})
                     launch.unlink()

@@ -13,20 +13,20 @@ from .prompt import choose_option
 
 
 def choose_cli(preference="auto", available=None):
-    if preference not in ("auto", "codex", "claude"):
-        raise ValueError("CLI must be auto, codex, or claude")
+    if preference not in ("auto", "codex", "claude", "opencode"):
+        raise ValueError("CLI must be auto, codex, claude, or opencode")
     if available is None:
-        available = [name for name in ("codex", "claude") if shutil.which(name)]
+        available = [name for name in ("codex", "claude", "opencode") if shutil.which(name)]
     if preference != "auto":
         if preference not in available:
             raise ValueError(f"{preference} is not available on PATH")
         return preference
     if not available:
-        raise ValueError("Install Codex or Claude Code and make it available on PATH")
+        raise ValueError("Install OpenCode, Codex or Claude Code and make it available on PATH")
     if len(available) == 1:
         return available[0]
     if not sys.stdin.isatty():
-        raise ValueError("Both CLIs are available; specify --cli codex or --cli claude (or LLM_AWAY_CLI)")
+        raise ValueError("Multiple CLIs are available; specify --cli opencode, --cli codex or --cli claude (or LLM_AWAY_CLI)")
     return available[choose_option(available, "Which CLI do you want to use?")]
 
 

@@ -179,6 +179,19 @@ class RemoteOwnershipTests(unittest.TestCase):
         audit=json.loads((self.state/'release-audit.jsonl').read_text())
         self.assertEqual(audit['client_id'],'two')
 
+    def test_shared_api_key_is_private_and_absent_from_discovery(self):
+        current=self.call('start')
+        self.assertTrue(current['api_key_required'])
+        key=self.call('credential',client='two')['api_key']
+        self.assertGreaterEqual(len(key),40)
+        self.assertEqual((self.state/'api-key').stat().st_mode & 0o777,0o600)
+        self.assertNotIn(key,json.dumps(current))
+        self.assertNotIn(key,json.dumps(self.call('list',client='two')))
+        script=(self.state/(current['generation']+'.sh')).read_text()
+        self.assertIn('--api-key-file',script)
+        self.assertNotIn(key,script)
+        self.assertEqual(self.call('credential')['api_key'],key)
+
     def test_stale_takeover_rejected(self):
         current=self.call('start')
         self.call('claim',client='two',expected_owner='one',expected_generation=current['generation'])

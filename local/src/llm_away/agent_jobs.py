@@ -19,6 +19,7 @@ def main():
         engine=runpy.run_path(str(Path(__file__).resolve().parents[3]/'remote/bin/resource-agent'))
         def emit(text):
             record['text']=(record['text']+text)[-32768:];write(path/'agent-result.json',record)
+        job['api_key_file']=str(path/'api-key')
         engine['run_agent'](job,'http://127.0.0.1:'+str(data['config']['server']['port']),job['cwd'],path/'local-agent-history.json',emit)
         record['status']='DONE'
     except BaseException as exc:record.update(status='FAILED',error=str(exc) or 'Agent interrupted')

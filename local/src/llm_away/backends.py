@@ -358,6 +358,10 @@ class SlurmServerBackend(Backend):
         if self._tunnel.poll() is not None:
             raise BackendError(f"failed to open SSH tunnel on local port {self.local_port}")
 
+    def auth_headers(self):
+        key=getattr(self,'api_key','')
+        return {'Authorization':'Bearer '+key} if key else {}
+
     def http_ready(self, model: str) -> bool:
         try:
             with urlopen(self.local_url("/health"), timeout=2) as response:
@@ -370,7 +374,7 @@ class SlurmServerBackend(Backend):
             return False
 
         try:
-            with urlopen(self.local_url("/v1/models"), timeout=2) as response:
+            with urlopen(Request(self.local_url("/v1/models"),headers=self.auth_headers()), timeout=2) as response:
                 if response.status != 200:
                     return False
                 data = json.loads(response.read().decode("utf-8"))
@@ -413,7 +417,7 @@ class SlurmServerBackend(Backend):
         request = Request(
             self.local_url("/v1/chat/completions"),
             data=payload,
-            headers={"content-type": "application/json"},
+            headers={"content-type": "application/json", **self.auth_headers()},
             method="POST",
         )
         try:

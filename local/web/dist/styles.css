@@ -200,3 +200,7 @@ input:focus, select:focus { border-color: var(--accent-strong); box-shadow: 0 0 
 .attach-section summary { cursor: pointer; font-weight: 600; }
 .attach-section[open] summary { margin-bottom: 16px; }
 .attach-section .form-actions, .attach-section .replace-warning { margin-top: 16px; }
+
+.chat-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.chat-interface { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.chat-interface select { width: auto; min-width: 105px; }

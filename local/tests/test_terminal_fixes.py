@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from llm_away.server import ProviderHandler
+from llm_away.config import AppConfig
 from llm_away.models import choose_model, choose_mtp
 
 
@@ -17,6 +18,9 @@ class DisconnectTests(unittest.TestCase):
     def test_disconnect_does_not_write_an_error_to_closed_connection(self):
         for error in (BrokenPipeError(), ConnectionResetError(), ConnectionAbortedError()):
             handler = object.__new__(ProviderHandler)
+            handler.backend = None
+            handler.config = AppConfig()
+            handler.query_log = lambda event: None
             handler.path = '/v1/responses'
             handler.read_json = lambda: {}
             handler.handle_responses = lambda payload: (_ for _ in ()).throw(error)
@@ -26,6 +30,8 @@ class DisconnectTests(unittest.TestCase):
 
     def test_disconnected_error_response_is_also_quiet(self):
         handler = object.__new__(ProviderHandler)
+        handler.backend = None
+        handler.path = '/invalid'
         handler.read_json = lambda: (_ for _ in ()).throw(ValueError('bad request'))
         handler.write_json = lambda *a, **kw: (_ for _ in ()).throw(BrokenPipeError())
         handler.do_POST()

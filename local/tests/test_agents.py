@@ -25,7 +25,7 @@ class AgentTests(unittest.TestCase):
     def test_explicit_and_noninteractive_selection(self):
         with patch('llm_away.agents.shutil.which', return_value='/bin/cli'), patch('llm_away.agents.sys.stdin.isatty', return_value=False), patch('llm_away.agents.choose_option') as menu:
             self.assertEqual(choose_cli('claude'), 'claude')
-            with self.assertRaisesRegex(ValueError, 'Both CLIs'): choose_cli()
+            with self.assertRaisesRegex(ValueError, 'Multiple CLIs'): choose_cli()
             menu.assert_not_called()
         with patch('llm_away.agents.shutil.which', return_value=None):
             with self.assertRaisesRegex(ValueError, 'not available'): choose_cli('claude')
@@ -67,6 +67,8 @@ class AgentTests(unittest.TestCase):
                     handler=object.__new__(ProviderHandler)
                     handler.config=AppConfig()
                     handler.backend=Mock()
+                    handler.backend.api_key=''
+                    handler.backend.auth_headers.return_value={}
                     handler.backend.local_url.side_effect=lambda path:'http://localhost:8080'+path
                     handler.path=route
                     handler.headers={'anthropic-version':'2023-06-01','Authorization':'secret'}
