@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Persistent resource reservations, independent of the model process (Python 3.6+)."""
-import datetime, fcntl, json, os, re, shlex, shutil, subprocess, sys, time, uuid
+import datetime, fcntl, hashlib, json, os, re, shlex, shutil, subprocess, sys, time, uuid
 from pathlib import Path
 
 p=json.load(sys.stdin)
@@ -29,6 +29,12 @@ elif action!='list':
     state.mkdir(parents=True,exist_ok=True,mode=0o700)
 kind=c['backend_type']; k=c['kubernetes']; sl=c['slurm']
 meta=state/'allocation.json'
+
+def client_state():
+    identifier=p.get('client_id','')
+    if not identifier:raise ValueError('Client identity required')
+    return state/'clients'/hashlib.sha256(identifier.encode()).hexdigest()[:16]
+
 
 def job_label():
     number=p.get('session_id')
@@ -116,7 +122,7 @@ def status():
     if telemetry.exists():
         try:s['gpu_telemetry']=json.loads(telemetry.read_text())
         except (OSError,ValueError):pass
-    rag_log=state/'rag.log'
+    rag_log=client_state()/'rag.log' if p.get('client_id') else state/'rag.log'
     if rag_log.exists():
         try:s['rag_log']=rag_log.read_text(errors='replace')[-262144:]
         except OSError:pass
@@ -127,12 +133,16 @@ def status():
             result=state/'prompts'/(prompt_id+'.result')
             s['prompt']=json.loads(result.read_text()) if result.exists() else {'id':prompt_id,'status':'QUEUED','text':''}
             s['prompt']['text']=s['prompt'].get('text','')[-32768:]
-    terminal=state/'terminal-status.json'
+    terminal=client_state()/'terminal-status.json' if p.get('client_id') else state/'terminal-status.json'
     if terminal.exists():s['terminal']=json.loads(terminal.read_text())
     owner=state/'owner.json'
     s['owner']=json.loads(owner.read_text()) if owner.exists() else {}
     descriptor=state/'session.json'
     if descriptor.exists():s['session']=json.loads(descriptor.read_text())
+    attached=client_state()/'attachment.json' if p.get('client_id') else state/'attachment.json'
+    s['attachment']=json.loads(attached.read_text()) if attached.exists() else {}
+    registry=state/'rags.json'
+    s['remote_rags']=json.loads(registry.read_text()) if registry.exists() else {}
     s['log_path']=str(state/'model.log')
     return s
 
@@ -149,6 +159,41 @@ def require_owner():
     if owner and owner.get('id')!=p.get('client_id'):
         raise ValueError('Session allocated on '+owner.get('label','another machine')+'; acknowledge takeover first')
     return owner
+
+def attach():
+    current=status()
+    if not current.get('active') or current.get('model_state') not in ('STARTING','LOADING','LOADED','READY'):
+        raise ValueError('No running model to attach to')
+    if not p.get('expected_generation') or p['expected_generation']!=current.get('generation'):
+        raise ValueError('Session changed; refresh before attaching')
+    target=client_state();target.mkdir(parents=True,exist_ok=True,mode=0o700)
+    write(target/'attachment.json',json.dumps({'generation':current['generation']}))
+    return status()
+
+
+def require_attachment():
+    current=status()
+    if current.get('active') and current.get('model_state') in ('STARTING','LOADING','LOADED','READY'):
+        if current.get('owner',{}).get('id')==p.get('client_id'):return
+        if current.get('attachment',{}).get('generation')==current.get('generation'):return
+    raise ValueError('Session changed; attach to the running model first')
+
+
+def register_rag():
+    config=dict(p['rag_config'])
+    if config.get('compute')!='remote' or config.get('paths_location') not in ('remote','shared'):
+        raise ValueError('Only remote RAG compute with remote or shared paths can be shared')
+    if not config.get('paths') or not all(isinstance(path,str) and path.startswith('/') for path in config['paths']):
+        raise ValueError('Shared RAG requires absolute remote paths')
+    # The model is currently fixed by the RAG runtime; retain it in discovery metadata.
+    config={key:config[key] for key in ('paths','threads','memory_gb','gpu','compute','paths_location') if key in config}
+    config['embedding_model']='BAAI/bge-small-en-v1.5'
+    key=hashlib.sha256(json.dumps(config,sort_keys=True).encode()).hexdigest()[:24]
+    registry=state/'rags.json'
+    saved=json.loads(registry.read_text()) if registry.exists() else {}
+    saved[key]=config;write(registry,json.dumps(saved))
+    return {'id':key,'config':config}
+
 
 def claim():
     current=status()
@@ -282,11 +327,14 @@ lock_dir=state.parent/'.locks'
 lock_dir.mkdir(mode=0o700,exist_ok=True)
 with open(lock_dir/(token+'.lock'),'a') as lock:
     fcntl.flock(lock,fcntl.LOCK_EX)
-    if action not in ('status','reserve','claim','log','agent-info','cleanup-preview'):
+    if action in ('rag-register','terminal-start','terminal-send','terminal-stop'):require_attachment()
+    elif action not in ('status','reserve','claim','attach','log','agent-info','cleanup-preview'):
         require_owner()
     if meta.exists() and not (state/'session.json').exists() and action in ('status','reserve'):
         save_descriptor()
-    if action=='claim':result=claim()
+    if action=='attach':result=attach()
+    elif action=='rag-register':result=register_rag()
+    elif action=='claim':result=claim()
     elif action=='cleanup' and not any(state.iterdir()):
         # An earlier cleanup may have removed its metadata before NFS released
         # the old in-directory lock. Empty directories need no further proof.
@@ -312,7 +360,7 @@ with open(lock_dir/(token+'.lock'),'a') as lock:
         result={'released':True}
     elif action=='terminal-start':
         ready=json.loads((state/'prompt-worker.ready').read_text())
-        if not isinstance(ready,dict) or ready.get('version',0)<3 or not ready.get('tmux'):
+        if not isinstance(ready,dict) or ready.get('version',0)<4 or not ready.get('tmux'):
             raise ValueError('Install tmux and start an allocation using the updated terminal worker')
         current=status()
         if not current['active'] or current.get('model_state') not in ('LOADING','LOADED'):raise ValueError('Load a model first')
@@ -321,16 +369,20 @@ with open(lock_dir/(token+'.lock'),'a') as lock:
         if spec.get('cli') not in ready.get('clis',[]):raise ValueError('Selected CLI unavailable on compute host')
         # The terminal worker receives the backend identity so resource-bound
         # features can refuse to run on a login/control host by mistake.
-        spec.update(token=token,port=int(p['port']),allocation_kind=kind)
-        write(state/'terminal-status.json',json.dumps({'status':'STARTING'}))
-        write(state/'terminal-launch.json',json.dumps(spec))
+        target=client_state();target.mkdir(parents=True,exist_ok=True,mode=0o700)
+        spec.update(token=token,terminal_id=token+'-'+target.name,port=int(p['port']),allocation_kind=kind)
+        write(target/'terminal-status.json',json.dumps({'status':'STARTING'}))
+        write(target/'terminal-launch.json',json.dumps(spec))
         result={'starting':True}
+    elif action=='terminal-stop':
+        target=client_state();target.mkdir(parents=True,exist_ok=True,mode=0o700)
+        write(target/'terminal-stop','1');result={'stopping':True}
     elif action=='terminal-send':
         if status().get('terminal',{}).get('status')!='TERMINAL':raise ValueError('Open the agent terminal first')
-        if (state/'terminal-prompt.json').exists():raise ValueError('Previous prompt is still being delivered')
+        if (client_state()/'terminal-prompt.json').exists():raise ValueError('Previous prompt is still being delivered')
         text=p.get('prompt','').strip()
         if not text or len(text)>100000:raise ValueError('Prompt must contain 1–100000 characters')
-        write(state/'terminal-prompt.json',json.dumps({'prompt':text}));result={'queued':True}
+        write(client_state()/'terminal-prompt.json',json.dumps({'prompt':text}));result={'queued':True}
     elif action=='agent-info':
         ready=state/'prompt-worker.ready'
         result=json.loads(ready.read_text()) if ready.exists() else {}

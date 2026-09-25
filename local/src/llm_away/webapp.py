@@ -122,7 +122,7 @@ def model_options(number):
     rag=selection.get('rag_config') or {}
     from .model_preferences import read
     preferences=read(cfg)
-    return {'preferences':preferences,'container_path':preferences.get('_container_path',cfg.llamacpp.container),
+    return {'remote_rags':allocation.get('remote_rags',{}),'preferences':preferences,'container_path':preferences.get('_container_path',cfg.llamacpp.container),
             'build_mode':'container' if cfg.llamacpp.container else 'native','native':False,'models':public,'current':data.get('model') or cfg.llamacpp.model_name,'loaded':loaded,
             'remote_owner':owner.get('label','') if foreign else '',
             'expected_owner':owner.get('id',''),'expected_generation':allocation.get('generation',''),
@@ -157,13 +157,15 @@ def load_browser_model(number, settings):
     attach=bool(settings.get('attach_existing'))
     if foreign and not (settings.get('replace_loaded') or attach):
         raise ValueError('Session is allocated on another machine; acknowledge replacement or attach to its model')
-    if foreign or attach:
+    if attach:
+        allocation=shared_sessions.attach(path,settings.get('expected_generation',''))
+    elif foreign:
         allocation=shared_sessions.claim(path,settings.get('expected_owner',''),settings.get('expected_generation',''))
     loaded=allocation.get('model_state') in ('STARTING','LOADING','LOADED','READY','RUNNING')
     if attach:
         if not loaded or not allocation.get('session'):raise ValueError('No running model to attach to')
         live=data.get('provider_identity') and resources.identity(data.get('provider_pid'))==data['provider_identity']
-        if not live:resources.rpc(path,'adopt-config')
+        if not live:resources.rpc(path,'adopt-config',expected_generation=allocation['generation'])
         shared=allocation['session']
         settings=dict(settings,model=shared['llamacpp']['model_name'] or shared['model']['name'],
                       mtp=shared['llamacpp']['mtp'],server_options=shlex.join(shared['llamacpp']['server_extra_args']))
@@ -171,6 +173,13 @@ def load_browser_model(number, settings):
         if loaded and not settings.get('replace_loaded'):
             raise ValueError('A model is already loaded; acknowledge replacement before starting another configuration')
         if loaded:resources.rpc(path,'stop')
+    selected_rag=settings.get('remote_rag_id')
+    if selected_rag:
+        saved=(allocation.get('remote_rags') or {}).get(selected_rag)
+        if not saved:raise ValueError('Remote RAG configuration changed; refresh the attachment dialog')
+        settings=dict(settings,rag=os.pathsep.join(saved['paths']),rag_compute='remote',
+                      rag_paths_location='remote',rag_threads=saved.get('threads',2),
+                      rag_memory_gb=saved.get('memory_gb',0),rag_gpu='yes' if saved.get('gpu') else 'no')
     extra=shlex.split(str(settings.get('server_options','')))
     rag=[item.strip() for item in str(settings.get('rag','')).split(os.pathsep) if item.strip()]
     rag_threads=max(1,int(settings.get('rag_threads') or 2))
@@ -183,6 +192,7 @@ def load_browser_model(number, settings):
         agent_location=settings.get('agent_location','local'),cli=settings.get('cli') or 'auto',
         agent_workdir=settings.get('agent_workdir') or None,agent_args=[],resume=True,detach=True)
     args.container=container
+    args.reconfigure_agent=attach
     resources.run_agent(args)
     if data.get('config'):
         from .model_preferences import save

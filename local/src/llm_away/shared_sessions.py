@@ -128,6 +128,18 @@ def current(path):
     return r.remote(r.config(data['config']),data['token'],data['remote_port'],'status')
 
 
+def attach(path,expected_generation):
+    from . import resources as r
+    data=json.loads((path/'session.json').read_text())
+    return r.remote(r.config(data['config']),data['token'],data['remote_port'],'attach',
+                    expected_generation=expected_generation)
+
+
+def client_key():
+    import hashlib
+    return hashlib.sha256(client_identity().encode()).hexdigest()[:16]
+
+
 def claim(path,expected_owner,expected_generation):
     from . import resources as r
     data=json.loads((path/'session.json').read_text());cfg=r.config(data['config'])

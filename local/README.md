@@ -468,3 +468,21 @@ host is probed at its configured remote directory, then
 unreachable hosts are reported while discovery continues elsewhere. Discovery
 requires the updated `remote/bin/resource-control` on participating hosts and
 uses the configured remote state directory for saved profiles.
+
+### Sharing a model and RAG between machines
+
+Discover the remote allocation on the second machine, then choose **Attach to loaded model**.
+This opens that machine's terminal without transferring model ownership or reloading the model.
+Each terminal keeps its own local RAG sources, embedding process, and settings. Changing RAG
+through this button restarts only the current machine's agent terminal; the model remains loaded.
+
+For reusable remote RAG, select remote compute and remote/shared source paths. Once its terminal
+starts preparing RAG, the configuration appears in **RAG configuration** for either machine
+(reopen the attachment dialog to refresh). Both clients use the same remote embedding-model
+cache and persistent vector index; each terminal has its own MCP process. Local source snapshots
+are private to the originating client and are not advertised as shared RAG.
+
+Update the checkout on both clients and the remote host. Concurrent agents running on the
+remote host require terminal worker version 4 (new allocations use it); local agents can attach
+to an existing loaded allocation after updating the remote control script. Model replacement
+still requires explicit takeover and disconnects attachments to the previous model generation.

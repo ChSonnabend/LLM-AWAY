@@ -69,32 +69,36 @@ def execute(state, request_path):
 
 def main(state):
     queue = state/'prompts';queue.mkdir(exist_ok=True)
-    (state/'prompt-worker.ready').write_text(json.dumps({'version':3,'tmux':bool(shutil.which('tmux')),'clis':[name for name in ('codex','claude') if shutil.which(name)]}))
+    (state/'prompt-worker.ready').write_text(json.dumps({'version':4,'tmux':bool(shutil.which('tmux')),'clis':[name for name in ('codex','claude') if shutil.which(name)]}))
     signal.signal(signal.SIGTERM,lambda *args:sys.exit('Worker stopped'))
     terminal=runpy.run_path(str(Path(__file__).with_name('resource-terminal')))
     try:
         while not (state/'release').exists():
-            launch=state/'terminal-launch.json'
-            if launch.exists():
-                try:
-                    spec=json.loads(launch.read_text());spec['base_url']='http://127.0.0.1:'+str(spec['port'])
-                    terminal['start'](state,spec)
-                except Exception as exc:save(state/'terminal-status.json',{'status':'FAILED','error':str(exc)})
-                launch.unlink()
-            if (state/'terminal.json').exists():
-                try:
-                    message=state/'terminal-prompt.json'
-                    if message.exists():
-                        terminal['send'](state,json.loads(message.read_text())['prompt']);message.unlink()
-                    save(state/'terminal-status.json',terminal['capture'](state))
-                except Exception as exc:save(state/'terminal-status.json',{'status':'FAILED','error':str(exc)})
+            for target in [state,*sorted((state/'clients').glob('*'))]:
+                stop=target/'terminal-stop'
+                if stop.exists():
+                    terminal['stop'](target);stop.unlink()
+                launch=target/'terminal-launch.json'
+                if launch.exists():
+                    try:
+                        spec=json.loads(launch.read_text());spec['base_url']='http://127.0.0.1:'+str(spec['port'])
+                        terminal['start'](target,spec)
+                    except Exception as exc:save(target/'terminal-status.json',{'status':'FAILED','error':str(exc)})
+                    launch.unlink()
+                if (target/'terminal.json').exists():
+                    try:
+                        message=target/'terminal-prompt.json'
+                        if message.exists():
+                            terminal['send'](target,json.loads(message.read_text())['prompt']);message.unlink()
+                        save(target/'terminal-status.json',terminal['capture'](target))
+                    except Exception as exc:save(target/'terminal-status.json',{'status':'FAILED','error':str(exc)})
             for request in sorted(queue.glob('*.json')):
                 result = request.with_suffix('.result')
                 if result.exists():continue
                 execute(state,request)
             time.sleep(0.5)
     finally:
-        terminal['stop'](state)
+        for target in [state,*sorted((state/'clients').glob('*'))]:terminal['stop'](target)
         try:(state/'prompt-worker.ready').unlink()
         except FileNotFoundError:pass
 

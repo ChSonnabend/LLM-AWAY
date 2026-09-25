@@ -62,11 +62,29 @@ class LoadingTests(unittest.TestCase):
             with patch.object(loading,'urlopen',return_value=response), \
                  patch.object(resources,'identity',return_value='live'), \
                  patch.object(resources,'rpc',return_value=status), \
+                 patch.object(resources,'remote') as remote, \
                  patch('llm_away.terminals.remote_rag_command',return_value=['ssh','remote-rag']) as bridge:
                 self.assertFalse(loading.prepare(path,spec))
             self.assertEqual(spec['rag_command'],['ssh','remote-rag'])
+            self.assertEqual(remote.call_args.args[3],'rag-register')
             bridge.assert_called_once_with(cfg,status['allocation'],
                                            {'paths':['/remote/project'],'threads':4,'memory_gb':8,'gpu':False},'test')
+
+    def test_local_rag_stays_local_when_reusing_a_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp);cfg=AppConfig()
+            (path/'session.json').write_text(json.dumps({'token':'test','remote_port':1}))
+            spec={'loading':{'config':asdict(cfg),'model':{'alias':'test'},'reuse':True,'mtp':'off'},
+                  'target_location':'local','rag_config':{'paths':['/local/project'],'compute':'local','paths_location':'local'}}
+            response=MagicMock();response.__enter__.return_value.status=200
+            with patch.object(loading,'urlopen',return_value=response),patch.object(resources,'identity',return_value='live'), \
+                 patch.object(resources,'rpc',return_value={'allocation':{}}),patch.object(resources,'remote') as remote, \
+                 patch('llm_away.rag.prepare',return_value=['python','local-rag']) as prepare:
+                self.assertFalse(loading.prepare(path,spec))
+            remote.assert_not_called()
+            self.assertIsNone(spec['rag_config'])
+            self.assertEqual(spec['rag_command'],['python','local-rag'])
+            self.assertEqual(prepare.call_args.args[0],['/local/project'])
 
     def test_failed_backend_cleans_loading_attachment(self):
         with tempfile.TemporaryDirectory() as tmp:

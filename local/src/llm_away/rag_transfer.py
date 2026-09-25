@@ -8,7 +8,8 @@ import subprocess
 
 def remote_state(cfg,token):
     base=cfg.remote.resource_state_dir or (cfg.remote.workdir+'/.state')
-    return base.rstrip('/')+'/resources/'+token+'/rag-snapshot'
+    from .shared_sessions import client_key
+    return base.rstrip('/')+'/resources/'+token+'/clients/'+client_key()+'/rag-snapshot'
 
 
 def ssh_prefix(cfg):

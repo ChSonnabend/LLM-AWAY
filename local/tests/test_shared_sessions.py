@@ -43,10 +43,79 @@ class RemoteOwnershipTests(unittest.TestCase):
         self.call('claim',client='two',expected_owner='one',expected_generation=generation)
         self.assertEqual(self.call('start',client='two')['generation'],generation)
         self.assertEqual((self.state/'desired').read_text(),generation)
-        for action in ('start','stop','release','terminal-start','prompt'):
+        for action in ('start','stop','release','prompt'):
             self.assertIn('acknowledge',self.call(action,client='one',ok=False))
         self.call('stop',client='two')
         self.assertNotEqual((self.state/'desired').read_text(),generation)
+
+    def test_shared_attachment_preserves_owner_and_registers_remote_rag(self):
+        generation=self.call('start')['generation']
+        self.call('attach',client='two',expected_generation=generation)
+        self.assertEqual(self.call('status')['owner']['id'],'one')
+        self.assertEqual((self.state/'desired').read_text(),generation)
+        config={'paths':['/remote/project'],'threads':4,'compute':'remote','paths_location':'remote'}
+        registered=self.call('rag-register',client='two',rag_config=config)
+        self.assertEqual(self.call('status',client='one')['remote_rags'][registered['id']]['paths'],config['paths'])
+        self.assertEqual(self.call('rag-register',client='one',rag_config=config)['id'],registered['id'])
+        self.assertIn('Only remote RAG',self.call('rag-register',client='two',rag_config=dict(config,compute='local'),ok=False))
+        self.assertIn('acknowledge',self.call('stop',client='two',ok=False))
+        self.call('stop')
+        self.assertIn('Session changed',self.call('rag-register',client='two',rag_config=config,ok=False))
+        self.assertIn('No running model',self.call('attach',client='two',expected_generation=generation,ok=False))
+
+    def test_remote_terminal_and_logs_are_private_to_each_client(self):
+        import hashlib
+        generation=self.call('start')['generation']
+        (self.state/'worker.state').write_text(generation+' LOADED host')
+        (self.state/'prompt-worker.ready').write_text(json.dumps({'version':4,'tmux':True,'clis':['codex']}))
+        self.call('attach',client='two',expected_generation=generation)
+        terminal_ids=[]
+        for client in ('one','two'):
+            self.call('terminal-start',client=client,spec={'cli':'codex'})
+            target=self.state/'clients'/hashlib.sha256(client.encode()).hexdigest()[:16]
+            terminal_ids.append(json.loads((target/'terminal-launch.json').read_text())['terminal_id'])
+            (target/'terminal-status.json').write_text(json.dumps({'status':'TERMINAL','text':client}))
+            (target/'rag.log').write_text(client+' RAG')
+        self.assertEqual(len(set(terminal_ids)),2)
+        for client in ('one','two'):
+            status=self.call('status',client=client)
+            self.assertEqual(status['terminal']['text'],client)
+            self.assertEqual(status['rag_log'],client+' RAG')
+        self.call('terminal-stop',client='two')
+        one=self.state/'clients'/hashlib.sha256(b'one').hexdigest()[:16]
+        self.assertFalse((one/'terminal-stop').exists())
+
+    def test_two_remote_agents_survive_independent_rag_reconfiguration(self):
+        import os
+        cli=self.root/'codex'
+        cli.write_text('#!/usr/bin/env python3\nimport sys\nprint("READY",flush=True)\nfor line in sys.stdin: print("RECEIVED:"+line.strip(),flush=True)\n')
+        cli.chmod(0o755)
+        generation=self.call('start')['generation']
+        (self.state/'worker.state').write_text(generation+' LOADED host')
+        self.call('attach',client='two',expected_generation=generation)
+        env=dict(os.environ,PATH=str(self.root)+os.pathsep+os.environ['PATH'])
+        worker=subprocess.Popen([sys.executable,str(CONTROL.with_name('resource-prompts')),str(self.state)],
+                                env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        def wait_for(check):
+            deadline=time.monotonic()+8
+            while time.monotonic()<deadline:
+                if check():return
+                time.sleep(.1)
+            self.fail('Terminal worker did not reach expected state')
+        try:
+            wait_for(lambda:(self.state/'prompt-worker.ready').exists())
+            for client in ('one','two'):
+                self.call('terminal-start',client=client,spec={'cli':'codex','model':'test','cwd':str(self.root)})
+                wait_for(lambda:'READY' in self.call('status',client=client).get('terminal',{}).get('text',''))
+                self.call('terminal-send',client=client,prompt='hello '+client)
+                wait_for(lambda:'RECEIVED:hello '+client in self.call('status',client=client)['terminal']['text'])
+            self.call('terminal-stop',client='two')
+            wait_for(lambda:self.call('status',client='two')['terminal']['status']=='EXITED')
+            self.assertEqual(self.call('status',client='one')['terminal']['status'],'TERMINAL')
+            self.assertNotIn('hello two',self.call('status',client='one')['terminal']['text'])
+            self.assertEqual((self.state/'desired').read_text(),generation)
+        finally:
+            worker.terminate();worker.communicate(timeout=10)
 
     def test_release_requires_explicit_intent_and_is_audited(self):
         self.call('start')
@@ -110,6 +179,13 @@ class StartupTests(unittest.TestCase):
             backend.ensure_ready('test')
         wait.assert_called_once_with(2)
 
+    def test_attached_provider_never_tries_to_restart_the_model(self):
+        backend=resources.ResourceBackend(AppConfig(),'token',1);backend.attachment_generation='generation'
+        with patch.object(resources,'remote',return_value={}) as remote:
+            backend.serverctl('ensure','test')
+        self.assertEqual(remote.call_args.args[3],'attach')
+        self.assertEqual(remote.call_args.kwargs,{'expected_generation':'generation'})
+
     def test_backend_accepts_remote_ready_state(self):
         backend=resources.ResourceBackend(AppConfig(),'token',1)
         state={'active':True,'host':'node','model_state':'READY'}
@@ -126,14 +202,15 @@ class BrowserOwnershipTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'another machine'):webapp.load_browser_model(1,{})
                 claim.assert_not_called()
 
-    def test_attach_transfers_ownership_without_stopping_model(self):
+    def test_attach_shares_model_without_transferring_ownership(self):
         from llm_away import webapp
         shared=asdict(AppConfig())
         allocation={'owner':{'id':'other'},'model_state':'LOADED','generation':'generation','session':shared}
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp);(path/'session.json').write_text('{}')
-            with patch.object(webapp,'session_path',return_value=path),patch.object(shared_sessions,'ensure_daemon'),patch.object(shared_sessions,'current',return_value=allocation),patch.object(shared_sessions,'client_identity',return_value='me'),patch.object(shared_sessions,'claim',return_value=allocation) as claim,patch.object(resources,'rpc') as rpc,patch.object(resources,'run_agent') as run:
+            with patch.object(webapp,'session_path',return_value=path),patch.object(shared_sessions,'ensure_daemon'),patch.object(shared_sessions,'current',return_value=allocation),patch.object(shared_sessions,'client_identity',return_value='me'),patch.object(shared_sessions,'attach',return_value=allocation) as attach,patch.object(shared_sessions,'claim') as claim,patch.object(resources,'rpc') as rpc,patch.object(resources,'run_agent') as run:
                 webapp.load_browser_model(1,{'attach_existing':True,'expected_owner':'other','expected_generation':'generation'})
-                claim.assert_called_once_with(path,'other','generation')
-                rpc.assert_called_once_with(path,'adopt-config')
+                attach.assert_called_once_with(path,'generation')
+                claim.assert_not_called()
+                rpc.assert_called_once_with(path,'adopt-config',expected_generation='generation')
                 self.assertEqual(run.call_args.args[0].model,shared['llamacpp']['model_name'] or shared['model']['name'])

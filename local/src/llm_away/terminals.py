@@ -12,7 +12,8 @@ def remote_rag_command(cfg,allocation,rag_config,token):
     """Return a local stdio command whose RAG process runs in the allocation."""
     script=cfg.remote.workdir+'/bin/resource-terminal'
     base=cfg.remote.resource_state_dir or (cfg.remote.workdir+'/.state')
-    rag_log=base.rstrip('/')+'/resources/'+token+'/rag.log'
+    from .shared_sessions import client_key
+    rag_log=base.rstrip('/')+'/resources/'+token+'/clients/'+client_key()+'/rag.log'
     spec=json.dumps({'allocation_kind':cfg.backend_type,'rag_config':rag_config,
                      'rag_log_path':rag_log},separators=(',',':'))
     if cfg.backend_type=='slurm_server':
@@ -49,7 +50,8 @@ def allocation_command(cfg,allocation,command):
 def local_rag_for_remote_agent(path,data,cfg,allocation,rag_command):
     """Keep RAG local and expose its stdio to an agent inside the allocation."""
     state_base=cfg.remote.resource_state_dir or (cfg.remote.workdir+'/.state')
-    socket_path=state_base.rstrip('/')+'/resources/'+data['token']+'/rag.sock'
+    from .shared_sessions import client_key
+    socket_path=state_base.rstrip('/')+'/resources/'+data['token']+'/rag-'+client_key()+'.sock'
     script=cfg.remote.workdir+'/bin/resource-terminal'
     server=allocation_command(cfg,allocation,[script,'rag-socket-server',socket_path])
     log=(Path(path)/'rag-bridge.log').open('a')
@@ -100,7 +102,9 @@ def attach(path,data,selection):
         e['configure'](path)
         return subprocess.call(e['tmux'](path)+['attach-session','-t',e['name'](path)])
     cfg=config(data['config']);a=remote(cfg,data['token'],data['remote_port'],'status')
-    command=['tmux','-L','llm-away-'+data['token'],'attach-session','-t','away-'+data['token']]
+    from .shared_sessions import client_key
+    terminal_id=data['token']+'-'+client_key()
+    command=['tmux','-L','llm-away-'+terminal_id,'attach-session','-t','away-'+terminal_id]
     if cfg.backend_type=='slurm_server':
         command=['srun','--jobid='+str(a['job_id']),'--overlap','--nodes=1','--ntasks=1','--pty',*command]
     elif cfg.backend_type=='kubernetes':

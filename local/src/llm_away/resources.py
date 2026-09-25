@@ -138,8 +138,10 @@ def rpc_alive(path):
 
 class ResourceBackend(SlurmServerBackend):
     def __init__(self,cfg,token,port):
-        super().__init__(cfg);self.token=token;self.port=port
+        super().__init__(cfg);self.token=token;self.port=port;self.attachment_generation=None
     def serverctl(self,command,model,extra=None):
+        if command=='ensure' and self.attachment_generation:
+            return remote(self.config,self.token,self.port,'attach',expected_generation=self.attachment_generation)
         return remote(self.config,self.token,self.port,{'ensure':'start','cancel':'stop'}.get(command,command),**(extra or {}))
     def ensure_ready(self,model):
         with self._ready_lock:
@@ -192,6 +194,7 @@ def provider(path):
     os.environ['LLM_TOOL_ERROR_DIR']=str(path/'tool-errors')
     os.environ['LLM_SESSION_DIR']=str(path)
     backend=ResourceBackend(cfg,data['token'],data['remote_port'])
+    backend.attachment_generation=data.get('attachment_generation')
     def stop(sig,frame):
         backend.close();raise SystemExit(0)
     signal.signal(signal.SIGTERM,stop)
@@ -344,13 +347,13 @@ def daemon(path):
                         if action=='status': answer=data
                         elif action=='adopt-config':
                             if child is not None and child.poll() is None:raise ValueError('Stop the local provider before attaching')
-                            latest=remote(cfg,token,port,'status')
+                            latest=remote(cfg,token,port,'attach',expected_generation=request['expected_generation'])
                             shared=latest.get('session') or {}
                             if not shared:raise ValueError('Remote model configuration is unavailable')
                             from .terminals import engine
                             engine()['stop'](path)
                             merged=asdict(cfg);merged.update(shared);cfg=config(merged)
-                            state(config=asdict(cfg),allocation=latest,model=cfg.model.name,provider_exit=None)
+                            state(config=asdict(cfg),allocation=latest,model=cfg.model.name,provider_exit=None,attachment_generation=latest['generation'])
                             child=subprocess.Popen([sys.executable,'-m','llm_away.resources','provider',str(path)],stdin=subprocess.DEVNULL)
                             state(provider_pid=child.pid,provider_identity=identity(child.pid))
                             answer={'ok':True}
@@ -369,7 +372,7 @@ def daemon(path):
                                 request=dict(request);request['mtp']='off'
                                 cfg=replace(cfg,llamacpp=replace(cfg.llamacpp,mtp='off'))
                             allocation=remote(cfg,token,port,'start')
-                            state(allocation=allocation,config=asdict(cfg),model=cfg.model.name,provider_exit=None,client_pid=request.get('client_pid'),client_identity=identity(request.get('client_pid')))
+                            state(allocation=allocation,config=asdict(cfg),model=cfg.model.name,attachment_generation=None,provider_exit=None,client_pid=request.get('client_pid'),client_identity=identity(request.get('client_pid')))
                             child=subprocess.Popen([sys.executable,'-m','llm_away.resources','provider',str(path)],stdin=subprocess.DEVNULL)
                             state(provider_pid=child.pid,provider_identity=identity(child.pid))
                             answer={'port':cfg.server.port}
@@ -393,7 +396,9 @@ def daemon(path):
                     offset=new_offset
                     from .shared_sessions import client_identity
                     owner=(s.get('owner') or {}).get('id')
-                    if owner and owner!=client_identity() and child is not None:
+                    attached=(s.get('attachment') or {}).get('generation')==s.get('generation') and bool(s.get('generation'))
+                    changed=data.get('attachment_generation') and data['attachment_generation']!=s.get('generation')
+                    if (changed or (owner and owner!=client_identity() and not attached)) and child is not None:
                         # A new owner fences this client. Never stop its remote model.
                         from .terminals import engine
                         engine()['stop'](path)
@@ -411,7 +416,10 @@ def daemon(path):
                     summary=(s['slurm_state'],s.get('model_state'),s.get('host'))
                     if summary!=last:print('Resource state:',summary,flush=True);last=summary
                     if new_logs:print(new_logs,end='',flush=True)
-                    if 'rag_log' in s:(path/'rag.log').write_text(s['rag_log'])
+                    if 'rag_log' in s:
+                        try:rag_settings=json.loads((path/'agent-selection.json').read_text()).get('rag_config') or {}
+                        except (OSError,ValueError):rag_settings={}
+                        if rag_settings.get('compute')=='remote':(path/'rag.log').write_text(s['rag_log'])
                     if allocation_ended(cfg,s):
                         cleanup_ended_allocation(path,data)
                         print('Allocation ended; local processes cleaned up. History retained.',flush=True)
@@ -520,6 +528,11 @@ def run_agent(args):
         data=json.loads((path/'session.json').read_text())
         existing=(terminals.engine()['alive'](path) if selection.get('location')=='local' else
                   remote(config(data['config']),data['token'],data['remote_port'],'status').get('terminal',{}).get('status')=='TERMINAL')
+        if existing and getattr(args,'reconfigure_agent',False):
+            if selection.get('target_location')=='remote':
+                remote(config(data['config']),data['token'],data['remote_port'],'terminal-stop')
+            terminals.engine()['stop'](path)
+            existing=False
         if existing:
             if helper:
                 if args.model and args.model!=data.get('model'):raise ValueError('Exit the agent before switching its model')

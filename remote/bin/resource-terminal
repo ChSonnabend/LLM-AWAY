@@ -30,7 +30,8 @@ def tmux(state=None):
 
 
 def name(state):
-    return 'away-'+json.loads((Path(state)/'terminal.json').read_text())['token']
+    spec=json.loads((Path(state)/'terminal.json').read_text())
+    return 'away-'+spec.get('terminal_id',spec['token'])
 
 
 def alive(state):
@@ -105,6 +106,7 @@ def capture(state):
 
 
 def stop(state):
+    for child in (Path(state)/'clients').glob('*'):stop(child)
     if alive(state):subprocess.check_call(tmux(state)+['kill-session','-t',name(state)])
     bridge=Path(state)/'rag-bridge.json'
     if bridge.exists():

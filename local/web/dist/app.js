@@ -453,6 +453,18 @@ async function modelDialog() {
     const ragGpu = selectControl(['no', 'yes'], data.rag_gpu ? 'yes' : 'no');
     const ragCompute = selectControl(['local', 'remote'], data.rag_compute || data.agent_location || 'local');
     const ragPathsLocation = selectControl([{value: 'local', label: 'Local paths'}, {value: 'remote', label: 'Remote paths'}, {value: 'shared', label: 'Shared: local = remote'}], data.rag_paths_location || data.agent_location || 'local');
+    const remoteRag = selectControl([{value:'',label:'This machine’s RAG settings'}, ...Object.entries(data.remote_rags || {}).map(([id,config]) => ({value:id,label:config.paths.join(', ')}))], '');
+    const remoteRagField = field('RAG configuration',remoteRag,'Local RAG belongs to this terminal. Remote RAG sources and indexes can be reused by either machine.',true);
+    grid.append(remoteRagField);
+    remoteRag.addEventListener('change', () => {
+      const saved = data.remote_rags?.[remoteRag.value];
+      if (saved) {
+        rag.value = saved.paths.join(':'); ragCompute.value = 'remote'; ragPathsLocation.value = 'remote';
+        ragThreads.value = saved.threads || 2; ragMemory.value = saved.memory_gb || 0; ragGpu.value = saved.gpu ? 'yes' : 'no';
+      } else applyModelDefaults(true);
+      for (const control of [rag,ragCompute,ragPathsLocation,ragThreads,ragMemory,ragGpu]) control.disabled = Boolean(saved);
+      updateRagPaths();
+    });
     const server = inputControl(data.server_options_by_model?.[model.value] || '');
     const build = selectControl([{value:'native',label:'Native llama.cpp build'},{value:'container',label:'Container'}],data.build_mode || 'native');
     const containerPath = inputControl(data.container_path || '');
@@ -495,22 +507,22 @@ async function modelDialog() {
     if (data.loaded || data.remote_owner) {
       const warning = node('label', 'replace-warning');
       replaceLoaded = document.createElement('input'); replaceLoaded.type = 'checkbox';
-      warning.append(replaceLoaded, node('span', '', data.remote_owner ? `This session is allocated on ${data.remote_owner}. Acknowledge to release its model and start the new model and terminal on this machine.` : 'A model is already loaded. Stop it and replace its model, flags, agent settings, and RAG configuration.'));
+      warning.append(replaceLoaded, node('span', '', data.remote_owner ? `This session is allocated on ${data.remote_owner}. Acknowledge to release its model and start the new model and terminal on this machine.` : 'A model is already loaded. Stop it and replace the model and flags for all attached machines. To change only this terminal’s RAG, use Attach to loaded model.'));
       form.append(warning);
     }
     const actions = node('div', 'form-actions');
     const attach = node('button', '', 'Attach existing terminal'); attach.type = 'button'; attach.addEventListener('click', () => terminalWindow(`Session ${sessionId}`, `run --session ${sessionId} --resume\n`));
     const submit = node('button', 'primary', 'Load and start'); submit.type = 'submit';
     if (data.can_attach) {
-      const reuse = node('button', '', data.remote_owner ? 'Take over and reuse loaded model' : 'Reuse loaded model'); reuse.type = 'button';
-      reuse.onclick = () => runOperation(`Attach session ${sessionId}`, 'Taking ownership and connecting to the existing model without reloading it…', '/api/load', {session:sessionId,settings:{attach_existing:true,expected_owner:data.expected_owner,expected_generation:data.expected_generation,agent_location:location.value,cli:cli.value,agent_workdir:workdir.value,rag:rag.value,rag_compute:ragCompute.value,rag_paths_location:ragPathsLocation.value}}, true);
+      const reuse = node('button', '', 'Attach to loaded model'); reuse.type = 'button';
+      reuse.onclick = () => runOperation(`Attach session ${sessionId}`, 'Connecting to the shared model and preparing this machine’s terminal and RAG…', '/api/load', {session:sessionId,settings:{attach_existing:true,expected_owner:data.expected_owner,expected_generation:data.expected_generation,agent_location:location.value,cli:cli.value,agent_workdir:workdir.value,rag:rag.value,rag_compute:ragCompute.value,rag_paths_location:ragPathsLocation.value,rag_threads:ragThreads.value,rag_memory_gb:ragMemory.value,rag_gpu:ragGpu.value,remote_rag_id:remoteRag.value}}, true);
       actions.append(reuse);
     }
     actions.append(attach, submit); form.append(actions);
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (replaceLoaded && !replaceLoaded.checked) { notice('Acknowledge model replacement before loading the new configuration.', true); return; }
-      runOperation(`Start session ${sessionId}`, 'Loading the model and preparing the retained agent terminal…', '/api/load', {session: sessionId, settings: {build_mode:build.value, container_path:containerPath.value, model: model.value, mtp: mtp.value, agent_location: location.value, cli: cli.value, agent_workdir: workdir.value, rag: rag.value, rag_compute: ragCompute.value, rag_paths_location: ragPathsLocation.value, rag_threads: ragThreads.value, rag_memory_gb: ragMemory.value, rag_gpu: ragGpu.value, replace_loaded: Boolean(replaceLoaded?.checked), expected_owner: data.expected_owner, expected_generation:data.expected_generation, server_options: server.value}}, true);
+      runOperation(`Start session ${sessionId}`, 'Loading the model and preparing the retained agent terminal…', '/api/load', {session: sessionId, settings: {build_mode:build.value, container_path:containerPath.value, model: model.value, mtp: mtp.value, agent_location: location.value, cli: cli.value, agent_workdir: workdir.value, rag: rag.value, rag_compute: ragCompute.value, rag_paths_location: ragPathsLocation.value, rag_threads: ragThreads.value, rag_memory_gb: ragMemory.value, rag_gpu: ragGpu.value, remote_rag_id:remoteRag.value, replace_loaded: Boolean(replaceLoaded?.checked), expected_owner: data.expected_owner, expected_generation:data.expected_generation, server_options: server.value}}, true);
     });
     openDialog(`Attach session ${sessionId}`, form);
   } catch (error) {
