@@ -427,6 +427,8 @@ def daemon(path):
                         from .shared_sessions import direct_profile
                         cfg=direct_profile(cfg,dict(s,session={'backend_type':'direct'}))
                         state(config=asdict(cfg),host=cfg.ssh.destination)
+                    if s.get('model_state')=='TRAINING' and child is not None:
+                        stop_model(local_only=True)
                     from .shared_sessions import client_identity
                     owner=(s.get('owner') or {}).get('id')
                     attached=(s.get('attachment') or {}).get('generation')==s.get('generation') and bool(s.get('generation'))

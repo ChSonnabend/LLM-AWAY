@@ -287,7 +287,7 @@ def _input_win(title,default,number):
 class Canceled(Exception):pass
 
 
-def _form_screen(title,rows,values):
+def _form_screen(title,rows,values,submit_label="Start allocation"):
     """rows: list of (kind,label,options,default); returns values list, or None on Esc."""
     def screen(win):
         try:curses.curs_set(1)
@@ -308,7 +308,7 @@ def _form_screen(title,rows,values):
                 put(3+i,f'{label}: {value}',attr)
             confirm=len(rows)
             attr=curses.A_REVERSE|curses.A_BOLD if index==confirm else curses.A_NORMAL
-            put(3+confirm,'  ▶ Start allocation  ',attr)
+            put(3+confirm,'  ▶ '+submit_label+'  ',attr)
             put(h-1,'Enter: select/edit   Esc: cancel',curses.A_REVERSE)
             win.refresh();key=win.getch()
             if editing:
@@ -601,8 +601,12 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                     put(i,line)
                 status=f'Release allocation {confirm} and stop its agent? Enter/y confirms; Esc cancels.' if confirm is not None else ('Submitting operation…' if pending else message)
                 separator(h-3)
+                training=next((d.get('allocation',{}).get('training',{}) for d in rows if d['id']==selected),{})
+                if training:
+                    percent=min(100,max(0,float(training.get('percent',0))));bar='#'*int(percent/5)+'-'*(20-int(percent/5))
+                    status=f"{training.get('phase')} [{bar}] {training.get('files_trained',0)}/{training.get('files_total',0)} files ({percent:g}%) | "+status
                 put(h-2,status,color(3))
-                put(h-1,'q/Esc Exit   1/F1 Tools   2/F2 Attach   3/F3 Release   4/F4 Allocator   5/F5 Logs   6/F6 Change monitor   Space Prompt   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
+                put(h-1,'q/Esc Exit   1/F1 Tools   2/F2 Attach   3/F3 Release   4/F4 Allocator   5/F5 Logs   6/F6 Monitor   7/F7 Fine-tuning   Space Prompt   ←→ Select   ↑↓ Log   PgUp/Dn Details',curses.A_REVERSE)
             if tools_open:
                 put(h-1,'q/Esc Back   1/F1 Refresh   2/F2 Set helper   3/F3 Restart   4/F4 Refresh res-mon   5/F5 Cleanup   6/F6 Reconnect',curses.A_REVERSE)
             if prompt_text is not None:
@@ -611,6 +615,13 @@ def show(store,release,attach,submit=None,refresh=None,allocate=None,set_helper=
                 put(h-1,'Agent has file, shell and network access on its configured host.')
             win.refresh();key=win.getch()
             if key==-1:continue
+            if key in (ord('7'),curses.KEY_F7) and prompt_text is None and not pending and confirm is None and menu is None and log_id is None and not tools_open:
+                if selected is None:message='Select an allocation first'
+                else:
+                    from .training import menu as training_menu
+                    try:message=training_menu(selected)
+                    except Exception as exc:message='Fine-tuning: '+str(exc)
+                continue
             if key==curses.KEY_RESIZE:last=0;continue
             if prompt_text is not None:
                 if key in (27,3):prompt_text=None

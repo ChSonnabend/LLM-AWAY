@@ -1,0 +1,8 @@
+# Install into a dedicated CUDA-compatible Python 3.11/3.12 environment.
+unsloth
+transformers>=5.16
+accelerate
+peft
+pypdf
+markitdown[all]
+huggingface_hub

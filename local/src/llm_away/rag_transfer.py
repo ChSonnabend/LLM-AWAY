@@ -6,10 +6,10 @@ import shutil
 import subprocess
 
 
-def remote_state(cfg,token):
+def remote_state(cfg,token,snapshot_name='rag-snapshot'):
     base=cfg.remote.resource_state_dir or (cfg.remote.workdir+'/.state')
     from .shared_sessions import client_key
-    return base.rstrip('/')+'/resources/'+token+'/clients/'+client_key()+'/rag-snapshot'
+    return base.rstrip('/')+'/resources/'+token+'/clients/'+client_key()+'/'+snapshot_name
 
 
 def ssh_prefix(cfg):
@@ -17,11 +17,11 @@ def ssh_prefix(cfg):
             ['ssh','-x','-o','BatchMode=yes','-o','ConnectTimeout='+str(cfg.ssh.connect_timeout_seconds),cfg.ssh.destination])
 
 
-def snapshot(cfg,allocation,token,paths,source,target,local_root):
+def snapshot(cfg,allocation,token,paths,source,target,local_root,snapshot_name='rag-snapshot'):
     """Return paths visible on target, copying a launch-time snapshot if needed."""
     if source=='shared' or source==target:return list(paths)
     if (source,target)==('local','remote'):
-        destination=remote_state(cfg,token)
+        destination=remote_state(cfg,token,snapshot_name)
         _local_to_remote(cfg,allocation,paths,destination)
         return [destination+'/'+str(i)+'-'+Path(path).expanduser().name for i,path in enumerate(paths)]
     if (source,target)==('remote','local'):

@@ -6,7 +6,7 @@
   <title>LLM-AWAY Resource Monitor</title>
   <link rel="icon" href="/favicon.jpeg?v=2" type="image/jpeg">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
-  <link rel="stylesheet" href="/styles.css?v=17">
+  <link rel="stylesheet" href="/styles.css?v=18">
 </head>
 <body>
   <header class="topbar">
@@ -17,6 +17,7 @@
   <nav class="view-tabs" aria-label="Main views">
     <button class="view-tab active" data-page="monitoring">Monitoring</button>
     <button class="view-tab" data-page="chats">Chats</button>
+    <button class="view-tab" data-page="training">Fine-tuning</button>
   </nav>
 
   <nav class="toolbar monitoring-view" aria-label="Resource monitor tools">
@@ -56,6 +57,38 @@
     <section id="chat-cards" class="chat-grid"></section>
   </main>
 
+  <main id="training-view" class="training-view" hidden>
+    <section class="panel"><div class="panel-heading"><h2>Fine-tuning with Unsloth</h2></div>
+      <div class="training-body">
+        <p>Train LoRA adapters from nested folders and files. Starting interrupts every chat on the selected allocation. The allocation remains reserved.</p>
+        <div class="form-grid">
+          <label class="field">Allocation<select id="training-session"></select></label>
+          <label class="field">Base model: BF16 folder or Hugging Face repository<input id="training-model" placeholder="/remote/models/Qwen3.8-Flash-Next-BF16"></label>
+          <label class="field wide">Source folders / files<input id="training-paths" placeholder="/data/project:/data/manual.pdf"><small>Recursive, colon-separated. QandA_finetuning.txt maps questions to [answer-file paths]. Unsupported files are listed in the dataset report.</small></label>
+          <label class="field">Source location<select id="training-source"><option value="remote">Remote allocation host</option><option value="local">This machine (upload snapshot)</option></select></label>
+          <label class="field">Training precision<select id="training-precision"><option value="qlora">QLoRA — 4-bit base, train adapters</option><option value="bf16">BF16 base, train LoRA adapters</option></select></label>
+          <label class="field">Epochs<input id="training-epochs" type="number" min="0.01" max="100" step="0.1" value="1"></label>
+          <label class="field">Sequence length<input id="training-length" type="number" min="128" max="131072" value="2048"></label>
+          <label class="field">LoRA rank<input id="training-rank" type="number" min="1" max="256" value="16"></label>
+          <label class="field">Teacher session (optional)<input id="training-teacher" type="number" min="1" placeholder="e.g. 18"><small>Keep GLM loaded in a separate allocation on the same SSH host; train the student on its saved responses.</small></label>
+          <label class="field">Training runtime<select id="training-runtime"><option value="native">Native Python environment</option><option value="apptainer">Apptainer container</option><option value="singularity">Singularity container</option></select></label>
+          <label class="field" id="training-container-field" hidden>Remote container image<input id="training-container" placeholder="/remote/containers/unsloth.sif"><small>Image containing Unsloth and the document readers. GPU access and source/output mounts are added automatically.</small></label>
+          <label class="field wide">Training Python (optional)<input id="training-python" placeholder="remote/venvs/unsloth/bin/python"><small id="training-python-help">Install on the remote host with remote/bin/setup-training. Uses the allocation’s GPUs with automatic layer sharding.</small></label>
+          <label class="field wide">Saved adapter directory for export<input id="training-adapter" placeholder="Copy adapter path from completed training below"></label>
+        </div>
+        <label class="replace-warning"><input id="training-confirm" type="checkbox">Starting training or export unloads the current model and interrupts all attached chats.</label>
+        <div class="form-actions"><button id="training-start" class="primary">Start fine-tuning</button><button id="training-stop">Stop and save weights</button><button id="training-q4">Export Q4</button><button id="training-q8">Export Q8</button></div>
+        <p id="training-summary" role="status">Select an allocation.</p>
+        <div class="training-progress" role="progressbar" aria-label="Files trained through at least once" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="training-progress-fill"></div></div>
+        <pre id="training-details" class="log-output"></pre>
+      </div>
+    </section>
+    <section class="panel gpu-overview-panel" id="training-gpu-panel" hidden>
+      <div class="panel-heading"><div><span class="kicker">ALLOCATION HISTORY</span><h2>GPU memory and utilization</h2></div><a id="training-metrics-link" class="panel-link" href="/metrics.html" target="_blank">Open full dashboard ↗</a></div>
+      <iframe id="training-gpu-overview" class="gpu-overview-frame" loading="lazy" src="/metrics.html?embed=1&amp;v=9" title="Fine-tuning GPU monitoring graphs"></iframe>
+    </section>
+  </main>
+
   <div id="notice" role="status" aria-live="polite"></div>
   <div id="modal" class="modal" hidden>
     <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -65,6 +98,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
-  <script src="/app.js?v=19"></script>
+  <script src="/app.js?v=21"></script>
+  <script src="/training.js?v=2"></script>
 </body>
 </html>

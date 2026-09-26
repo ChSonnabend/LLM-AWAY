@@ -24,7 +24,7 @@ class ResourceStateTests(unittest.TestCase):
                 result=subprocess.run([sys.executable,str(CONTROL),'status'],input=json.dumps(payload),text=True,capture_output=True)
                 self.assertEqual(result.returncode,0,result.stderr)
                 self.assertFalse(json.loads(result.stdout)['active'])
-                self.assertTrue((base/'resources'/token/'lock').exists())
+                self.assertTrue((base/'resources'/'.locks'/(token+'.lock')).exists())
                 if name:self.assertFalse((root/'.state').exists())
 
     def test_cleanup_requires_release_and_shutdown_and_preserves_other_data(self):

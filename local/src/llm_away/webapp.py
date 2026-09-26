@@ -290,6 +290,7 @@ def session_rows():
             'job_id':'' if row.get('config',{}).get('backend_type')=='direct' else allocation.get('job_id',''), 'node':allocation.get('worker_host') or allocation.get('host',''),
             'model_state':model_state, 'busy':row.get('_busy',False),
             'attached':bool(row.get('_terminal')) if row.get('native') else resources.locally_attached(row),
+            'training':allocation.get('training',{}),
             'terminal':row.get('_terminal',False), 'error':row.get('error',''),
             'agent_text':str(agent.get('text') or '')[-32768:],
             'gpu_lines':telemetry.get('lines',[]), 'gpu_timestamp':telemetry.get('timestamp'),
@@ -576,6 +577,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 if action=='cleanup':
                     identifier=start_job(action,lambda:cleanup_released(body.get('preview_token')))
                 else:identifier=start_job(action,lambda:run_action(action,body.get('session')))
+                self._json({'job':identifier});return
+            if self.path=='/api/training':
+                from .training import operate
+                identifier=start_job('Fine-tuning',lambda:operate(body.get('session'),body.get('action'),body.get('settings'),body.get('confirmed',False),body.get('run_id')))
                 self._json({'job':identifier});return
             if self.path=='/api/allocate':
                 settings=dict(body.get('settings') or {})

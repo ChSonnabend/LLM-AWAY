@@ -4,6 +4,9 @@ import secrets
 import datetime, fcntl, hashlib, json, os, socket, re, shlex, shutil, subprocess, sys, time, uuid
 from pathlib import Path
 
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'training'))
+import control as training_control
+
 p=json.load(sys.stdin)
 action=sys.argv[1]
 c=p['config']; token=p['token']
@@ -158,6 +161,14 @@ def status():
         s['worker_host']=s.get('worker_host') or s.get('allocated_host') or socket.gethostname()
         s['worker_pid']=s['job_id'];s['job_id']=''
     s['backend_type']=kind
+    training=training_control.read_status(state) if (state/'training-status.json').exists() else {}
+    if training:
+        if training.get('phase') in training_control.ACTIVE and (not s.get('active') or (s.get('generation')==training.get('run_id') and s.get('model_state') in ('EXITED','STOPPED'))):
+            training=dict(training,phase='FAILED',error='Training worker or allocation exited; inspect training.log and checkpoints')
+            write(state/'training-status.json',json.dumps(training))
+        s['training']=training
+        if training.get('phase') in training_control.ACTIVE:s['model_state']='TRAINING'
+        elif s.get('generation')==training.get('run_id'):s['model_state']='IDLE'
     s['log_path']=str(state/'model.log')
     return s
 
@@ -287,6 +298,7 @@ def reserve():
 
 def start():
     s=status()
+    if training_control.active(state):raise ValueError('Fine-tuning/export is running; use Stop and save before loading a model')
     if not s['active']: raise ValueError('Allocation ended; create a new resource session')
     require_owner()
     if not s.get('owner') and p.get('client_id'):
@@ -349,11 +361,13 @@ lock_dir.mkdir(mode=0o700,exist_ok=True)
 with open(lock_dir/(token+'.lock'),'a') as lock:
     fcntl.flock(lock,fcntl.LOCK_EX)
     if action in ('rag-register','terminal-start','terminal-send','terminal-stop'):require_attachment()
-    elif action not in ('status','reserve','claim','attach','log','agent-info','cleanup-preview','release','credential'):
+    elif action not in ('status','reserve','claim','attach','log','agent-info','cleanup-preview','release','credential','training-status','training-stop','training-check'):
         require_owner()
     if meta.exists() and not (state/'session.json').exists() and action in ('status','reserve'):
         save_descriptor()
-    if action=='attach':result=attach()
+    if action.startswith('training-'):
+        result=training_control.dispatch(action,p,state,root,status(),write)
+    elif action=='attach':result=attach()
     elif action=='rag-register':result=register_rag()
     elif action=='claim':result=claim()
     elif action=='cleanup' and not any(state.iterdir()):
@@ -368,6 +382,7 @@ with open(lock_dir/(token+'.lock'),'a') as lock:
         result={'api_key':key.read_text().strip() if key.exists() else ''}
     elif action=='start': result=start()
     elif action=='stop':
+        if training_control.active(state):raise ValueError('Fine-tuning is running; use Stop and save to preserve weights')
         write(state/'desired',uuid.uuid4().hex);result=status()
     elif action=='release':
         if p.get('explicit_release') is not True:

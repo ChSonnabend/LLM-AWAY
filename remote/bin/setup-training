@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Isolated training tools and runtime; does not modify inference environments.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+umask 077
+mkdir -p "$root/venvs"
+python3 -m venv "$root/venvs/training-bootstrap"
+"$root/venvs/training-bootstrap/bin/python" -m pip install --upgrade uv
+uv="$root/venvs/training-bootstrap/bin/uv"
+if [[ ! -x "$root/venvs/unsloth/bin/python" ]]; then
+    "$uv" venv --python "${1:-3.12}" --seed "$root/venvs/unsloth"
+fi
+"$uv" pip install --python "$root/venvs/unsloth/bin/python" -r "$root/training/requirements.txt"
+"$uv" pip freeze --python "$root/venvs/unsloth/bin/python" > "$root/venvs/unsloth/installed-versions.txt"
+echo "Training runtime installed: $root/venvs/unsloth/bin/python"

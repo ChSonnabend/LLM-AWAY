@@ -44,7 +44,7 @@ class ExpiredAllocations(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state=Path(tmp);meta=state/'allocation.json';meta.write_text('{"job_id":"123"}')
             call=MagicMock(side_effect=['','123.batch|FAILED|\n123|TIMEOUT|'])
-            scope={'json':json,'meta':meta,'state':state,'kind':'slurm_server','call':call}
+            scope={'json':json,'meta':meta,'state':state,'kind':'slurm_server','call':call,'p':{}}
             exec(compile(ast.Module(body=[node],type_ignores=[]),str(source),'exec'),scope)
             self.assertEqual(scope['status']()['slurm_state'],'TIMEOUT')
             call.side_effect=['','123.batch|FAILED|']

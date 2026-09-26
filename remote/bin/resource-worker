@@ -8,6 +8,7 @@ prompt_pid=''
 telemetry_pid=''
 ready=''
 health_tick=0
+training=''
 stop_model() {
     python3 "$(dirname "${BASH_SOURCE[0]}")/resource-terminal" stop "$state" 2>/dev/null || true
     if [[ -n "$prompt_pid" ]]; then
@@ -17,7 +18,9 @@ stop_model() {
     fi
     if [[ -n "$child" ]]; then
         kill "$child" 2>/dev/null || true
-        for ((i=0;i<50;i++)); do
+        limit=50
+        [[ -z "$training" ]] || limit=1200
+        for ((i=0;i<limit;i++)); do
             kill -0 "$child" 2>/dev/null || break
             sleep 0.1
         done
@@ -55,18 +58,24 @@ while [[ ! -f "$state/release" ]]; do
         seen=$desired
         ready=''
         health_tick=0
+        training=''
+        [[ ! -f "$state/$seen.training.json" ]] || training=1
         if [[ -f "$state/$seen.sh" ]]; then
             bash "$state/$seen.sh" >> "$state/model.log" 2>&1 &
             child=$!
-            python3 "$(dirname "${BASH_SOURCE[0]}")/resource-prompts" "$state" >> "$state/model.log" 2>&1 &
-            prompt_pid=$!
-            report LOADING
+            if [[ -n "$training" ]]; then
+                report TRAINING
+            else
+                python3 "$(dirname "${BASH_SOURCE[0]}")/resource-prompts" "$state" >> "$state/model.log" 2>&1 &
+                prompt_pid=$!
+                report LOADING
+            fi
         else
             report IDLE
         fi
     fi
     # Readiness belongs to the allocation, even when no local provider is attached.
-    if [[ -n "$child" && -z "$ready" ]] && (( SECONDS >= health_tick )); then
+    if [[ -n "$child" && -z "$ready" && -z "$training" ]] && (( SECONDS >= health_tick )); then
         health_tick=$((SECONDS + 5))
         if python3 - "$state/allocation.json" <<'HEALTH'
 import json, sys

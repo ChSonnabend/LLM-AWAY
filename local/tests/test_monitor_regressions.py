@@ -105,7 +105,7 @@ print('FIRST\\nSECOND',flush=True)
                             ([ord('1'),curses.KEY_F3,ord('q')],'restart')]:
             win=MagicMock();win.getmaxyx.return_value=(24,100);win.getch.side_effect=keys
             refresh=MagicMock();helper=MagicMock();restart=MagicMock()
-            with patch.object(monitor_ui,'_terminal_screen',side_effect=lambda f:f(win)), patch.object(monitor_ui,'snapshots',return_value=[{'id':1,'_busy':False}]), patch.object(monitor_ui.curses,'curs_set'), patch.object(monitor_ui.curses,'has_colors',return_value=False), patch.object(monitor_ui.curses,'ACS_HLINE',ord('-'),create=True), patch.object(monitor_ui,'dropdown_win'):
+            with patch.object(monitor_ui,'_terminal_screen',side_effect=lambda f:f(win)), patch.object(monitor_ui,'snapshots',return_value=[{'id':1,'_busy':False}]), patch.object(monitor_ui.curses,'curs_set'), patch.object(monitor_ui.curses,'mousemask'), patch.object(monitor_ui.curses,'has_colors',return_value=False), patch.object(monitor_ui.curses,'ACS_HLINE',ord('-'),create=True), patch.object(monitor_ui,'dropdown_win'):
                 monitor_ui.show(Path('/unused'),None,None,refresh=refresh,set_helper=helper,restart=restart)
             self.assertEqual(refresh.call_count,int(action=='refresh'))
             self.assertEqual(helper.call_count,int(action=='helper'))
@@ -153,7 +153,7 @@ print('FIRST\\nSECOND',flush=True)
             win=MagicMock();win.getmaxyx.return_value=(24,100)
             win.getch.side_effect=[curses.KEY_F2,ord('q')]
             allocate=MagicMock(return_value=chosen)
-            with patch.object(monitor_ui,'_terminal_screen',side_effect=lambda f:f(win)) as screen, patch.object(monitor_ui,'snapshots',return_value=[{'id':7,'_busy':False,'model':''}]), patch.object(monitor_ui.curses,'curs_set'), patch.object(monitor_ui.curses,'has_colors',return_value=False), patch.object(monitor_ui.curses,'ACS_HLINE',ord('-'),create=True):
+            with patch.object(monitor_ui,'_terminal_screen',side_effect=lambda f:f(win)) as screen, patch.object(monitor_ui,'snapshots',return_value=[{'id':7,'_busy':False,'model':''}]), patch.object(monitor_ui.curses,'curs_set'), patch.object(monitor_ui.curses,'mousemask'), patch.object(monitor_ui.curses,'has_colors',return_value=False), patch.object(monitor_ui.curses,'ACS_HLINE',ord('-'),create=True):
                 self.assertEqual(monitor_ui.show(Path('/unused'),None,None,allocate=allocate),chosen)
                 allocate.assert_called_once_with('model',7)
                 screen.assert_called_once()

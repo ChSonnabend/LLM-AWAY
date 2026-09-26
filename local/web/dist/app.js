@@ -176,7 +176,8 @@ function renderChats(rows) {
     const status = card.querySelector('.chat-status'); status.className = `chat-status ${ready ? 'ready' : ''}`; status.textContent = ready ? `Terminal · ${row.time_left || '∞'}` : `${row.model_state || row.phase || 'Unavailable'} · ${row.time_left || '∞'}`;
     const screen = card.querySelector('.chat-terminal');
     if (!ready && chatTerminals.has(key)) closeChatTerminal(key, screen);
-    if (!ready) screen.textContent = canOpen ? 'Model retained. Choose an interface and click Open terminal.' : 'Load the model and attach its agent to open this terminal.';
+    if (row.model_state === 'TRAINING') screen.textContent = 'Fine-tuning is going on. Chats are paused for this allocation; use the Fine-tuning tab for progress or Stop and save.';
+    else if (!ready) screen.textContent = canOpen ? 'Model retained. Choose an interface and click Open terminal.' : 'Load the model and attach its agent to open this terminal.';
     if (pendingChats.has(key) && ready) {
       pendingChats.delete(key);
       document.querySelector('[data-page="chats"]')?.click();
@@ -247,8 +248,9 @@ $('gpu-overview').addEventListener('load', () => {
 });
 window.addEventListener('message', event => {
   if (event.origin !== window.location.origin || event.data?.type !== 'metrics-height') return;
-  if ($('gpu-overview').dataset.userSized) return;
-  $('gpu-overview').style.height = `${Math.max(360, Math.min(1600, Number(event.data.height) || 410))}px`;
+  const frame = [$('gpu-overview'), $('training-gpu-overview')].find(item => item?.contentWindow === event.source);
+  if (!frame || frame.dataset.userSized) return;
+  frame.style.height = `${Math.max(360, Math.min(1600, Number(event.data.height) || 410))}px`;
 });
 
 function openSession(row) {
@@ -271,6 +273,7 @@ async function loadSessions() {
     $('updated').textContent = `Live · ${new Date(data.time * 1000).toLocaleTimeString()}`;
     $('allocation-count').textContent = data.sessions.length;
     renderChats(data.sessions);
+    if (typeof renderTrainingRows === 'function') renderTrainingRows(data.sessions);
     const body = $('sessions');
     body.replaceChildren();
     if (!data.sessions.length) {
@@ -681,8 +684,9 @@ document.querySelectorAll('[data-page]').forEach(button => button.addEventListen
   const monitoring = button.dataset.page === 'monitoring';
   document.querySelectorAll('.view-tab').forEach(tab => tab.classList.toggle('active', tab === button));
   document.querySelectorAll('.monitoring-view').forEach(item => item.hidden = !monitoring);
-  $('chats-view').hidden = monitoring;
-  if (!monitoring) connectReadyChats();
+  $('chats-view').hidden = button.dataset.page !== 'chats';
+  $('training-view').hidden = button.dataset.page !== 'training';
+  if (button.dataset.page === 'chats') connectReadyChats();
 }));
 document.querySelectorAll('[data-log]').forEach(button => button.addEventListener('click', () => showLog(button.dataset.log, button)));
 document.querySelector('[data-view="terminal"]').addEventListener('click', showPanelTerminal);

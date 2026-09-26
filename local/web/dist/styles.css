@@ -204,3 +204,13 @@ input:focus, select:focus { border-color: var(--accent-strong); box-shadow: 0 0 
 .chat-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
 .chat-interface { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .chat-interface select { width: auto; min-width: 105px; }
+
+.training-view { padding: 24px 28px; }
+.training-body { padding: 20px; }
+.training-body .field.wide { grid-column: 1 / -1; }
+.training-progress { height: 18px; border-radius: 9px; background: #303642; overflow: hidden; margin: 12px 0; }
+#training-progress-fill { height: 100%; width: 0; background: #d9534f; transition: width .3s, background .3s; }
+.training-body .log-output { min-height: 120px; max-height: 360px; white-space: pre-wrap; }
+
+.training-body > .replace-warning { display: flex; margin: 28px 0 20px; }
+#training-gpu-panel { margin-top: 24px; }
