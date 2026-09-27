@@ -305,6 +305,15 @@ class OutputAndEvaluationTests(ControlTests):
         spec=json.loads((Path(status['output'])/'request.json').read_text())
         self.assertEqual(spec['action'],'evaluate');self.assertEqual(spec['paths'],[str(self.source.resolve())])
         self.assertNotIn('model',spec)
+    def test_eval_uses_saved_precision_in_preflight_and_worker(self):
+        adapter=self.root/'adapter';adapter.mkdir();(adapter/'adapter_config.json').write_text('{}')
+        (self.root/'base-model.json').write_text(json.dumps({'precision':'bf16'}))
+        self.payload['settings'].update(adapter=str(adapter),precision='qlora')
+        status=self.call('training-evaluate')
+        spec=json.loads((Path(status['output'])/'request.json').read_text())
+        self.assertEqual(spec['precision'],'bf16')
+        self.assertEqual(control.subprocess.run.call_args.args[0][-1],'bf16')
+        self.assertEqual(status['log_path'],str(Path(status['output'])/'training.log'))
     def test_eval_without_dataset_does_not_replace_inference(self):
         adapter=self.root/'adapter';adapter.mkdir();(adapter/'adapter_config.json').write_text('{}')
         self.payload['settings'].update(adapter=str(adapter),paths=[])

@@ -15,6 +15,7 @@ def read_status(state):
     try:status=json.loads(path.read_text())
     except (OSError,ValueError):return {}
     output=Path(status.get('output') or state/'training'/str(status.get('run_id','')))
+    status['log_path']=str(output/'training.log')
     try:
         log=output/'training.log'
         with log.open('rb') as stream:
@@ -52,6 +53,12 @@ def normalize_settings(settings,root,export=False,evaluate=False):
         settings.pop('model',None)
         adapter_config=Path(settings.get('adapter',''))/'adapter_config.json'
         if adapter_config.is_file():settings['base_model']=json.loads(adapter_config.read_text()).get('base_model_name_or_path','')
+    if evaluate:
+        # Evaluate the saved representation, not an unrelated training-form default.
+        metadata=Path(settings.get('adapter','')).parent/'base-model.json'
+        if metadata.is_file():
+            precision=json.loads(metadata.read_text()).get('precision')
+            if precision in ('bf16','qlora'):settings['precision']=precision
     if export:settings['precision']='qlora'
     destination=str(settings.get('destination','')).strip()
     if destination:
