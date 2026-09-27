@@ -333,6 +333,11 @@ llamacpp_binary() {
     echo "$compatible"
     return 0
   fi
+  # Prefer the bundled pinned GLM server in the unified CUDA image.
+  if [[ $tool == server && $backend == cuda && ${LLAMACPP_IN_CONTAINER:-0} == 1 && ${LLAMACPP_MODEL_BUILD:-} == glm5next && -x /opt/llm-away/glm5next/llama-server ]]; then
+    echo /opt/llm-away/glm5next/llama-server
+    return 0
+  fi
   # Model-specific CUDA builds must never override native ROCm binaries.
   if [[ $tool == server && $backend == cuda && -x ${LLAMACPP_MODEL_CUDA_SERVER:-} ]]; then
     echo "$LLAMACPP_MODEL_CUDA_SERVER"

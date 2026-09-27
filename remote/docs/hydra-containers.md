@@ -117,3 +117,21 @@ The optional job ID GPU-tests training kernels before publishing the image.
 The script refuses existing output filenames and saves the embedded definition
 beside the new image. It never deletes old images; remove an image only after
 checking active allocations and configured host profiles no longer reference it.
+
+
+### One CUDA image for training and chat serving
+
+`bin/build-container unified containers/llm-away-cuda.sif JOB_ID` combines the
+existing training and CUDA inference images, the optimized causal convolution,
+and the pinned GLM5-Next server. Build inputs default to
+`containers/unsloth-training-cuda.sif`, `containers/llama-server-cuda.sif`, and
+`builds/glm5next/build/bin/llama-server`; override them with `TRAINING_IMAGE`,
+`INFERENCE_IMAGE`, and `GLM_SERVER`. These inputs are needed only when building;
+the final SIF contains the runtimes and the GLM binary. The script GPU-tests both
+servers and the convolution kernel before publishing when JOB_ID is supplied.
+
+Choose the same absolute `llm-away-cuda.sif` path in Attach's container field
+and Fine-tuning's Apptainer field. Training Python can stay blank. The WebUI and
+CLI clients still run on their selected host and connect to llama.cpp's server.
+The image is for NVIDIA/CUDA; configured AMD/ROCm hosts need their ROCm runtime.
+Do not remove old images while jobs reference them; migrate after validation.

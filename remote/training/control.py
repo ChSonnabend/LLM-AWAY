@@ -120,7 +120,6 @@ def dispatch(action,p,state,root,current,write):
     if active(state):raise ValueError('Training or export already occupies this allocation')
     settings=normalize_settings(p.get('settings') or {},root,export=action=='training-export',evaluate=action=='training-evaluate')
     if action=='training-export':settings['models_dir']=(current.get('session',{}).get('llamacpp',{}).get('models_dir') or str(root/'models'))
-    command=execution(settings,state,root,current)
     sequence=int(settings.get('sequence_length',2048));epochs=float(settings.get('epochs',1));rank=int(settings.get('lora_rank',16))
     if not 128<=sequence<=131072 or not 0<epochs<=100 or not 1<=rank<=256:raise ValueError('Invalid sequence length, epoch count or LoRA rank')
     precision=settings.get('precision','qlora')
@@ -150,6 +149,7 @@ def dispatch(action,p,state,root,current,write):
         if settings.get('teacher'):
             spec['teacher']=settings['teacher']
     if settings.get('destination'):spec['artifact_dir']=str(Path(settings['destination'])/run_id)
+    command=execution(settings,state,root,current)
     if validate_only:return {'validated':True}
     if spec.get('artifact_dir'):Path(spec['artifact_dir']).mkdir(parents=True,mode=0o700,exist_ok=False)
     output.mkdir(parents=True,mode=0o700)

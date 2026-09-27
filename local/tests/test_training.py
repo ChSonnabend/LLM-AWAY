@@ -280,7 +280,7 @@ class MonitoringAndDefaultsTests(unittest.TestCase):
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);cfg=SimpleNamespace(ssh=SimpleNamespace(destination='hydra'),remote=SimpleNamespace(workdir='/remote'))
-            with patch.object(training,'state',return_value=(root,{'config':str(root/'model.toml')},cfg)):
+            with patch.object(training,'state',return_value=(root,{'config':{}},cfg)),patch.dict(training.os.environ,{'LLM_REMOTE_CONFIG':str(root/'model.toml')}):
                 training.defaults(1,'Qwen',save={'paths':'/local/train','paths_location':'local','teacher_key':'secret'})
                 self.assertEqual(training.defaults(1)['paths'],'/local/train')
                 self.assertNotIn('teacher_key',training.defaults(1))
@@ -309,6 +309,7 @@ class OutputAndEvaluationTests(ControlTests):
         adapter=self.root/'adapter';adapter.mkdir();(adapter/'adapter_config.json').write_text('{}')
         self.payload['settings'].update(adapter=str(adapter),paths=[])
         with self.assertRaisesRegex(ValueError,'held-out'):self.call('training-evaluate')
+        control.subprocess.run.assert_not_called()
         self.assertFalse((self.state/'desired').exists())
     def test_gguf_registration_checks_all_shards_and_quotes_paths(self):
         output=self.root/'exports with spaces';(output/'gguf').mkdir(parents=True)
@@ -323,3 +324,13 @@ class OutputAndEvaluationTests(ControlTests):
         self.probe.stop()
         value=subprocess.check_output(['bash','-c','source "$1"; printf "%s" "$MODEL_GGUF"','test',str(preset)],text=True)
         self.assertEqual(value,str(first.resolve()))
+
+class PreferenceFailureTests(unittest.TestCase):
+    def test_preference_failure_does_not_hide_a_queued_run(self):
+        from llm_away import training,resources,shared_sessions,terminals
+        stop=Mock()
+        with patch.object(training,'state',return_value=(Path('/session'),{'token':'t','remote_port':12},Mock())),patch.object(shared_sessions,'current',return_value={'generation':'g'}),patch.object(resources,'remote',side_effect=[{}, {'output':'/queued/run'}]),patch.object(training,'defaults',side_effect=OSError('read only')),patch.object(terminals,'engine',return_value={'stop':stop}):
+            result=training.operate(1,'evaluate',{'adapter':'/adapter','eval_paths':'/eval'},True)
+            self.assertIn('Queued evaluate',result)
+            self.assertIn('Could not save defaults',result)
+            stop.assert_called_once()

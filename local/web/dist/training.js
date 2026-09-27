@@ -40,6 +40,8 @@ function renderTrainingStatus() {
 async function trainingOperation(action, quantization) {
   const row = trainingRows.find(row => String(row.id) === $('training-session').value);
   if (!row) return;
+  if (['evaluate','export'].includes(action) && !$('training-adapter').value.trim()) { notice('Select a saved adapter directory before evaluation or export.', true); $('training-adapter').focus(); return; }
+  if (action === 'evaluate' && !$('training-eval-paths').value.trim()) { notice('Enter the held-out evaluation folders/files and choose their source location.', true); $('training-eval-paths').focus(); return; }
   const confirmed = $('training-confirm').checked;
   if (action !== 'stop' && !confirmed) { notice('Acknowledge that this interrupts all chats on this allocation.', true); return; }
   const settings = {model:$('training-model').value,paths:$('training-paths').value,paths_location:$('training-source').value,

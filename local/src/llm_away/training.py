@@ -18,7 +18,8 @@ def state(number):
 def defaults(number,model='',save=None):
     """Machine-local input preferences keyed by SSH host, remote root and model."""
     path,data,cfg=state(number)
-    store=Path(data['config']).with_suffix('.training-defaults.json')
+    from .resources import ROOT
+    store=Path(os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml'))).with_suffix('.training-defaults.json')
     key=cfg.ssh.destination+'|'+cfg.remote.workdir
     with _defaults_lock:
         try:all_values=json.loads(store.read_text())
@@ -106,11 +107,13 @@ def operate(number,action,settings=None,confirmed=False,run_id=None):
         allocation=shared_sessions.claim(path,owner['id'],allocation.get('generation',''))
     result=r.remote(cfg,data['token'],data['remote_port'],'training-'+action,settings=settings,
                     confirmed=True,expected_generation=allocation.get('generation',''))
-    if action in ('start','export','evaluate'):defaults(number,entered_settings.get('model',''),save=entered_settings)
+    preference_warning=''
+    try:defaults(number,entered_settings.get('model',''),save=entered_settings)
+    except (OSError,ValueError,TypeError) as exc:preference_warning=' (Could not save defaults: '+str(exc)+')'
     # No local model stop RPC: only detach this client; the remote worker owns the transition.
     from .terminals import engine
     engine()['stop'](path)
-    return 'Queued '+action+' in allocation '+str(number)+'. Output: '+result['output']
+    return 'Queued '+action+' in allocation '+str(number)+'. Output: '+result['output']+preference_warning
 
 def menu(number):
     from .monitor_ui import dropdown_win,_form_screen,terminal_operation
