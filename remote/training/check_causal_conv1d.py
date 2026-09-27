@@ -1,4 +1,5 @@
 """Run inside the training container on an allocated GPU; no model weights needed."""
+from unsloth import FastModel  # Validate the training stack before PyTorch imports.
 import torch
 from causal_conv1d import causal_conv1d_fn
 
