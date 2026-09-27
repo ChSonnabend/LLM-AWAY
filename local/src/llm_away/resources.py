@@ -549,7 +549,9 @@ def allocate(args):
 def locally_attached(data):
     """A live provider on this client connected to the current model generation."""
     allocation=data.get('allocation') or {}
-    generation=data.get('attachment_generation')
+    if allocation.get('model_state') in ('IDLE','EXITED','FAILED','STOPPED'):
+        return False
+    generation=data.get('attachment_generation') or allocation.get('attachment',{}).get('generation')
     if generation and generation!=allocation.get('generation'):
         return False
     return bool(data.get('model') and data.get('provider_exit') is None and
@@ -588,6 +590,11 @@ def run_agent(args):
         data=json.loads((path/'session.json').read_text())
         existing=(terminals.engine()['alive'](path) if selection.get('location')=='local' else
                   remote(config(data['config']),data['token'],data['remote_port'],'status').get('terminal',{}).get('status')=='TERMINAL')
+        if existing and args.model:
+            allocation=remote(config(data['config']),data['token'],data['remote_port'],'status')
+            if allocation.get('model_state') in ('IDLE','EXITED','FAILED','STOPPED'):
+                # A retained CLI is not evidence that its remote model survived training.
+                args.reconfigure_agent=True
         if existing and getattr(args,'reconfigure_agent',False):
             if selection.get('target_location')=='remote':
                 remote(config(data['config']),data['token'],data['remote_port'],'terminal-stop')
@@ -763,6 +770,7 @@ def run_agent(args):
                     model['alias'],context_window=cfg.codex.context_window,settings=cfg.codex),indent=2)+'\n'
             write(path/'agent-selection.json',selection)
             current=json.loads((path/'session.json').read_text())
+            if not reuse:terminals.engine()['stop'](path)
             terminals.ensure(path,current,selection)
             fcntl.flock(lease,fcntl.LOCK_UN)
             print('Model loading in tmux. Ctrl+B then D detaches; run --session '+str(args.session)+' or F2 reattaches.',flush=True)
@@ -959,6 +967,17 @@ def refresh_session(number, model=None):
     saved=path/'agent-selection.json'
     if not saved.exists():raise ValueError('Open the agent first with run')
     selection=json.loads(saved.read_text())
+    allocation=remote(config(data['config']),data['token'],data['remote_port'],'status')
+    from .training import ACTIVE
+    if allocation.get('training',{}).get('phase') in ACTIVE:
+        raise ValueError('Training or evaluation is active; wait for it to finish before refreshing chat')
+    if not allocation.get('active',True):raise ValueError('Allocation has ended; allocate new resources')
+    if allocation.get('model_state') in ('IDLE','EXITED','FAILED','STOPPED'):
+        model=model or selection.get('loading',{}).get('model',{}).get('alias') or data.get('model')
+        if not model:raise ValueError('No saved model to reload; choose a model with Attach')
+        # Closing tmux alone leaves the daemon's provider child alive. Reset it
+        # through the normal unload path before requesting a fresh generation.
+        rpc(path,'stop')
     rag=selection.get('rag_config') or {}
     from . import terminals
     engine=terminals.engine()
@@ -966,7 +985,9 @@ def refresh_session(number, model=None):
         engine['stop'](path)
         deadline=time.monotonic()+5
         while engine['alive'](path) and time.monotonic()<deadline:time.sleep(0.2)
-    args=Namespace(session=number,detach=True,model=model,mtp=None,rag=rag.get('paths',[]),helper=False,quiet=True,resume=False,
+    for marker in ('agent-ready','resume-requested','terminal-error.txt'):
+        (path/marker).unlink(missing_ok=True)
+    args=Namespace(session=number,detach=True,reconfigure_agent=True,model=model,mtp=None,rag=rag.get('paths',[]),helper=False,quiet=True,resume=False,
                    rag_threads=rag.get('threads',2),rag_memory_gb=rag.get('memory_gb',0),rag_gpu=rag.get('gpu',False),
                    rag_compute=rag.get('compute'),rag_paths_location=rag.get('paths_location'),
                    log_helper=True,agent_location=selection.get('target_location',selection.get('location','local')),
