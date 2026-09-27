@@ -1,0 +1,2 @@
+bootstrap: docker
+from: ghcr.io/ggml-org/llama.cpp:server-rocm

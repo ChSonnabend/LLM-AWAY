@@ -1,0 +1,37 @@
+Bootstrap: docker
+From: unsloth/unsloth@sha256:fc72549af2f6db2c9d176b8e12882e22a42e4618b08dff9341429384e301571c
+
+%labels
+    Application LLM-AWAY-Unsloth-Training
+    Purpose "CUDA LoRA/QLoRA training and GGUF export; not llama.cpp inference"
+
+%post
+    set -eu
+    mkdir -p /opt/llm-away-training
+    # Keep the upstream, mutually compatible GPU stack unchanged.
+    /opt/unsloth-venv/bin/python -m pip freeze > /opt/llm-away-training/base-constraints.txt
+    /opt/unsloth-venv/bin/python -m pip install --no-cache-dir \
+        -c /opt/llm-away-training/base-constraints.txt \
+        'pypdf==6.19.0' 'markitdown[all]==0.1.8'
+    # Compile against this exact PyTorch/CUDA ABI; do not upgrade the GPU stack.
+    MAX_JOBS=4 /opt/unsloth-venv/bin/python -m pip install --no-cache-dir \
+        --no-build-isolation --no-deps 'causal-conv1d==1.7.0'
+    /opt/unsloth-venv/bin/python -c "import causal_conv1d, causal_conv1d_cuda"
+    /opt/unsloth-venv/bin/python -m pip freeze > /opt/llm-away-training/installed-versions.txt
+
+%environment
+    export PATH=/opt/unsloth-venv/bin:$PATH
+    export PYTHONNOUSERSITE=1
+    # Docker normally supplies a writable /workspace; a SIF filesystem is read-only.
+    export HF_HOME="${LLM_AWAY_HF_HOME:-/tmp/llm-away-$(id -u)/huggingface}"
+    export TRITON_CACHE_DIR="${LLM_AWAY_TRITON_CACHE:-/tmp/llm-away-$(id -u)/triton-fc72549a}"
+    export UNSLOTH_COMPILE_LOCATION="/tmp/llm-away-$(id -u)/unsloth-fc72549a"
+    export TORCHINDUCTOR_CACHE_DIR="/tmp/llm-away-$(id -u)/torchinductor-fc72549a"
+
+%test
+    /opt/unsloth-venv/bin/python -c "import importlib.util; assert all(importlib.util.find_spec(n) for n in ('unsloth','torch','transformers','pypdf','markitdown'))"
+
+%help
+    Build: apptainer build --fakeroot unsloth-training-cuda.sif unsloth-training-cuda.def
+    LLM-AWAY: Training runtime = Apptainer; Python may be left blank.
+    Validate CUDA and Unsloth imports inside the allocated GPU job before training.

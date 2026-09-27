@@ -66,7 +66,7 @@ def remote(cfg, token, port, action, **extra):
             options += ['-o','ControlMaster=auto','-o',f'ControlPath={control}','-o','ControlPersist=60']
         command=['ssh',*options,cfg.ssh.destination,shlex.join(command)]
     result=subprocess.run(command,input=json.dumps(dict(config=asdict(cfg),token=token,port=port,**extra)),
-                          text=True,capture_output=True,timeout=120)
+                          text=True,capture_output=True,timeout=240 if action in ('training-check','training-start','training-export','training-evaluate') else 120)
     if result.returncode: raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return json.loads(result.stdout)
 

@@ -519,6 +519,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed=urlparse(self.path)
         try:
+            if parsed.path=='/api/training/defaults':
+                from .training import defaults
+                query=parse_qs(parsed.query)
+                self._json(defaults(query.get('session',[''])[0],query.get('model',[''])[0]));return
             if parsed.path=='/api/runtime':
                 self._json({'revision':RUNTIME_REVISION});return
             if parsed.path=='/api/sessions':self._json({'sessions':session_rows(),'time':time.time()});return

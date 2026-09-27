@@ -6,7 +6,7 @@ Update the remote checkout as well as the local one. Run `remote/bin/setup-train
 
 ### Container runtime
 
-Choose **Apptainer container** or **Singularity container** in the training form (also available through F7). Provide the existing image path on the remote host, such as `/containers/unsloth.sif`. The image must contain Unsloth, PyTorch, Transformers and the document readers from `remote/training/requirements.txt`. The optional Python path refers to an executable **inside** the image; the default is `python3`.
+Choose **Apptainer container** or **Singularity container** in the training form (also available through F7). Provide the existing image path on the remote host. On Hydra, use `/lustre/alice/users/csonnab/LLM-AWAY/remote/containers/unsloth-training-cuda.sif` after its build and GPU validation have completed. Its `.def` is stored alongside it. The `llama-server-*.sif` images only provide inference and are not suitable for Unsloth training. The image must contain Unsloth, PyTorch, Transformers and the document readers from `remote/training/requirements.txt`. The optional Python path refers to an executable **inside** the image; the default is `python3`.
 
 Preflight runs inside that image before changing ownership or unloading inference. Training/export uses the allocation’s GPUs (`--nv`), with the repository, allocation state, source folders, local base checkpoint and adapter paths bound at the same paths inside the container. These paths and the container runtime/image must be available on the allocated node. This initial container option targets NVIDIA GPUs through Apptainer/Singularity; it does not launch Docker services or create extra allocations.
 
@@ -46,3 +46,34 @@ Load the teacher (e.g. GLM) in a **separate allocation on the same configured SS
 The requested repositories are `unsloth/GLM-5.3-Flash` and `unsloth/Qwen3.8-Flash-Next`. Downloads started under `/lustre/alice/users/csonnab/LLM-AWAY/remote/models/`, in `GLM-5.3-Flash-BF16` and `Qwen3.8-Flash-Next-BF16`. Each contains `download-status.json` and `download.log`; only `COMPLETE` confirms completion. Downloads are revision-pinned and resumable. They do not consume a GPU allocation.
 
 References: [Unsloth multi-GPU training](https://unsloth.ai/docs/basics/multi-gpu-training-with-unsloth), [GGUF export](https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf), [FastModel fine-tuning example](https://unsloth.ai/docs/models/qwen3.8/train).
+
+### Shared runtime on Slurm
+
+The training Python interpreter itself must be on a filesystem visible to the compute nodes, not only its virtual environment. `setup-training` stores uv-managed Python under `remote/venvs/python`. Before starting, Slurm allocations run the runtime/CUDA preflight inside their existing job. Local BF16 checkpoints with a safetensors index are checked against allocated GPU capacity with a 20% reserve; this is a lower-bound check, not a guarantee that activations and optimizer state fit. A failed check preserves the current model.
+
+
+### Saved weights, evaluation and chat
+
+Training saves a LoRA **adapter**, not a standalone copy of the BF16 base. Set
+“Save training / evaluation results under” to a remote folder; each run gets
+its own subfolder, with trained weights in `adapter/`. Blank keeps the existing
+allocation-local run directory. Existing completed adapters remain where they
+were saved and can be selected directly for evaluation/export.
+
+There is no automatic evaluation during training. “Evaluate adapter” loads the
+saved adapter plus base and scores the separately supplied held-out folders.
+It reports answer-token-weighted loss and perplexity without updating weights.
+This measures predictive fit, not whether generated code compiles or solves tasks.
+Use `O2_finetuning_dataset/train` for training and `.../eval` for evaluation;
+using the parent folder trains on both and invalidates that held-out comparison.
+
+“Export Q4” / “Export Q8” merges the adapter and quantizes to GGUF. Select the
+adapter directory and optionally a remote export destination. Each export uses
+a unique run folder containing `gguf/`. Successful exports register a managed
+`finetuned-<run>-<quant>` preset in the allocation's model catalogue. Refresh
+Attach's model list, select that preset, load it and open Chat. Both the exporter
+and the selected llama.cpp build must support the architecture. Export can
+require substantially more RAM, VRAM and disk than adapter training.
+
+Evaluation and export occupy the allocation and interrupt inference chats;
+they cannot start while training is active. Stop evaluation does not alter weights.

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Allocation-bound Unsloth LoRA training, document distillation, and GGUF export."""
+import math
+import shlex
+import re
 import collections
 import json
 import os
@@ -10,7 +13,7 @@ import time
 from urllib.request import Request, build_opener, ProxyHandler
 from dataset import prepare
 
-ACTIVE={'QUEUED','PREPARING','DISTILLING','LOADING','TRAINING','SAVING','EXPORTING','STOPPING'}
+ACTIVE={'QUEUED','PREPARING','DISTILLING','LOADING','TRAINING','SAVING','EXPORTING','EVALUATING','STOPPING'}
 
 def write(path,value):
     temp=Path(str(path)+'.tmp');temp.write_text(json.dumps(value,ensure_ascii=False));os.replace(temp,path)
@@ -18,10 +21,12 @@ def write(path,value):
 class Job:
     def __init__(self,spec):
         self.spec=spec;self.output=Path(spec['output']);self.output.mkdir(parents=True,exist_ok=True)
+        self.artifacts=Path(spec.get('artifact_dir') or self.output);self.artifacts.mkdir(parents=True,exist_ok=True)
         self.status_path=Path(spec['status_path']);self.stop_path=self.output/'stop'
         self.status=dict(run_id=spec['run_id'],output=str(self.output),phase='QUEUED',files_trained=0,files_total=0,percent=0)
         self.interrupted=False
     def update(self,**kw):
+        if kw.get('phase') and kw['phase']!=self.status.get('phase'):print('Training phase: '+kw['phase'],flush=True)
         self.status.update(kw,time=time.time());write(self.status_path,self.status)
     def stopped(self):return self.interrupted or self.stop_path.exists()
     def signal(self,*unused):self.interrupted=True
@@ -77,13 +82,30 @@ def token_examples(source,tokenizer,length,target,stopped):
                 stream.write((json.dumps(record)+'\n').encode())
     return offsets,counts
 
+def configure_compilation(model):
+    """Qwen4's integer n-gram initialization is not traceable by Dynamo."""
+    path=Path(model)
+    config=path/'config.json'
+    if not config.is_file():
+        adapter=path/'adapter_config.json'
+        if adapter.is_file():
+            base=json.loads(adapter.read_text()).get('base_model_name_or_path','')
+            config=Path(base)/'config.json'
+    if config.is_file() and json.loads(config.read_text()).get('model_type') in ('qwen4_exp','qwen4_exp_text'):
+        # Must precede Unsloth imports; also avoids reusing compiled helper caches.
+        os.environ['UNSLOTH_COMPILE_DISABLE']='1'
+        print('Qwen4 compatibility: Unsloth compilation disabled (integer n-gram initialization).',flush=True)
+
 def train(job):
+    configure_compilation(job.spec['model'])
     # Unsloth must be imported before transformers/peft to install its patches.
     from unsloth import FastModel
     import torch
     from transformers import Trainer, TrainingArguments, TrainerCallback
     if not torch.cuda.is_available():raise ValueError('Training needs a CUDA-compatible GPU environment inside the allocation')
     spec=job.spec
+    from preflight import check_memory
+    check_memory(spec['model'],spec['precision'],[torch.cuda.get_device_properties(i).total_memory for i in range(torch.cuda.device_count())])
     source,report=prepare(spec['paths'],job.output,job.update,job.stopped)
     job.update(files_total=report['files_accepted'],files_registered=report['files_total'],skipped=len(report['skipped']))
     if spec.get('teacher'):source=distill(job,source)
@@ -105,6 +127,7 @@ def train(job):
         finetune_vision_layers=False,finetune_language_layers=True,
         finetune_attention_modules=True,finetune_mlp_modules=True,lora_dropout=0,
         bias='none',use_gradient_checkpointing='unsloth',random_state=3407)
+    job.update(message='Weights loaded; preparing LoRA training examples.')
     rows_path=job.output/'tokenized.jsonl'
     offsets,required=token_examples(source,tokenizer,spec['sequence_length'],rows_path,job.stopped)
     class Examples:
@@ -144,13 +167,14 @@ def train(job):
     except Exception as exc:failure=exc
     finally:
         job.update(phase='SAVING')
-        model.save_pretrained(str(job.output/'adapter'));processor.save_pretrained(str(job.output/'adapter'));trainer.save_state()
-        write(job.output/'base-model.json',{'model':spec['model'],'precision':spec['precision'],'sequence_length':spec['sequence_length']})
-        job.update(adapter=str(job.output/'adapter'),checkpoint_saved=True)
+        model.save_pretrained(str(job.artifacts/'adapter'));processor.save_pretrained(str(job.artifacts/'adapter'));trainer.save_state()
+        write(job.artifacts/'base-model.json',{'model':spec['model'],'precision':spec['precision'],'sequence_length':spec['sequence_length']})
+        job.update(adapter=str(job.artifacts/'adapter'),checkpoint_saved=True)
     if failure:raise failure
     job.update(phase='STOPPED' if job.stopped() else 'COMPLETE')
 
 def export(job):
+    configure_compilation(job.spec['adapter'])
     from unsloth import FastModel
     import torch
     spec=job.spec;job.update(phase='LOADING')
@@ -158,14 +182,70 @@ def export(job):
         load_in_4bit=True,device_map='balanced' if torch.cuda.device_count()>1 else {'':0},trust_remote_code=False)
     if job.stopped():raise InterruptedError('Export stopped before conversion')
     job.update(phase='EXPORTING')
-    model.save_pretrained_gguf(str(job.output/'gguf'),tokenizer,quantization_method=spec['quantization'])
-    job.update(phase='COMPLETE',export_path=str(job.output/'gguf'))
+    model.save_pretrained_gguf(str(job.artifacts/'gguf'),tokenizer,quantization_method=spec['quantization'])
+    preset=register_export(job)
+    job.update(phase='COMPLETE',export_path=str(job.artifacts/'gguf'),model_preset=preset)
+
+def register_export(job):
+    files=sorted((job.artifacts/'gguf').rglob('*.gguf'))
+    candidates=[p for p in files if 'mmproj' not in p.name.lower() and
+                (not re.search(r'-\d{5}-of-\d{5}\.gguf$',p.name) or '-00001-of-' in p.name)]
+    quant=job.spec['quantization'].lower()
+    matches=[p for p in candidates if quant in p.name.lower()]
+    if len(matches)!=1:raise ValueError('Export produced no unique '+quant+' GGUF; inspect '+str(job.artifacts/'gguf'))
+    model=matches[0]
+    split=re.search(r'-(\d{5})-of-(\d{5})\.gguf$',model.name)
+    shards=[model] if not split else [model.with_name(model.name[:split.start()]+f'-{i:05d}-of-{int(split[2]):05d}.gguf') for i in range(1,int(split[2])+1)]
+    if not all(p.is_file() and p.stat().st_size for p in shards):raise ValueError('Export contains missing or empty GGUF shards')
+    alias='finetuned-'+job.spec['run_id'][:12]+'-'+quant
+    folder=Path(job.spec['models_dir'])/alias;folder.mkdir(parents=True,exist_ok=False)
+    (folder/'model.env').write_text('MODEL_ALIAS='+shlex.quote(alias)+'\nMODEL_GGUF='+shlex.quote(str(model.resolve()))+'\nMODEL_CONTEXT_SIZE='+str(job.spec['sequence_length'])+'\nLLAMACPP_SPLIT_MODE=layer\n')
+    return alias
+
+def evaluate(job):
+    configure_compilation(job.spec['adapter'])
+    from unsloth import FastModel
+    import torch
+    spec=job.spec
+    source,report=prepare(spec['paths'],job.output,job.update,job.stopped)
+    job.update(files_total=report['files_accepted'],files_registered=report['files_total'],skipped=len(report['skipped']),phase='LOADING')
+    memory={i:int(torch.cuda.mem_get_info(i)[0]*0.8) for i in range(torch.cuda.device_count())}
+    model,processor=FastModel.from_pretrained(model_name=spec['adapter'],max_seq_length=spec['sequence_length'],
+        load_in_4bit=spec['precision']=='qlora',dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+        device_map='balanced' if len(memory)>1 else {'':0},max_memory=memory,trust_remote_code=False)
+    if any(str(v) in ('cpu','disk') for v in getattr(model,'hf_device_map',{}).values()):raise ValueError('Evaluation model exceeds allocated GPU memory')
+    tokenizer=getattr(processor,'tokenizer',processor)
+    if tokenizer.eos_token_id is None:raise ValueError('Tokenizer needs an EOS token')
+    tokens=job.output/'eval-tokenized.jsonl'
+    offsets,required=token_examples(source,tokenizer,spec['sequence_length'],tokens,job.stopped)
+    model.eval();device=model.get_input_embeddings().weight.device
+    loss_sum=0.0;count=0;done=collections.Counter()
+    job.update(phase='EVALUATING',examples_total=len(offsets),files_evaluated=0)
+    with torch.inference_mode(),tokens.open() as stream:
+        for index,line in enumerate(stream,1):
+            if job.stopped():raise InterruptedError('Evaluation stopped; model weights unchanged')
+            row=json.loads(line);valid=sum(v!=-100 for v in row['labels'][1:])
+            if valid:
+                ids=torch.tensor([row['input_ids']],device=device)
+                labels=torch.tensor([row['labels']],device=device)
+                loss=float(model(input_ids=ids,attention_mask=torch.ones_like(ids),labels=labels).loss.item())
+                if not math.isfinite(loss):raise ValueError('Evaluation produced a non-finite loss')
+                loss_sum+=loss*valid;count+=valid
+            done[row['file_id']]+=1
+            completed=sum(done[k]>=n for k,n in required.items())
+            job.update(eval_examples=index,files_evaluated=completed,percent=round(100*completed/max(1,len(required)),2))
+    if not count:raise ValueError('No scorable answer tokens in evaluation data')
+    average=loss_sum/count
+    metrics={'eval_loss':average,'perplexity':math.exp(average) if average<700 else None,'answer_tokens':count,'examples':len(offsets)}
+    report_path=job.artifacts/'eval-results.json';write(report_path,metrics)
+    job.update(phase='COMPLETE',metrics=metrics,evaluation_path=str(report_path),adapter=spec['adapter'])
 
 def main():
     os.umask(0o077);job=Job(json.loads(Path(sys.argv[1]).read_text()))
     signal.signal(signal.SIGTERM,job.signal);signal.signal(signal.SIGINT,job.signal)
     try:
         if job.spec.get('action')=='export':export(job)
+        elif job.spec.get('action')=='evaluate':evaluate(job)
         else:train(job)
     except InterruptedError as exc:job.update(phase='STOPPED',message=str(exc),checkpoint_saved=job.status.get('checkpoint_saved',False))
     except BaseException as exc:

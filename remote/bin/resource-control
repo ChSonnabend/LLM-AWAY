@@ -366,7 +366,9 @@ with open(lock_dir/(token+'.lock'),'a') as lock:
     if meta.exists() and not (state/'session.json').exists() and action in ('status','reserve'):
         save_descriptor()
     if action.startswith('training-'):
-        result=training_control.dispatch(action,p,state,root,status(),write)
+        try:result=training_control.dispatch(action,p,state,root,status(),write)
+        except (ValueError,RuntimeError) as exc:
+            print(str(exc),file=sys.stderr);sys.exit(1)
     elif action=='attach':result=attach()
     elif action=='rag-register':result=register_rag()
     elif action=='claim':result=claim()

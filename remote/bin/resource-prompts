@@ -72,7 +72,7 @@ def execute(state, request_path):
 def main(state):
     queue = state/'prompts';queue.mkdir(exist_ok=True)
     (state/'prompt-worker.ready').write_text(json.dumps({'version':4,'tmux':bool(shutil.which('tmux')),'clis':[name for name in ('codex','claude','opencode') if shutil.which(name)]}))
-    signal.signal(signal.SIGTERM,lambda *args:sys.exit('Worker stopped'))
+    signal.signal(signal.SIGTERM,lambda *args:sys.exit('Inference prompt worker stopped (model unload or transition to training); allocation is retained.'))
     terminal=runpy.run_path(str(Path(__file__).with_name('resource-terminal')))
     try:
         while not (state/'release').exists():

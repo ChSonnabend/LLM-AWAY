@@ -4,6 +4,8 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
 mkdir -p "$root/venvs"
+# The login-node home may not exist on GPU nodes. Keep managed Python shared.
+export UV_PYTHON_INSTALL_DIR="$root/venvs/python"
 python3 -m venv "$root/venvs/training-bootstrap"
 "$root/venvs/training-bootstrap/bin/python" -m pip install --upgrade uv
 uv="$root/venvs/training-bootstrap/bin/uv"

@@ -87,11 +87,15 @@ async function pollJob(identifier) {
   }
 }
 
-async function runOperation(title, description, endpoint, payload, closeOnSuccess = false) {
+async function runOperation(title, description, endpoint, payload, closeOnSuccess = false, background = false) {
   const view = operationView(title, description);
   const token = openDialog(title, view);
   try {
     const started = await api(endpoint, {method: 'POST', body: JSON.stringify(payload)});
+    if (background && token === dialogToken) {
+      closeDialog();
+      notice('Request accepted. Preparation continues in the background; errors will be reported here.');
+    }
     const result = await pollJob(started.job);
     if (token !== dialogToken) {
       notice(result.message, result.state === 'error');
@@ -102,6 +106,7 @@ async function runOperation(title, description, endpoint, payload, closeOnSucces
     view.querySelector('.result-icon').textContent = result.state === 'done' ? '✓' : '!';
     view.querySelector('h3').textContent = result.state === 'done' ? 'Completed' : 'Could not complete';
     view.querySelector('p').textContent = result.message;
+    if (result.state === 'done' && closeOnSuccess && token === dialogToken) closeDialog();
     await loadSessions();
     if (result.state === 'done' && ['/api/load','/api/chat/interface'].includes(endpoint)) {
       pendingChats.add(String(payload.session));
@@ -113,6 +118,7 @@ async function runOperation(title, description, endpoint, payload, closeOnSucces
     }
     return result.state === 'done';
   } catch (error) {
+    if (token !== dialogToken) { notice(error.message, true); return false; }
     view.classList.add('error');
     view.querySelector('.result-icon').textContent = '!';
     view.querySelector('h3').textContent = 'Could not complete';
@@ -199,6 +205,17 @@ function closeChatTerminal(key, host) {
   host.textContent = 'Load the model and attach its agent to open this terminal.';
 }
 
+function terminalNewlineKeys(term, send) {
+  term.attachCustomKeyEventHandler(event => {
+    if (event.key === 'Enter' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      if (event.type === 'keydown') send('\x1b[200~\n\x1b[201~');
+      event.preventDefault();
+      return false;
+    }
+    return true;
+  });
+}
+
 async function ensureChatTerminal(row, host) {
   const key = String(row.id);
   if (chatTerminals.has(key) || !window.Terminal) return;
@@ -208,6 +225,7 @@ async function ensureChatTerminal(row, host) {
   const item = {terminal: xterm, id: null, offset: 0, poll: null}; chatTerminals.set(key, item);
   try {
     const created = await api('/api/terminal', {method: 'POST', body: '{}'}); item.id = created.id;
+    terminalNewlineKeys(xterm, data => api('/api/terminal/input', {method:'POST', body:JSON.stringify({id:item.id,data})}).catch(error => notice(error.message,true)));
     xterm.onData(data => api('/api/terminal/input', {method: 'POST', body: JSON.stringify({id: item.id, data})}).catch(error => notice(error.message, true)));
     const resize = () => {
       if (!host.clientWidth) return;
@@ -618,6 +636,7 @@ async function ensureTerminal() {
   terminalOffset = 0;
   terminal = new Terminal({cursorBlink: true, convertEol: true, fontSize: 13, fontFamily: 'SFMono-Regular, Menlo, monospace', theme: {background: '#080a0e', foreground: '#dce4ef', cursor: '#79e6c5', selectionBackground: '#244c43'}});
   terminal.open($('terminal-host'));
+  terminalNewlineKeys(terminal, data => api('/api/terminal/input', {method:'POST', body:JSON.stringify({id:terminalId,data})}).catch(error => notice(error.message,true)));
   terminal.onData(data => api('/api/terminal/input', {method: 'POST', body: JSON.stringify({id: terminalId, data})}).catch(error => notice(error.message, true)));
   resizeTerminal();
   terminalPoll = window.setInterval(readTerminal, 120);

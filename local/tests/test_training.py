@@ -12,6 +12,7 @@ def module(name):
     result=importlib.util.module_from_spec(spec);spec.loader.exec_module(result);return result
 dataset=module('dataset');control=module('control')
 with patch.dict(sys.modules,{'dataset':dataset}):runner=module('runner')
+preflight=module('preflight')
 
 class DatasetTests(unittest.TestCase):
     def test_nested_labels_and_unlabelled_without_answer_duplication(self):
@@ -60,6 +61,20 @@ class ControlTests(unittest.TestCase):
         self.payload={'confirmed':True,'expected_generation':'inference','settings':{'python':sys.executable,'model':'base/model','paths':[str(self.source)]}}
         self.probe=patch.object(control.subprocess,'run',return_value=Mock(returncode=0));self.probe.start();self.addCleanup(self.probe.stop)
     def call(self,action,p=None):return control.dispatch(action,p or self.payload,self.state,self.root,self.current,lambda path,s:path.write_text(s))
+    def test_relative_checkpoint_is_absolute_in_probe_and_request(self):
+        model=self.root/'models'/'checkpoint';model.mkdir(parents=True)
+        self.payload['settings']['model']=self.root.name+'/models/checkpoint'
+        status=self.call('training-start')
+        request=json.loads((Path(status['output'])/'request.json').read_text())
+        self.assertEqual(request['model'],str(model.resolve()))
+        self.assertIn(str(model.resolve()),control.subprocess.run.call_args.args[0])
+    def test_missing_local_model_fails_before_queueing(self):
+        self.payload['settings']['model']='remote/models/missing'
+        with self.assertRaisesRegex(ValueError,'Remote path does not exist'):self.call('training-start')
+        self.assertFalse((self.state/'desired').exists())
+    def test_huggingface_repository_remains_repository(self):
+        self.assertEqual(control.normalize_settings({'model':'Qwen/checkpoint'},self.root)['model'],'Qwen/checkpoint')
+
     def test_preflight_does_not_touch_allocation(self):
         self.payload['operation']='start';self.call('training-check');self.assertEqual(list(self.state.iterdir()),[])
     def test_start_stop_and_concurrent_start_fence(self):
@@ -94,7 +109,7 @@ class ContainerTests(ControlTests):
             status=self.call('training-start')
         probe=control.subprocess.run.call_args.args[0]
         self.assertEqual(probe[:2],['/usr/bin/apptainer','exec'])
-        self.assertNotIn('--nv',probe)
+        self.assertIn('--nv',probe)
         self.assertIn(str(image.resolve()),probe);self.assertIn('/opt/unsloth/bin/python',probe)
         script=(self.state/(status['run_id']+'.sh')).read_text()
         self.assertIn('APPTAINERENV_CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES"',script)
@@ -120,7 +135,44 @@ class ContainerTests(ControlTests):
         request=json.loads((Path(status['output'])/'request.json').read_text())
         self.assertEqual(request['action'],'export');self.assertEqual(request['quantization'],'q8_0')
 
+class AllocatedPreflightTests(ControlTests):
+    def test_slurm_checks_actual_node_before_publication(self):
+        self.current.update(backend_type='slurm_server',job_id='33025',slurm_state='RUNNING')
+        self.call('training-check')
+        args=control.subprocess.run.call_args.args[0]
+        self.assertEqual(args[0],'srun');self.assertIn('--jobid=33025',args)
+        self.assertIn(str(self.root/'training/preflight.py'),args)
+        self.assertFalse((self.state/'desired').exists())
+    def test_node_runtime_failure_preserves_current_generation(self):
+        (self.state/'desired').write_text('old-model')
+        control.subprocess.run.return_value=Mock(returncode=127,stderr='Python: No such file or directory')
+        with self.assertRaisesRegex(ValueError,'No such file'):self.call('training-start')
+        self.assertEqual((self.state/'desired').read_text(),'old-model')
+    def test_missing_packages_explain_training_vs_inference_image(self):
+        with patch.object(preflight.importlib.util,'find_spec',return_value=None):
+            with self.assertRaisesRegex(ValueError,'unsloth-training-cuda.sif'):preflight.main()
+    def test_package_presence_does_not_hide_broken_unsloth_import(self):
+        with patch.object(sys,'argv',['preflight',str(self.root),'qlora']),patch.object(preflight.importlib.util,'find_spec',return_value=True),patch.dict(sys.modules,{'unsloth':None}):
+            with self.assertRaises(ImportError):preflight.main()
+    def test_impossible_bf16_is_rejected_before_cold_torch_import(self):
+        (self.root/'model.safetensors.index.json').write_text(json.dumps({'metadata':{'total_size':360_000_000_000}}))
+        with patch.object(sys,'argv',['preflight',str(self.root),'bf16']),patch.object(preflight.importlib.util,'find_spec',return_value=True),patch.object(preflight.subprocess,'run',return_value=Mock(returncode=0,stdout='143771\n143771\n')),patch.dict(sys.modules,{'torch':None}):
+            with self.assertRaisesRegex(ValueError,'360.0 GB'):preflight.main()
+    def test_bf16_weights_must_fit_and_qlora_is_explicit(self):
+        (self.root/'model.safetensors.index.json').write_text(json.dumps({'metadata':{'total_size':360_000_000_000}}))
+        with self.assertRaisesRegex(ValueError,'Allocate more GPUs'):preflight.check_memory(str(self.root),'bf16',[144_000_000_000]*2)
+        preflight.check_memory(str(self.root),'bf16',[144_000_000_000]*4)
+        preflight.check_memory(str(self.root),'qlora',[144_000_000_000]*2)
+
 class LocalTests(unittest.TestCase):
+    def test_training_rpc_has_time_for_cold_node_imports(self):
+        from llm_away import resources
+        from llm_away.config import AppConfig
+        with patch.object(resources.subprocess,'run',return_value=Mock(returncode=0,stdout='{}')) as call:
+            resources.remote(AppConfig(),'token',123,'training-check')
+            self.assertEqual(call.call_args.kwargs['timeout'],240)
+            resources.remote(AppConfig(),'token',123,'status')
+            self.assertEqual(call.call_args.kwargs['timeout'],120)
     def test_preflight_failure_does_not_claim(self):
         from llm_away import training,resources,shared_sessions
         with patch.object(training,'state',return_value=(Path('/session'),{'token':'t','remote_port':12},Mock())),patch.object(shared_sessions,'current',return_value={'owner':{'id':'other'},'generation':'g'}),patch.object(shared_sessions,'claim') as claim,patch.object(resources,'remote',side_effect=ValueError('Runtime missing')):
@@ -178,7 +230,7 @@ class CheckpointTests(unittest.TestCase):
                         self.kwargs['callbacks'][0].on_step_end(None,SimpleNamespace(global_step=1,max_steps=1,epoch=1),ctl)
                         assert ctl.should_save and ctl.should_training_stop
                     def save_state(self):saved.append(True)
-                modules={'unsloth':SimpleNamespace(FastModel=loader),'torch':torch,
+                modules={'preflight':SimpleNamespace(check_memory=Mock()),'unsloth':SimpleNamespace(FastModel=loader),'torch':torch,
                          'transformers':SimpleNamespace(Trainer=Trainer,TrainingArguments=lambda **kw:kw,TrainerCallback=object)}
                 with patch.dict(sys.modules,modules):
                     if fail:
@@ -192,3 +244,82 @@ class CheckpointTests(unittest.TestCase):
                     self.assertEqual(job.status['phase'],'STOPPED');self.assertEqual(job.status['files_trained'],1)
 
 if __name__=='__main__':unittest.main()
+
+class CompilationCompatibilityTests(unittest.TestCase):
+    def test_qwen_and_saved_adapter_disable_compilation(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(runner.os.environ,{},clear=True):
+            root=Path(tmp);base=root/'base';base.mkdir()
+            (base/'config.json').write_text(json.dumps({'model_type':'qwen4_exp'}))
+            runner.configure_compilation(str(base))
+            self.assertEqual(runner.os.environ['UNSLOTH_COMPILE_DISABLE'],'1')
+            del runner.os.environ['UNSLOTH_COMPILE_DISABLE']
+            adapter=root/'adapter';adapter.mkdir()
+            (adapter/'adapter_config.json').write_text(json.dumps({'base_model_name_or_path':str(base)}))
+            runner.configure_compilation(str(adapter))
+            self.assertEqual(runner.os.environ['UNSLOTH_COMPILE_DISABLE'],'1')
+    def test_other_architectures_keep_compilation(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(runner.os.environ,{},clear=True):
+            root=Path(tmp);(root/'config.json').write_text('{"model_type":"llama"}')
+            runner.configure_compilation(str(root))
+            self.assertNotIn('UNSLOTH_COMPILE_DISABLE',runner.os.environ)
+
+class MonitoringAndDefaultsTests(unittest.TestCase):
+    def test_status_includes_bounded_log_and_skip_reasons(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);output=root/'run';output.mkdir()
+            (root/'training-status.json').write_text(json.dumps({'phase':'LOADING','output':str(output)}))
+            (output/'training.log').write_text('x'*15000+'\rLoading weights: 10/20')
+            (output/'dataset-report.json').write_text(json.dumps({'skipped':[{'path':'.DS_Store','reason':'Binary data'}]}))
+            status=control.read_status(root)
+            self.assertLessEqual(len(status['log_tail']),12000)
+            self.assertIn('\nLoading weights: 10/20',status['log_tail'])
+            self.assertEqual(status['skipped_files'][0]['path'],'.DS_Store')
+            self.assertGreater(status['log_time'],0)
+    def test_defaults_are_isolated_by_host_model_and_keep_local_paths(self):
+        from llm_away import training
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);cfg=SimpleNamespace(ssh=SimpleNamespace(destination='hydra'),remote=SimpleNamespace(workdir='/remote'))
+            with patch.object(training,'state',return_value=(root,{'config':str(root/'model.toml')},cfg)):
+                training.defaults(1,'Qwen',save={'paths':'/local/train','paths_location':'local','teacher_key':'secret'})
+                self.assertEqual(training.defaults(1)['paths'],'/local/train')
+                self.assertNotIn('teacher_key',training.defaults(1))
+                self.assertNotIn('paths',training.defaults(1,'GLM'))
+                cfg.ssh.destination='another-host'
+                self.assertNotIn('paths',training.defaults(1,'Qwen'))
+
+class OutputAndEvaluationTests(ControlTests):
+    def test_destination_creates_unique_artifact_folder_only_after_preflight(self):
+        destination=self.root/'new-results'
+        self.payload['settings']['destination']=str(destination)
+        self.payload['operation']='start';self.call('training-check')
+        self.assertFalse(destination.exists())
+        status=self.call('training-start')
+        spec=json.loads((Path(status['output'])/'request.json').read_text())
+        self.assertEqual(Path(spec['artifact_dir']),destination.resolve()/status['run_id'])
+        self.assertTrue(Path(spec['artifact_dir']).is_dir())
+    def test_eval_queues_saved_adapter_and_held_out_paths(self):
+        adapter=self.root/'adapter';adapter.mkdir();(adapter/'adapter_config.json').write_text('{}')
+        self.payload['settings']['adapter']=str(adapter)
+        status=self.call('training-evaluate')
+        spec=json.loads((Path(status['output'])/'request.json').read_text())
+        self.assertEqual(spec['action'],'evaluate');self.assertEqual(spec['paths'],[str(self.source.resolve())])
+        self.assertNotIn('model',spec)
+    def test_eval_without_dataset_does_not_replace_inference(self):
+        adapter=self.root/'adapter';adapter.mkdir();(adapter/'adapter_config.json').write_text('{}')
+        self.payload['settings'].update(adapter=str(adapter),paths=[])
+        with self.assertRaisesRegex(ValueError,'held-out'):self.call('training-evaluate')
+        self.assertFalse((self.state/'desired').exists())
+    def test_gguf_registration_checks_all_shards_and_quotes_paths(self):
+        output=self.root/'exports with spaces';(output/'gguf').mkdir(parents=True)
+        first=output/'gguf/model-Q4_K_M-00001-of-00002.gguf';first.write_bytes(b'GGUF')
+        spec=dict(run_id='abcd12345678',output=str(output),status_path=str(self.root/'status'),models_dir=str(self.root/'models'),sequence_length=2048,quantization='q4_k_m')
+        job=runner.Job(spec)
+        with self.assertRaisesRegex(ValueError,'missing or empty'):runner.register_export(job)
+        first.with_name(first.name.replace('00001','00002')).write_bytes(b'GGUF')
+        name=runner.register_export(job)
+        import subprocess
+        preset=self.root/'models'/name/'model.env'
+        self.probe.stop()
+        value=subprocess.check_output(['bash','-c','source "$1"; printf "%s" "$MODEL_GGUF"','test',str(preset)],text=True)
+        self.assertEqual(value,str(first.resolve()))

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Build a new versioned image; never overwrite a running container.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+kind=${1:-training}
+case "$kind" in
+  training) recipe=unsloth-training-cuda ;;
+  cuda) recipe=llama-server-cuda ;;
+  rocm) recipe=llama-server-rocm ;;
+  cuda-devel) recipe=cuda-devel ;;
+  *) echo 'Usage: build-container [training|cuda|rocm|cuda-devel] [NEW_OUTPUT.sif] [GPU_JOB_ID_FOR_TRAINING_TEST]' >&2; exit 2 ;;
+esac
+output=${2:-"$root/containers/$recipe-$(date -u +%Y%m%dT%H%M%SZ).sif"}
+[[ ! -e "$output" ]] || { echo "Refusing to overwrite existing image: $output" >&2; exit 1; }
+mkdir -p "$(dirname "$output")"
+output=$(cd "$(dirname "$output")" && pwd)/$(basename "$output")
+command -v apptainer >/dev/null
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/llm-away-build.XXXXXXXX")
+trap 'rm -rf -- "$scratch"' EXIT
+export APPTAINER_TMPDIR="$scratch"
+apptainer build --fakeroot --mksquashfs-args "-processors ${BUILD_CPUS:-4}" "$scratch/image.sif" "$root/containers/$recipe.def"
+if [[ "$kind" == training && -n "${3:-}" ]]; then
+  # The image must be on shared storage for the GPU node.
+  staged="$output.testing.sif"
+  [[ ! -e "$staged" ]] || { echo "Validation image already exists: $staged" >&2; exit 1; }
+  cp -n "$scratch/image.sif" "$staged"
+  if ! srun --jobid="$3" --overlap --exact --ntasks=1 --cpus-per-task=2 --chdir="$root" \
+      apptainer exec --nv --bind "$root" "$staged" /opt/unsloth-venv/bin/python "$root/training/check_causal_conv1d.py"; then
+    echo "Validation failed; unpublished image retained at $staged" >&2; exit 1
+  fi
+  mv -n "$staged" "$output"
+else
+  cp -n "$scratch/image.sif" "$output"
+fi
+apptainer inspect --deffile "$output" > "$output.def"
+echo "Built $output (definition: $output.def)"
