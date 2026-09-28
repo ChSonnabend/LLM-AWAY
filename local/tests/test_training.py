@@ -76,7 +76,10 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(control.normalize_settings({'model':'Qwen/checkpoint'},self.root)['model'],'Qwen/checkpoint')
 
     def test_preflight_does_not_touch_allocation(self):
-        self.payload['operation']='start';self.call('training-check');self.assertEqual(list(self.state.iterdir()),[])
+        self.payload['operation']='start';self.call('training-check')
+        self.assertFalse((self.state/'desired').exists())
+        self.assertFalse((self.state/'training-status.json').exists())
+        self.assertIn('Preflight passed',(self.state/'training-launch.log').read_text())
     def test_start_stop_and_concurrent_start_fence(self):
         status=self.call('training-start');run=status['run_id']
         self.assertEqual((self.state/'desired').read_text(),run)
@@ -175,8 +178,8 @@ class LocalTests(unittest.TestCase):
             self.assertEqual(call.call_args.kwargs['timeout'],120)
     def test_preflight_failure_does_not_claim(self):
         from llm_away import training,resources,shared_sessions
-        with patch.object(training,'state',return_value=(Path('/session'),{'token':'t','remote_port':12},Mock())),patch.object(shared_sessions,'current',return_value={'owner':{'id':'other'},'generation':'g'}),patch.object(shared_sessions,'claim') as claim,patch.object(resources,'remote',side_effect=ValueError('Runtime missing')):
-            with self.assertRaisesRegex(ValueError,'Runtime missing'):training.operate(1,'start',{'paths':'/data','model':'base'},True)
+        with patch.object(training,'state',return_value=(Path('/session'),{'token':'t','remote_port':12},Mock(ssh=Mock(destination='test-host')))),patch.object(shared_sessions,'current',return_value={'owner':{'id':'other'},'generation':'g'}),patch.object(shared_sessions,'claim') as claim,patch.object(resources,'remote',side_effect=ValueError('Runtime missing')):
+            with self.assertRaisesRegex(ValueError,'Runtime missing'):training._operate(1,'start',{'paths':'/data','model':'base'},True)
             claim.assert_not_called()
     def test_f7_stop_passes_positional_arguments(self):
         from llm_away import training,monitor_ui
@@ -338,8 +341,109 @@ class PreferenceFailureTests(unittest.TestCase):
     def test_preference_failure_does_not_hide_a_queued_run(self):
         from llm_away import training,resources,shared_sessions,terminals
         stop=Mock()
-        with patch.object(training,'state',return_value=(Path('/session'),{'token':'t','remote_port':12},Mock())),patch.object(shared_sessions,'current',return_value={'generation':'g'}),patch.object(resources,'remote',side_effect=[{}, {'output':'/queued/run'}]),patch.object(training,'defaults',side_effect=OSError('read only')),patch.object(terminals,'engine',return_value={'stop':stop}):
-            result=training.operate(1,'evaluate',{'adapter':'/adapter','eval_paths':'/eval'},True)
+        with patch.object(training,'state',return_value=(Path('/session'),{'token':'t','remote_port':12},Mock(ssh=Mock(destination='test-host')))),patch.object(shared_sessions,'current',return_value={'generation':'g'}),patch.object(resources,'remote',side_effect=[{}, {'output':'/queued/run'}]),patch.object(training,'defaults',side_effect=OSError('read only')),patch.object(terminals,'engine',return_value={'stop':stop}):
+            result=training._operate(1,'evaluate',{'adapter':'/adapter','eval_paths':'/eval'},True)
             self.assertIn('Queued evaluate',result)
             self.assertIn('Could not save defaults',result)
             stop.assert_called_once()
+
+
+class LaunchDiagnosticsTests(unittest.TestCase):
+    def test_failure_is_persistent_and_visible_before_worker_exists(self):
+        from llm_away import training
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)
+            with patch.object(training,'state',return_value=(path,{},Mock())),patch.object(training,'_operate',side_effect=ValueError('missing runtime')):
+                with self.assertRaisesRegex(ValueError,'missing runtime'):training.operate(24,'start',{},True)
+            status=training.launch_status(path)
+            self.assertEqual(status['phase'],'FAILED')
+            self.assertIn('Requested start',status['log_tail'])
+            self.assertIn('missing runtime',status['error'])
+            self.assertEqual(status['log_path'],str(path/'training-launch.log'))
+
+    def test_abandoned_launch_reports_failure_after_dashboard_restart(self):
+        from llm_away import training
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp);(path/'training-launch.json').write_text('{"phase":"PREPARING"}')
+            self.assertEqual(training.launch_status(path)['phase'],'FAILED')
+
+    def test_concurrent_launch_is_rejected_without_overwriting_diagnostics(self):
+        from llm_away import training
+        import fcntl
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)
+            with (path/'training-launch.lock').open('a') as lock,patch.object(training,'state',return_value=(path,{},Mock())):
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                with self.assertRaisesRegex(ValueError,'already in progress'):training.operate(24,'start',{},True)
+                self.assertFalse((path/'training-launch.json').exists())
+
+    def test_f7_training_fields_match_web_training_options(self):
+        from llm_away import training,monitor_ui
+        captured=[]
+        def form(title,fields,values,submit):
+            captured.extend(fields);return values
+        with patch.object(monitor_ui,'dropdown_win',side_effect=['Start training','Apptainer container','Continue']),patch.object(monitor_ui,'_form_screen',side_effect=form),patch.object(training,'defaults',return_value={}),patch.object(monitor_ui,'terminal_operation',return_value='queued') as operation:
+            training.menu(35)
+        settings=operation.call_args.args[3]
+        self.assertTrue({'model','paths','paths_location','precision','epochs','sequence_length','lora_rank','teacher_session','python','runtime','container','save_destination'}<=settings.keys())
+        self.assertEqual(settings['runtime'],'apptainer')
+        self.assertTrue(any(field[0]=='select' and field[2]==['local','remote'] for field in captured))
+
+class LaunchPreflightTests(ControlTests):
+    def test_successful_check_is_not_run_twice(self):
+        self.payload['operation']='start';self.call('training-check')
+        status=self.call('training-start')
+        self.assertEqual(control.subprocess.run.call_count,1)
+        self.assertIn('Queued training-start',(Path(status['output'])/'training.log').read_text())
+        self.assertIn('PYTHONUNBUFFERED=1',(self.state/(status['run_id']+'.sh')).read_text())
+
+    def test_preflight_cache_invalidated_by_configuration_change(self):
+        self.payload['operation']='start';self.call('training-check')
+        self.payload['settings']['precision']='bf16';self.call('training-check')
+        self.assertEqual(control.subprocess.run.call_count,2)
+
+    def test_failed_preflight_records_command_and_error_without_unloading(self):
+        control.subprocess.run.return_value=Mock(returncode=1,stderr='CUDA unavailable')
+        with self.assertRaisesRegex(ValueError,'CUDA unavailable'):self.call('training-start')
+        text=(self.state/'training-launch.log').read_text()
+        self.assertIn('Preflight command',text);self.assertIn('CUDA unavailable',text)
+        self.assertFalse((self.state/'desired').exists())
+
+
+class WorkerTransitionTests(unittest.TestCase):
+    def test_existing_inference_stops_before_training_worker_starts(self):
+        import os,signal,subprocess,time,shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);state=root/'state';state.mkdir();bin_dir=root/'bin';bin_dir.mkdir()
+            worker=TRAINING.parent/'bin/resource-worker'
+            shutil.copyfile(worker,bin_dir/'resource-worker')
+            (bin_dir/'resource-terminal').write_text('pass\n')
+            for helper in ('resource-telemetry','resource-prompts'):
+                (bin_dir/helper).write_text('import time; time.sleep(60)\n')
+            (state/'inference.sh').write_text('exec sleep 60\n')
+            (state/'desired').write_text('inference')
+            process=subprocess.Popen(['bash',str(bin_dir/'resource-worker'),str(state)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+            def wait_for(predicate):
+                deadline=time.monotonic()+12
+                while time.monotonic()<deadline:
+                    if predicate():return
+                    time.sleep(.05)
+                self.fail('worker transition timed out')
+            try:
+                wait_for(lambda:(state/'worker.state').exists() and 'inference LOADING' in (state/'worker.state').read_text())
+                # The worker shell exposes its children via procfs; identify its sleep inference.
+                children=Path('/proc/'+str(process.pid)+'/task/'+str(process.pid)+'/children').read_text().split()
+                inference=[pid for pid in children if Path('/proc/'+pid+'/comm').read_text().strip()=='sleep'][0]
+                settings={'python':sys.executable,'model':'base/model','paths':[str(state/'inference.sh')]}
+                current={'active':True,'generation':'inference'}
+                (root/'training').mkdir()
+                (root/'training/runner.py').write_text('from pathlib import Path\nassert not Path("/proc/'+inference+'").exists(), "inference still running"\nprint("training started",flush=True)\n')
+                with patch.object(control.subprocess,'run',return_value=Mock(returncode=0)):
+                    status=control.dispatch('training-start',{'confirmed':True,'expected_generation':'inference','settings':settings},state,root,current,lambda p,s:p.write_text(s))
+                log=Path(status['log_path'])
+                wait_for(lambda:'training started' in log.read_text())
+                self.assertIn('Inference stopped; starting training worker',log.read_text())
+            finally:
+                os.killpg(process.pid,signal.SIGTERM)
+                try:process.wait(timeout=10)
+                except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.wait()

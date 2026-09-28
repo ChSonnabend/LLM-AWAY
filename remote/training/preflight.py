@@ -31,6 +31,8 @@ def main():
         except (OSError,subprocess.TimeoutExpired,ValueError):capacities=[]
         if capacities:check_memory(sys.argv[1],sys.argv[2],capacities)
     # Validate real imports too: package presence alone misses incompatible stacks.
+    from runner import configure_compilation
+    configure_compilation(sys.argv[1])
     from unsloth import FastModel
     import torch
     if not torch.cuda.is_available():raise ValueError('Training Python cannot access CUDA on the allocated node')

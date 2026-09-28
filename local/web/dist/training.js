@@ -20,22 +20,27 @@ function renderTrainingStatus() {
   const row = trainingRows.find(row => String(row.id) === $('training-session').value);
   syncTrainingGraph(row);
   const state = row?.training || {};
+  const launch = row?.training_launch || {};
+  const preparing = launch.phase === 'PREPARING';
   $('training-log-title').textContent = row ? `Training output · Session ${row.id} · ${row.host} · ${state.phase || 'No run'}` : 'Training output';
-  const active = trainingActive.has(state.phase);
+  const active = trainingActive.has(state.phase) || preparing;
   const percent = Math.min(100, Math.max(0, Number(state.percent) || 0));
   $('training-summary').textContent = row ? `${state.phase || 'Ready'} · ${state.files_evaluated ?? state.files_trained ?? 0}/${state.files_total || 0} files ${state.files_evaluated != null ? 'evaluated' : 'trained'} (${percent}%)${state.step != null ? ` · step ${state.step}/${state.steps_total} · epoch ${(state.epoch || 0).toFixed(2)}` : ''}` : 'Select an allocation.';
+  if (preparing || launch.phase === 'FAILED') $('training-summary').textContent = `${launch.phase} · ${launch.message || launch.error || ''}`;
   const fill = $('training-progress-fill'); fill.style.width = `${percent}%`; fill.style.background = `hsl(${percent * 1.2} 65% 43%)`;
   fill.parentElement.setAttribute('aria-valuenow', String(percent));
-  const details = [state.files_prepared != null ? `Prepared: ${state.files_prepared}/${state.files_registered || state.files_total} files; skipped: ${state.skipped || 0}` : '', state.teacher_files != null ? `Teacher processed ${state.teacher_files} files` : '', state.run_id ? `Run: ${state.run_id}` : '', state.time ? `Last status update: ${new Date(state.time*1000).toLocaleString()}` : '', state.output ? `Run directory: ${state.output}` : '', state.log_path || state.output ? `Output log: ${state.log_path || state.output + '/training.log'}` : '', state.adapter ? `Saved adapter: ${state.adapter}` : '', state.export_path ? `Export: ${state.export_path}` : '', state.model_preset ? `Chat model preset: ${state.model_preset}` : '', state.evaluation_path ? `Evaluation report: ${state.evaluation_path}` : '', state.metrics ? JSON.stringify(state.metrics) : '', state.error || state.message || '', ...(state.skipped_files || []).map(file => `Skipped: ${file.path} — ${file.reason}`), 'File progress counts all chunks of each source through at least one optimizer update. Later epochs are shown separately.'].filter(Boolean).join('\n');
+  const details = [launch.phase === 'FAILED' ? `Launch failed: ${launch.error}` : '', preparing ? launch.message : '', state.files_prepared != null ? `Prepared: ${state.files_prepared}/${state.files_registered || state.files_total} files; skipped: ${state.skipped || 0}` : '', state.teacher_files != null ? `Teacher processed ${state.teacher_files} files` : '', state.run_id ? `Run: ${state.run_id}` : '', state.time ? `Last status update: ${new Date(state.time*1000).toLocaleString()}` : '', state.output ? `Run directory: ${state.output}` : '', state.log_path || state.output ? `Output log: ${state.log_path || state.output + '/training.log'}` : '', state.adapter ? `Saved adapter: ${state.adapter}` : '', state.export_path ? `Export: ${state.export_path}` : '', state.model_preset ? `Chat model preset: ${state.model_preset}` : '', state.evaluation_path ? `Evaluation report: ${state.evaluation_path}` : '', state.metrics ? JSON.stringify(state.metrics) : '', state.error || state.message || '', ...(state.skipped_files || []).map(file => `Skipped: ${file.path} — ${file.reason}`), 'File progress counts all chunks of each source through at least one optimizer update. Later epochs are shown separately.'].filter(Boolean).join('\n');
   const output = $('training-details');
   const selection = window.getSelection();
   if (!output.dataset.selecting && !(selection && !selection.isCollapsed && (output.contains(selection.anchorNode) || output.contains(selection.focusNode))) && output.textContent !== details) output.textContent = details;
   for (const id of ['training-start','training-q4','training-q8','training-evaluate']) $(id).disabled = !row || active || trainingPending.has(String(row.id));
   if (!$('training-adapter').value && state.adapter) $('training-adapter').value=state.adapter;
-  $('training-stop').disabled = !active;
+  $('training-stop').disabled = !trainingActive.has(state.phase);
   const age = state.log_time ? Math.max(0, Math.floor(Date.now()/1000-state.log_time)) : null;
   $('training-log-age').textContent = age === null ? 'No worker output yet.' : `Last log output ${age}s ago. ${active && age > 120 ? 'No recent log output; check GPU activity below. Silence alone does not prove the process is stuck.' : 'File training progress begins after weight loading and tokenization.'}`;
-  updateTrainingText($('training-live-log'), (state.log_tail || 'Waiting for worker output…').replace(/\x1b\[[0-9;?]*[A-Za-z]/g,''));
+  $('training-log-path').textContent = [launch.log_path ? `Launch log (local): ${launch.log_path}` : '', state.log_path ? `Worker log (remote): ${state.log_path}` : 'Worker log: created after preflight passes.'].filter(Boolean).join('\n');
+  const logs = [launch.log_tail ? `Launch diagnostics\n${launch.log_tail}` : '', state.log_tail ? `Worker output${preparing || launch.phase === 'FAILED' ? ' (previous run)' : ''}\n${state.log_tail}` : 'Waiting for worker output…'].filter(Boolean).join('\n\n');
+  updateTrainingText($('training-live-log'), logs.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,''));
 }
 async function trainingOperation(action, quantization) {
   const row = trainingRows.find(row => String(row.id) === $('training-session').value);

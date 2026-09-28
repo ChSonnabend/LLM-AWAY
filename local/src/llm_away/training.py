@@ -6,6 +6,8 @@ import shlex
 import tempfile
 import uuid
 import threading
+import time
+import fcntl
 
 ACTIVE={'QUEUED','PREPARING','DISTILLING','LOADING','TRAINING','SAVING','EXPORTING','EVALUATING','STOPPING'}
 
@@ -69,7 +71,54 @@ def local_sources(cfg,allocation,token,paths,path):
                 'import json,sys; from pathlib import Path; [Path(p).write_text(s) for p,s in json.load(sys.stdin).items()]'],input_stream=stream)
     return targets
 
+def launch_status(path):
+    """Persistent launch diagnostics, including failures before a worker exists."""
+    try:status=json.loads((path/'training-launch.json').read_text())
+    except (OSError,ValueError):return {}
+    if status.get('phase')=='PREPARING':
+        with (path/'training-launch.lock').open('a') as lock:
+            try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except BlockingIOError:pass
+            else:status.update(phase='FAILED',error='Launch process exited before completing. Check launch log and remote status before retrying.',message='Launch process exited before completing. Check launch log and remote status before retrying.')
+    log=path/'training-launch.log'
+    try:
+        with log.open('rb') as stream:
+            stream.seek(max(0,log.stat().st_size-16000))
+            status['log_tail']=stream.read().decode('utf-8',errors='replace')
+        status['log_time']=log.stat().st_mtime
+    except OSError:pass
+    return status
+
+
 def operate(number,action,settings=None,confirmed=False,run_id=None):
+    if action in ('status','stop'):
+        return _operate(number,action,settings,confirmed,run_id)
+    if action not in ('start','export','evaluate'):raise ValueError('Unknown training operation')
+    if not confirmed:raise ValueError('Confirm that all chats using this allocation will be interrupted')
+    from . import resources as r
+    path,_,_=state(number)
+    with (path/'training-launch.lock').open('a') as lock:
+        try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:raise ValueError('A training launch is already in progress') from None
+        status=dict(action=action,phase='PREPARING',time=time.time(),log_path=str(path/'training-launch.log'))
+        def progress(message,phase=None):
+            if phase:status['phase']=phase
+            status.update(message=message,time=time.time())
+            with (path/'training-launch.log').open('a') as log:
+                log.write(time.strftime('%Y-%m-%d %H:%M:%S')+' | '+message+'\n')
+            r.write(path/'training-launch.json',status)
+        progress('Requested '+action+' for session '+str(number)+'. Validating before unloading inference.')
+        try:
+            result=_operate(number,action,settings,confirmed,run_id,progress)
+            progress(result,'QUEUED')
+            return result
+        except Exception as exc:
+            status['error']=str(exc)
+            progress(type(exc).__name__+': '+str(exc),'FAILED')
+            raise
+
+
+def _operate(number,action,settings=None,confirmed=False,run_id=None,progress=lambda message:None):
     from . import resources as r, shared_sessions
     path,data,cfg=state(number);settings=dict(settings or {});entered_settings=dict(settings)
     if action in ('status','stop'):
@@ -77,6 +126,7 @@ def operate(number,action,settings=None,confirmed=False,run_id=None):
         return result if action=='status' else 'Stop requested; weights will be saved at the next optimizer step. During preparation no weights have been trained yet.'
     if action not in ('start','export','evaluate'):raise ValueError('Unknown training operation')
     if not confirmed:raise ValueError('Confirm that all chats using this allocation will be interrupted')
+    progress("SSH: query allocation status on "+cfg.ssh.destination)
     allocation=shared_sessions.current(path)
     if allocation.get('training',{}).get('phase') in ACTIVE:raise ValueError('Training/export is already running')
     if action=='evaluate':
@@ -85,7 +135,10 @@ def operate(number,action,settings=None,confirmed=False,run_id=None):
     settings['destination']=settings.get('export_destination' if action=='export' else 'save_destination','')
     if action in ('start','evaluate'):
         paths=[s.strip() for s in str(settings.get('paths','')).split(os.pathsep) if s.strip()]
-        if settings.get('paths_location','remote')=='local':paths=local_sources(cfg,allocation,data['token'],paths,path)
+        if settings.get('paths_location','remote')=='local':
+            progress('Preparing and uploading local dataset snapshot: '+', '.join(paths))
+            paths=local_sources(cfg,allocation,data['token'],paths,path)
+            progress('Dataset snapshot ready: '+', '.join(paths))
         settings['paths']=paths
         teacher_id=settings.pop('teacher_session',None)
         if teacher_id and action=='start':
@@ -100,28 +153,53 @@ def operate(number,action,settings=None,confirmed=False,run_id=None):
                                  'model':remote['session']['model']['name'],'max_tokens':2048}
             settings['teacher_key']=r.remote(teacher_cfg,teacher['token'],teacher['remote_port'],'credential').get('api_key','')
     # Check prerequisites before changing ownership or interrupting any chat.
-    r.remote(cfg,data['token'],data['remote_port'],'training-check',operation=action,settings=settings,
+    progress('SSH: training-check on '+cfg.ssh.destination+'; allocated-node preflight may take up to 180 seconds. Inference remains loaded until checks pass.')
+    checked=r.remote(cfg,data['token'],data['remote_port'],'training-check',operation=action,settings=settings,
              confirmed=True,expected_generation=allocation.get('generation',''))
+    if isinstance(checked,dict):
+        progress('Preflight passed. Remote launch log: '+str(checked.get('log_path','unavailable')))
+        if checked.get('log_tail'):progress(checked['log_tail'])
     owner=allocation.get('owner') or {}
     if owner.get('id') and owner['id']!=shared_sessions.client_identity():
         allocation=shared_sessions.claim(path,owner['id'],allocation.get('generation',''))
+    progress('SSH: training-'+action+'; publishing worker request to unload inference and launch the training runtime.')
     result=r.remote(cfg,data['token'],data['remote_port'],'training-'+action,settings=settings,
                     confirmed=True,expected_generation=allocation.get('generation',''))
+    progress('Worker request queued. Output log: '+str(result.get('log_path',result['output']+'/training.log')))
     preference_warning=''
     try:defaults(number,entered_settings.get('model',''),save=entered_settings)
     except (OSError,ValueError,TypeError) as exc:preference_warning=' (Could not save defaults: '+str(exc)+')'
     # No local model stop RPC: only detach this client; the remote worker owns the transition.
     from .terminals import engine
-    engine()['stop'](path)
+    try:engine()['stop'](path)
+    except Exception as exc:preference_warning+=' (Queued successfully; local terminal cleanup failed: '+str(exc)+')'
     return 'Queued '+action+' in allocation '+str(number)+'. Output: '+result['output']+preference_warning
 
 def menu(number):
     from .monitor_ui import dropdown_win,_form_screen,terminal_operation
-    choice=dropdown_win('Fine-tuning — session '+str(number),['Start training','Stop and save','Evaluate adapter','Export Q4','Export Q8','Show progress'],'Show progress')
+    choice=dropdown_win('Fine-tuning — session '+str(number),['Start training','Stop and save','Evaluate adapter','Export Q4','Export Q8','Show progress','Show output log'],'Show progress')
     if choice is None:return 'Cancelled'
+    if choice=='Show output log':
+        path,_,_=state(number)
+        s=terminal_operation(operate,number,'status');launch=launch_status(path)
+        from .monitor_ui import _terminal_screen
+        import curses
+        lines=('Launch log: '+str(launch.get('log_path',''))+'\n'+launch.get('log_tail','')+'\nOutput log: '+str(s.get('log_path',''))+'\n'+s.get('log_tail','No worker output yet.')).splitlines()
+        def view(win):
+            top=max(0,len(lines)-max(1,win.getmaxyx()[0]-2));win.keypad(True)
+            while True:
+                h,w=win.getmaxyx();win.erase()
+                for y,line in enumerate(lines[top:top+max(1,h-2)]):win.addnstr(y,0,line,max(1,w-1))
+                win.addnstr(h-1,0,'Up/Down/PgUp/PgDn scroll; Esc/q close',max(1,w-1));win.refresh();key=win.getch()
+                if key in (27,ord('q')):break
+                step=-(h-2) if key==curses.KEY_PPAGE else (h-2) if key==curses.KEY_NPAGE else -1 if key==curses.KEY_UP else 1 if key==curses.KEY_DOWN else 0
+                top=max(0,min(max(0,len(lines)-max(1,h-2)),top+step))
+        _terminal_screen(view)
+        return 'Training log closed'
     if choice=='Show progress':
         s=terminal_operation(operate,number,'status')
-        return f"{s.get('phase','No training')} | files {s.get('files_trained',0)}/{s.get('files_total',0)} ({s.get('percent',0)}%) | {s.get('error') or s.get('output','')}"
+        launch=launch_status(state(number)[0])
+        return f"Launch: {launch.get('phase','—')} {launch.get('error','')} | Log: {s.get('log_path',launch.get('log_path',''))} | {s.get('phase','No training')} | files {s.get('files_trained',0)}/{s.get('files_total',0)} ({s.get('percent',0)}%) | {s.get('error') or s.get('output','')}"
     if choice=='Stop and save':
         s=terminal_operation(operate,number,'status');return terminal_operation(operate,number,'stop',None,False,s.get('run_id'))
     saved=defaults(number)
@@ -139,11 +217,12 @@ def menu(number):
         action='evaluate'
     else:
         keys=['model','paths','paths_location','precision','epochs','sequence_length','lora_rank','teacher_session','python','save_destination']
-        labels=['Base BF16 model directory / HF repository','Source folders/files (colon-separated)','Paths on local or remote machine','Precision: qlora or bf16','Epochs','Sequence length','LoRA rank','Teacher session (optional)','Training Python (optional)','Save adapters under remote folder (optional)']
+        labels=['Base BF16 model directory / HF repository','Training source folders/files (colon-separated)','Training source location','Precision: qlora or bf16','Epochs','Sequence length','LoRA rank','Teacher session (optional)','Training Python (optional)','Save adapters under remote folder (optional)']
         action='start'
     if mode!='native':keys.append('container');labels.append('Remote container image path')
     initial={'paths_location':'remote','eval_paths_location':'remote','precision':'qlora','epochs':'1','sequence_length':'2048','lora_rank':'16',**saved}
-    fields=[('text',label,None,str(initial.get(key,''))) for key,label in zip(keys,labels)]
+    options={'paths_location':['local','remote'],'eval_paths_location':['local','remote'],'precision':['qlora','bf16']}
+    fields=[('select' if key in options else 'text',label,options.get(key),str(initial.get(key,''))) for key,label in zip(keys,labels)]
     values=_form_screen(choice,fields,[f[3] for f in fields],choice)
     if values is None:return 'Cancelled'
     if dropdown_win('This unloads the model and interrupts all attached chats',['Cancel','Continue'],'Cancel')!='Continue':return 'Cancelled'

@@ -64,28 +64,30 @@
         <div class="form-grid">
           <label class="field">Allocation<select id="training-session"></select></label>
           <label class="field">Base model: BF16 folder or Hugging Face repository<input id="training-model" placeholder="/remote/models/Qwen3.8-Flash-Next-BF16"></label>
-          <label class="field">Source folders / files<input id="training-paths" placeholder="/data/project:/data/manual.pdf"><small>Recursive, colon-separated. QandA_finetuning.txt maps questions to [answer-file paths]. Unsupported files are listed in the dataset report.</small></label>
-          <label class="field">Source location<select id="training-source"><option value="remote">Remote allocation host</option><option value="local">This machine (upload snapshot)</option></select></label>
+          <label class="field">Training source folders / files<input id="training-paths" placeholder="/data/project:/data/manual.pdf"><small>Recursive, colon-separated. QandA_finetuning.txt maps questions to [answer-file paths]. Unsupported files are listed in the dataset report.</small></label>
+          <label class="field">Training source location<select id="training-source"><option value="remote">Remote allocation host</option><option value="local">This machine (upload snapshot)</option></select></label>
+          <label class="field">Held-out evaluation folders / files<input id="training-eval-paths" placeholder="/data/O2_finetuning_dataset/eval"></label>
+          <label class="field">Evaluation source location<select id="training-eval-source"><option value="remote">Remote allocation host</option><option value="local">This machine (upload snapshot)</option></select></label>
           <label class="field wide">Training precision<select id="training-precision"><option value="qlora">QLoRA — 4-bit base, train adapters</option><option value="bf16">BF16 base, train LoRA adapters</option></select></label>
           <label class="field quarter">Epochs<input id="training-epochs" type="number" min="0.01" max="100" step="0.1" value="1"></label>
           <label class="field quarter">Sequence length<input id="training-length" type="number" min="128" max="131072" value="2048"></label>
           <label class="field quarter">LoRA rank<input id="training-rank" type="number" min="1" max="256" value="16"></label>
-          <label class="field quarter">Teacher session (optional)<input id="training-teacher" type="number" min="1" placeholder="e.g. 18"><small>Keep GLM loaded in a separate allocation on the same SSH host; train the student on its saved responses.</small></label>
+          <label class="field quarter">Teacher session (optional)<input id="training-teacher" type="number" min="1" placeholder="e.g. 18"></label>
+          <div class="training-runtime-row">
           <label class="field">Training runtime<select id="training-runtime"><option value="native">Native Python environment</option><option value="apptainer">Apptainer container</option><option value="singularity">Singularity container</option></select></label>
-          <label class="field" id="training-container-field" hidden>Remote container image<input id="training-container" placeholder="/remote/containers/unsloth-training-cuda.sif"><small>Use an Unsloth training image, not a llama.cpp server image. GPU access and source/output mounts are added automatically.</small></label>
-          <label class="field wide">Training Python (optional)<input id="training-python" placeholder="remote/venvs/unsloth/bin/python"><small id="training-python-help">Install on the remote host with remote/bin/setup-training. Uses the allocation’s GPUs with automatic layer sharding.</small></label>
+          <label class="field" id="training-container-field" hidden>Remote container image<input id="training-container" placeholder="/remote/containers/unsloth-training-cuda.sif"></label>
+          <label class="field">Training Python (optional)<input id="training-python" placeholder="remote/venvs/unsloth/bin/python"><small id="training-python-help">Install on the remote host with remote/bin/setup-training. Uses the allocation’s GPUs with automatic layer sharding.</small></label>
+          </div>
           <label class="field wide">Save training / evaluation results under (remote folder)<input id="training-save-destination" placeholder="Default: allocation run directory"><small>Creates a new run folder here; trained LoRA weights are in its adapter/ subfolder. The base model stays separate.</small></label>
-          <label class="field wide">Saved adapter directory for evaluation / export<input id="training-adapter" placeholder="Copy adapter path from completed training below"></label>
-          <label class="field wide">Export GGUF under (remote folder)<input id="training-export-destination" placeholder="Default: allocation run directory"><small>Creates a new run folder containing gguf/. Successful Q4/Q8 exports appear as finetuned-… in Attach → model selection. Refresh the model list after export.</small></label>
-          <label class="field">Held-out evaluation folders / files<input id="training-eval-paths" placeholder="/data/O2_finetuning_dataset/eval"><small>Separate evaluation action: answer-token loss and perplexity, without updating weights. Do not use files seen during training.</small></label>
-          <label class="field">Evaluation source location<select id="training-eval-source"><option value="remote">Remote allocation host</option><option value="local">This machine (upload snapshot)</option></select></label>
+          <label class="field">Saved adapter directory for evaluation / export<input id="training-adapter" placeholder="Copy adapter path from completed training below"></label>
+          <label class="field">Export GGUF under (remote folder)<input id="training-export-destination" placeholder="Default: allocation run directory"><small>Creates a new run folder containing gguf/. Successful Q4/Q8 exports appear as finetuned-… in Attach → model selection. Refresh the model list after export.</small></label>
         </div>
         <label class="replace-warning"><input id="training-confirm" type="checkbox">Starting training, evaluation or export unloads the current model and interrupts all attached chats.</label>
         <div class="form-actions"><button id="training-start" class="primary">Start fine-tuning</button><button id="training-stop">Stop and save weights</button><button id="training-evaluate">Evaluate adapter</button><button id="training-q4">Export Q4</button><button id="training-q8">Export Q8</button></div>
         <p id="training-summary" role="status">Select an allocation.</p>
         <div class="training-progress" role="progressbar" aria-label="Files trained through at least once" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="training-progress-fill"></div></div>
         <pre id="training-details" class="log-output"></pre>
-        <h3 id="training-log-title">Training output</h3><p id="training-log-age"></p><pre id="training-live-log" class="log-output"></pre>
+        <h3 id="training-log-title">Training output</h3><p id="training-log-path" class="training-log-path"></p><p id="training-log-age"></p><pre id="training-live-log" class="log-output"></pre>
       </div>
     </section>
     <section class="panel gpu-overview-panel" id="training-gpu-panel" hidden>
@@ -104,6 +106,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
   <script src="/app.js?v=22"></script>
-  <script src="/training.js?v=6"></script>
+  <script src="/training.js?v=7"></script>
 </body>
 </html>

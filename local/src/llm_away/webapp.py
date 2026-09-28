@@ -58,6 +58,7 @@ def start_job(label, function):
             message=str(result if result is not None else label+' completed.')
             with JOBS_LOCK:JOBS[identifier].update(state='done',message=message)
         except Exception as exc:
+            print(json.dumps(dict(event='operation_failed',job=identifier,label=label,error=str(exc))),flush=True)
             with JOBS_LOCK:JOBS[identifier].update(state='error',message=str(exc))
     threading.Thread(target=run,daemon=True).start()
     return identifier
@@ -274,6 +275,7 @@ def switch_chat_interface(number, cli):
 
 def session_rows():
     """Return monitor information without exposing session tokens or config."""
+    from .training import launch_status
     rows=[]
     for row in monitor_ui.snapshots(resources.STORE):
         allocation=row.get('allocation') or {}
@@ -291,6 +293,7 @@ def session_rows():
             'model_state':model_state, 'busy':row.get('_busy',False),
             'attached':bool(row.get('_terminal')) if row.get('native') else resources.locally_attached(row),
             'training':allocation.get('training',{}),
+            'training_launch':launch_status(resources.STORE/str(row['id'])),
             'terminal':row.get('_terminal',False), 'error':row.get('error',''),
             'agent_text':str(agent.get('text') or '')[-32768:],
             'gpu_lines':telemetry.get('lines',[]), 'gpu_timestamp':telemetry.get('timestamp'),
@@ -584,6 +587,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._json({'job':identifier});return
             if self.path=='/api/training':
                 from .training import operate
+                print(json.dumps(dict(event='training_requested',session=body.get('session'),action=body.get('action'),time=time.time())),flush=True)
                 identifier=start_job('Fine-tuning',lambda:operate(body.get('session'),body.get('action'),body.get('settings'),body.get('confirmed',False),body.get('run_id')))
                 self._json({'job':identifier});return
             if self.path=='/api/allocate':

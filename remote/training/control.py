@@ -1,5 +1,6 @@
 """Small dependency-free controller, invoked under the resource allocation lock."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import shlex
@@ -71,6 +72,17 @@ def normalize_settings(settings,root,export=False,evaluate=False):
         settings['destination_mount']=str(parent)
     return settings
 
+def launch_log(state,message):
+    path=state/'training-launch.log'
+    with path.open('a') as stream:
+        stream.write(time.strftime('%Y-%m-%d %H:%M:%S')+' | '+message+'\n')
+    return path
+
+
+def preflight_key(settings,current):
+    return hashlib.sha256(json.dumps([settings,current.get('generation'),current.get('job_id')],sort_keys=True).encode()).hexdigest()
+
+
 def execution(settings,state,root,current=None):
     """Use the same interpreter and mounts for preflight and the allocated worker."""
     mode=settings.get('runtime','native')
@@ -105,12 +117,40 @@ def execution(settings,state,root,current=None):
     if current.get('backend_type')=='slurm_server':
         if not current.get('job_id') or current.get('slurm_state')!='RUNNING':raise ValueError('Wait for the allocation to be RUNNING before training')
         probe_command=['srun','--jobid='+str(current['job_id']),'--overlap','--exact','--ntasks=1','--cpus-per-task=1','--chdir='+str(root),*probe_command]
-    try:probe=subprocess.run(probe_command,capture_output=True,text=True,timeout=180)
-    except (OSError,subprocess.TimeoutExpired) as exc:raise ValueError('Training environment check failed: '+str(exc)) from exc
-    if probe.returncode:raise ValueError('Training environment check failed: '+(probe.stderr or probe.stdout)[-2000:])
+    receipt=state/'training-preflight.json'
+    key=preflight_key(settings,current)
+    try:cached=json.loads(receipt.read_text())
+    except (OSError,ValueError):cached={}
+    if cached.get('key')==key and 0<=time.time()-cached.get('time',0)<300:
+        launch_log(state,'Reusing successful preflight for this configuration and model generation.')
+        return command
+    log_path=launch_log(state,'Preflight command (180s timeout): '+shlex.join(probe_command))
+    try:
+        with log_path.open('a') as stream:
+            probe=subprocess.run(probe_command,stdout=stream,stderr=subprocess.STDOUT,text=True,timeout=180)
+    except (OSError,subprocess.TimeoutExpired) as exc:
+        launch_log(state,'Preflight failed: '+str(exc))
+        raise ValueError('Training environment check failed: '+str(exc)+'; log: '+str(log_path)) from exc
+    if probe.returncode:
+        detail=getattr(probe,'stderr','')
+        if not isinstance(detail,str) or not detail:detail=log_path.read_text()[-2000:]
+        launch_log(state,'Preflight exited with code '+str(probe.returncode))
+        raise ValueError('Training environment check failed: '+detail[-2000:]+'; log: '+str(log_path))
+    launch_log(state,'Preflight passed; inference may now be replaced.')
+    receipt.write_text(json.dumps({'key':key,'time':time.time()}))
     return command
 
 def dispatch(action,p,state,root,current,write):
+    if action in ('training-status','training-stop'):
+        return _dispatch(action,p,state,root,current,write)
+    launch_log(state,'Received '+action+'; generation '+str(current.get('generation','')))
+    try:return _dispatch(action,p,state,root,current,write)
+    except Exception as exc:
+        launch_log(state,type(exc).__name__+': '+str(exc))
+        raise
+
+
+def _dispatch(action,p,state,root,current,write):
     status=read_status(state)
     if action=='training-status':return status
     if action=='training-stop':
@@ -157,9 +197,13 @@ def dispatch(action,p,state,root,current,write):
             spec['teacher']=settings['teacher']
     if settings.get('destination'):spec['artifact_dir']=str(Path(settings['destination'])/run_id)
     command=execution(settings,state,root,current)
-    if validate_only:return {'validated':True}
+    if validate_only:
+        log=state/'training-launch.log'
+        return {'validated':True,'log_path':str(log),'log_tail':log.read_text()[-8000:]}
     if spec.get('artifact_dir'):Path(spec['artifact_dir']).mkdir(parents=True,mode=0o700,exist_ok=False)
     output.mkdir(parents=True,mode=0o700)
+    launch_log(output,'Queued '+action+'. Waiting for allocation worker to stop inference. Output log: '+str(output/'training.log'))
+    (output/'training-launch.log').rename(output/'training.log')
     if settings.get('teacher'):
         key=output/'teacher-api-key';fd=os.open(str(key),os.O_CREAT|os.O_WRONLY|os.O_EXCL,0o600)
         with os.fdopen(fd,'w') as stream:stream.write(str(settings.get('teacher_key','')))
@@ -168,7 +212,8 @@ def dispatch(action,p,state,root,current,write):
     environment=''
     if settings.get('runtime','native')!='native':
         environment='if [[ ${CUDA_VISIBLE_DEVICES+x} ]]; then\n  export APPTAINERENV_CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES" SINGULARITYENV_CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES"\nfi\n'
-    script='#!/bin/bash\nset -euo pipefail\numask 077\n'+environment+'exec '+' '.join(shlex.quote(v) for v in command+[str(root/'training/runner.py'),str(request)])+' >> '+shlex.quote(str(output/'training.log'))+' 2>&1\n'
+    launch_log(state,'Publishing '+action+' worker command: '+shlex.join(command+[str(root/'training/runner.py'),str(request)]))
+    script='#!/bin/bash\nset -euo pipefail\numask 077\nexport PYTHONUNBUFFERED=1\n'+environment+'echo "$(date -Is) | Inference stopped; starting training worker" >> '+shlex.quote(str(output/'training.log'))+'\nexec '+' '.join(shlex.quote(v) for v in command+[str(root/'training/runner.py'),str(request)])+' >> '+shlex.quote(str(output/'training.log'))+' 2>&1\n'
     write(state/(run_id+'.sh'),script)
     write(state/(run_id+'.training.json'),json.dumps({'output':str(output)}))
     write(state/'training-status.json',json.dumps(dict(run_id=run_id,output=str(output),phase='QUEUED',files_total=0,files_trained=0,percent=0,time=time.time())))
