@@ -140,7 +140,12 @@ def rpc_alive(path):
         with socket.socket(socket.AF_UNIX) as s:
             s.settimeout(1);s.connect(str(path/'control.sock'))
             s.sendall(b'{"action":"status"}\n')
-            return bool(s.recv(16))
+            reply=b''
+            while not reply.endswith(b'\n'):
+                part=s.recv(65536)
+                if not part:return False
+                reply+=part
+            return True
     except OSError:return False
 
 class ResourceBackend(SlurmServerBackend):
@@ -411,7 +416,10 @@ def daemon(path):
                             answer={'ok':True}
                         else:raise ValueError('Unknown operation')
                     except Exception as exc:answer={'rpc_error':str(exc)}
-                    client.sendall((json.dumps(answer)+'\n').encode())
+                    try:client.sendall((json.dumps(answer)+'\n').encode())
+                    except OSError:
+                        # A disconnected or timed-out client must not kill the monitor.
+                        pass
                     if action=='release' and 'rpc_error' not in answer:break
             now=time.time()
             if now-tick>=5:
