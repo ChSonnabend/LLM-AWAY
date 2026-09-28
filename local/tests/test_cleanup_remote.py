@@ -11,6 +11,78 @@ from llm_away.config import AppConfig
 
 
 class RemoteCleanupTests(unittest.TestCase):
+    def test_preview_recovery_with_remote_controller(self):
+        import subprocess,sys
+        script=Path(__file__).resolve().parents[2]/'remote/bin/resource-control'
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);session=root/'1';session.mkdir()
+            token='a'*32;state=root/'remote/resources'/token;state.mkdir(parents=True)
+            (state/'allocation.json').write_text('{}')
+            (state/'worker.state').write_text('STOPPED host')
+            cfg=asdict(AppConfig());cfg['remote']['resource_state_dir']=str(root/'remote');cfg['backend_type']='direct'
+            (session/'session.json').write_text(json.dumps({'phase':'RELEASED','config':cfg,'token':token,'remote_port':8080}))
+            def call(config,token,port,action,**options):
+                result=subprocess.run([sys.executable,str(script),action],input=json.dumps(dict(config=asdict(config),token=token,port=port,**options)),text=True,capture_output=True)
+                if result.returncode:raise RuntimeError(result.stderr)
+                return json.loads(result.stdout)
+            items=[('remote',session,'remove remote state')]
+            with patch.object(cleanup,'remote',side_effect=call):
+                plan=cleanup.preview(items)
+                self.assertTrue(state.exists())
+                self.assertIn(str((state/'release').resolve()),plan['remote_paths'][str(session)])
+                self.assertEqual(cleanup.preview(items),plan)
+                cleanup.execute(items,[0],expected_remote=plan['remote_paths'])
+            self.assertFalse(state.exists())
+
+    def test_preview_repairs_release_before_capturing_and_deleting_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            session=Path(temp)/'1';session.mkdir()
+            (session/'session.json').write_text(json.dumps({'phase':'RELEASED','config':asdict(AppConfig()),'token':'a'*32,'remote_port':8080}))
+            paths=['/remote/state','/remote/state/release','/remote/state/release-audit.jsonl']
+            calls=[]
+            def call(_cfg,_token,_port,action,**options):
+                calls.append(action)
+                if action=='cleanup-preview':
+                    if 'release' not in calls:raise RuntimeError('allocation is not explicitly released')
+                    return {'paths':paths}
+                if action=='status':return {'active':False}
+                if action=='release':
+                    self.assertEqual(options,{'explicit_release':True,'only_if_inactive':True})
+                    return {'released':True}
+                self.assertEqual(options,{'expected_paths':paths})
+                return {'cleaned':True}
+            items=[('remote',session,'remove remote state')]
+            with patch.object(cleanup,'busy',return_value=False),patch.object(cleanup,'remote',side_effect=call):
+                plan=cleanup.preview(items)
+                self.assertNotIn('cleanup',calls)
+                self.assertEqual(cleanup.preview(items),plan)
+                cleanup.execute(items,[0],expected_remote=plan['remote_paths'])
+            self.assertEqual(calls,['cleanup-preview','status','release','cleanup-preview','cleanup-preview','cleanup'])
+            self.assertTrue(json.loads((session/'session.json').read_text())['remote_cleanup_done'])
+
+    def test_preview_preserves_active_uncertain_and_unreleased_sessions(self):
+        for phase,busy,status in [('RELEASED',False,{'active':True}),('RELEASED',False,{}),('RUNNING',False,{'active':False}),('RELEASED',True,{'active':False})]:
+            with self.subTest(phase=phase,busy=busy,status=status),tempfile.TemporaryDirectory() as temp:
+                session=Path(temp)
+                (session/'session.json').write_text(json.dumps({'phase':phase,'config':asdict(AppConfig()),'token':'a'*32,'remote_port':8080}))
+                def call(_cfg,_token,_port,action,**options):
+                    if action=='cleanup-preview':raise RuntimeError('not explicitly released')
+                    self.assertEqual(action,'status')
+                    return status
+                with patch.object(cleanup,'busy',return_value=busy),patch.object(cleanup,'remote',side_effect=call) as remote:
+                    with self.assertRaises((RuntimeError,ValueError)):
+                        cleanup.preview([('remote',session,'remove remote state')])
+                self.assertNotIn('release',[c.args[3] for c in remote.call_args_list])
+
+    def test_preview_does_not_repair_unrelated_errors(self):
+        with tempfile.TemporaryDirectory() as temp:
+            session=Path(temp)
+            (session/'session.json').write_text(json.dumps({'phase':'RELEASED','config':asdict(AppConfig()),'token':'a'*32,'remote_port':8080}))
+            with patch.object(cleanup,'remote',side_effect=RuntimeError('offline')) as remote:
+                with self.assertRaisesRegex(RuntimeError,'offline'):
+                    cleanup.preview([('remote',session,'remove remote state')])
+            remote.assert_called_once()
+
     def test_remote_failure_keeps_local_record_and_success_allows_removal(self):
         for fails in (True,False):
             with self.subTest(fails=fails), tempfile.TemporaryDirectory() as temp, ExitStack() as stack:

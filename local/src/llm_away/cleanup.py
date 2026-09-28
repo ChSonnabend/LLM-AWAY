@@ -85,13 +85,36 @@ def main():
     execute(items,selected)
 
 
+def repair_remote_release(data):
+    """Reconcile an already released session without canceling an allocation."""
+    if data.get('phase')!='RELEASED':raise ValueError('Session is no longer released')
+    cfg=config(data['config'])
+    status=remote(cfg,data['token'],data['remote_port'],'status')
+    if status.get('active') is not False:
+        raise RuntimeError('Remote allocation is active or uncertain; preserving its state')
+    remote(cfg,data['token'],data['remote_port'],'release',explicit_release=True,only_if_inactive=True)
+
+
 def preview(items):
     """Expand cleanup targets without following directory symlinks."""
     paths=[];remote_paths={}
     for kind,target,label in items:
         if kind=='remote':
             data=json.loads((target/'session.json').read_text())
-            result=remote(config(data['config']),data['token'],data['remote_port'],'cleanup-preview')
+            try:
+                result=remote(config(data['config']),data['token'],data['remote_port'],'cleanup-preview')
+            except RuntimeError as exc:
+                if 'not explicitly released' not in str(exc):raise
+                # Older controllers can record RELEASED locally without the
+                # remote marker. Reconcile before capturing the exact paths,
+                # so the release marker and audit record are in the preview.
+                with (target/'client.lock').open('a') as lease:
+                    fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                    if busy(target,check_lease=False):
+                        raise RuntimeError('Session became active; preserving its state')
+                    data=json.loads((target/'session.json').read_text())
+                    repair_remote_release(data)
+                    result=remote(config(data['config']),data['token'],data['remote_port'],'cleanup-preview')
             remote_paths[str(target)]=result['paths']
             paths.extend(str(data.get('host','remote'))+':'+p for p in result['paths'])
         else:
@@ -135,10 +158,7 @@ def execute(items,selected,expected_remote=None):
                         # Confirm it is inactive, mark it released remotely,
                         # then make one final ownership-checked cleanup attempt.
                         if error and expected_remote is None and 'not explicitly released' in str(error):
-                            status=remote(config(data['config']),data['token'],data['remote_port'],'status')
-                            if status.get('active'):
-                                raise RuntimeError('Remote allocation is active; preserving its state')
-                            remote(config(data['config']),data['token'],data['remote_port'],'release',explicit_release=True,only_if_inactive=True)
+                            repair_remote_release(data)
                             result=remote(config(data['config']),data['token'],data['remote_port'],'cleanup')
                             error=None
                         if error:raise error
