@@ -8,7 +8,7 @@ import os
 import threading
 from urllib.request import Request, build_opener, ProxyHandler
 from urllib.error import URLError
-from .resources import path_for, rpc, identity
+from .resources import path_for, rpc, provider_alive
 from .rag import Index, roots_for
 from .security import headers as auth_headers
 
@@ -83,9 +83,7 @@ def main():
             try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:raise ValueError('Session helper busy; retry after its current request')
             data=rpc(path,'status')
-            pid=data.get('provider_pid')
-            if (not data.get('model') or data.get('provider_exit') is not None or not pid
-                    or not data.get('provider_identity') or identity(pid)!=data['provider_identity']):
+            if not data.get('model') or not provider_alive(data):
                 raise ValueError(f'No loaded model. Start run --session {args.session} --helper first')
             gateway=data['config']['gateway']
             budget=gateway.get('max_prompt_chars',0)

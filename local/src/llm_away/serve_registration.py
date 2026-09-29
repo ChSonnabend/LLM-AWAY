@@ -11,12 +11,11 @@ import sys
 import tempfile
 import time
 import uuid
-from .resources import ROOT, path_for, rpc, identity
+from .resources import ROOT, path_for, rpc, provider_alive
 
 
 def alive(record):
-    return bool(record.get('provider_identity') and
-                identity(record['provider_pid']) == record['provider_identity'])
+    return provider_alive(record)
 
 
 def edit(record, block=''):
