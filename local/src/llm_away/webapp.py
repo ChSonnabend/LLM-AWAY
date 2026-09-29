@@ -70,6 +70,22 @@ def job_status(identifier):
     return dict(item)
 
 
+def allocation_defaults(cfg):
+    flags=['--nodes=1','--ntasks=1']
+    if cfg.slurm.partition:flags.append('--partition='+cfg.slurm.partition)
+    if cfg.slurm.exclusive:flags.append('--exclusive')
+    node=cfg.slurm.node_class
+    if node and node not in ('mi50','mi100'):flags.append('--nodelist='+node)
+    return {
+        'default_gpus':cfg.slurm.gpus or (0 if cfg.llamacpp.backend=='cpu' else 1),
+        'slurm_options':shlex.join(cfg.slurm.custom_options),
+        'backend':cfg.backend_type,
+        'slurm_base_flags':shlex.join(flags),
+        'slurm_note':('Node selected automatically for '+node+'. ' if node in ('mi50','mi100') else '')+
+            'Job name, working directory and log path are assigned when allocating.',
+    }
+
+
 def allocation_options():
     config_path=os.environ.get('LLM_REMOTE_CONFIG',str(ROOT/'config/model.toml'))
     cfg=resources.load_config(config_path)
@@ -80,6 +96,8 @@ def allocation_options():
         if host.name not in hosts:hosts.append(host.name)
     return {
         'hosts':hosts,
+        'host_defaults':{name:allocation_defaults(cfg.with_host(name)) for name in hosts},
+        'local_defaults':allocation_defaults(cfg),
         'default_connection':'ssh' if hosts else 'local',
         'default_host':store.get('active') or (cfg.active_host if cfg.active_host in hosts else '') or (hosts[0] if hosts else ''),
         'default_gpus':cfg.slurm.gpus or (0 if cfg.llamacpp.backend=='cpu' else 1),

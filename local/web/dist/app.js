@@ -515,8 +515,11 @@ async function allocationDialog() {
     const cli = selectControl(['codex', 'claude', 'opencode'], options.available_clis[0] || 'opencode');
     const hostField = field('SSH host', host, options.hosts.length ? 'Saved host profile' : 'Configure an SSH host first.');
     const gpuField = field('GPUs', gpus, `Backend: ${options.backend}`);
-    const slurmField = field('Additional scheduler options', slurm, 'Shell-style Slurm options for this allocation.', true);
+    const slurmField = field('Slurm flags', slurm, 'Host defaults; edit for this allocation.', true);
     const cliField = field('Native CLI', cli, 'Uses its own account and model.');
+    const drafts = new Map();
+    let profileKey = null;
+    let defaults = options;
     grid.append(field('Location', connection), field('Session type', type), hostField, gpuField, slurmField, cliField);
     const actions = node('div', 'form-actions');
     const configure = node('button', '', 'Configure hosts…'); configure.type = 'button';
@@ -526,12 +529,30 @@ async function allocationDialog() {
     function update() {
       const remote = connection.value === 'ssh';
       const native = type.value === 'native';
+      const key = remote ? host.value : '__local__';
+      if (key !== profileKey) {
+        if (profileKey !== null) drafts.set(profileKey, {gpus: gpus.value, slurm: slurm.value});
+        defaults = (remote ? options.host_defaults?.[host.value] : options.local_defaults) || options;
+        const draft = drafts.get(key);
+        gpus.value = draft ? draft.gpus : String(defaults.default_gpus);
+        slurm.value = draft ? draft.slurm : defaults.slurm_options || '';
+        profileKey = key;
+      }
+      const scheduler = defaults.backend === 'slurm_server';
+      const managedFlags = [defaults.slurm_base_flags, Number(gpus.value) > 0 ? `--gres=gpu:${gpus.value}` : ''].filter(Boolean).join(' ');
+      slurm.disabled = !scheduler;
+      slurm.placeholder = scheduler ? 'Additional Slurm options, e.g. --time=02:00:00 --mem=64G' : 'Not applicable: this host does not use Slurm';
+      slurmField.querySelector('small').textContent = scheduler
+        ? `Host defaults (editable above): ${defaults.slurm_options || 'none'}. Managed flags: ${managedFlags}. ${defaults.slurm_note || ''}`
+        : 'This host uses direct execution. Select a Slurm host such as Hydra to edit scheduler flags.';
+      gpuField.querySelector('small').textContent = `Backend: ${defaults.backend}`;
       hostField.hidden = !remote;
       gpuField.hidden = native;
       slurmField.hidden = native;
       cliField.hidden = !native;
       submit.disabled = remote && !host.value;
     }
+    gpus.addEventListener('input', update); slurm.addEventListener('input', update);
     connection.addEventListener('change', update); type.addEventListener('change', update); host.addEventListener('change', update); update();
     form.addEventListener('submit', event => {
       event.preventDefault();
