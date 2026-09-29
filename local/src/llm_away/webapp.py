@@ -359,7 +359,6 @@ def safe_details(row):
         'Scheduler state: '+str(allocation.get('slurm_state') or row.get('phase') or '—'),
         'Model: '+str(display_model(row,allocation) or 'none'),
         'Model state: '+display_state(row,allocation),
-        'Model API authentication: '+('enabled' if allocation.get('api_key_required') else 'reload model to enable'),
         'Local monitor PID: '+str(row.get('pid') or '—'),
         'Model loader PID: '+str(row.get('provider_pid') or '—'),
         'Model flags: '+(shlex.join(llama.get('server_extra_args') or []) if row.get('model') else ''),

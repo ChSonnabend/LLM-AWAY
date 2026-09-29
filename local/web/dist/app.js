@@ -130,10 +130,24 @@ async function runOperation(title, description, endpoint, payload, closeOnSucces
 function renderDetails(row) {
   const list = $('detail');
   list.replaceChildren();
-  for (const line of row.details || []) {
+  const detailItem = line => {
     const split = line.indexOf(':');
     const item = node('div');
     item.append(node('dt', '', split < 0 ? 'Info' : line.slice(0, split)), node('dd', '', split < 0 ? line : line.slice(split + 1).trim()));
+    return item;
+  };
+  for (const line of row.details || []) {
+    if (line.startsWith('Model API authentication:')) continue;
+    if (line.startsWith('Model flags:')) continue;
+    if (line.startsWith('Local monitor PID:')) continue;
+    if (line.startsWith('Slurm flags:') || line.startsWith('Model loader PID:')) {
+      const pair = node('div', line.startsWith('Slurm flags:') ? 'flag-pair' : 'pid-pair');
+      if (line.startsWith('Slurm flags:')) pair.append(detailItem(row.details.find(item => item.startsWith('Model flags:')) || 'Model flags: —'), detailItem(line));
+      else pair.append(detailItem(row.details.find(item => item.startsWith('Local monitor PID:')) || 'Local monitor PID: —'), detailItem(line));
+      list.append(pair);
+      continue;
+    }
+    const item = detailItem(line);
     list.append(item);
   }
 }
