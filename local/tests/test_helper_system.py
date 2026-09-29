@@ -58,7 +58,7 @@ class HelperSystemTests(unittest.TestCase):
     def test_scoped_tools_deny_outside_roots_and_symlink_escape(self):
         registered = {}
         class Server:
-            def tool(self, name=None):
+            def tool(self, name=None, **kwargs):
                 def decorate(fn):
                     registered[name or fn.__name__] = fn
                     return fn
@@ -75,7 +75,7 @@ class HelperSystemTests(unittest.TestCase):
     def test_access_file_updates_live_and_empty_revokes(self):
         registered = {}
         class Server:
-            def tool(self, name=None):
+            def tool(self, name=None, **kwargs):
                 def decorate(fn):
                     registered[name or fn.__name__] = fn
                     return fn

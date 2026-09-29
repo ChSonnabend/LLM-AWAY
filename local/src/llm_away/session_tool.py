@@ -125,12 +125,12 @@ def main():
                                'summary':answer[:max_chars],'truncated':clipped,
                                'coverage':'Supplied excerpts only; verify sources before editing.'})
 
-    @server.tool()
+    @server.tool(structured_output=False)
     def summarize_text(question: str, text: str, max_chars: int = 4000) -> str:
         """Delegate summarization/extraction of supplied text to the session model. No commands or edits. Prefer summarize_project for local code to avoid sending raw files through the primary model."""
         with lock:return summarize(question,text,max_chars)
 
-    @server.tool()
+    @server.tool(structured_output=False)
     def summarize_project(question: str, max_chars: int = 4000) -> str:
         """Retrieve relevant code/docs from configured local folders and ask the session model for a concise cited answer. Refreshes changed files; excerpts stay out of the primary model context. Not an exhaustive codebase audit."""
         nonlocal index
@@ -140,15 +140,18 @@ def main():
             source=index.search(question,8)
             return summarize(question,source,max_chars)
 
-    @server.tool()
-    def investigate_folder(folder: str, question: str = 'Summarize what this folder contains',
-                           max_chars: int = 4000, max_turns: int = 8,
-                           max_files: int = 20, max_bytes: int = 60000,
-                           timeout_seconds: int = 180) -> str:
-        """Investigate a permitted local folder privately, without RAG. The helper model lists and reads files internally; only a summary, evidence paths, coverage and measured usage return to the caller. Read-only, bounded, and not an exhaustive audit. Prefer this over listing/reading files in the caller when only a summary is needed."""
+    @server.tool(structured_output=False)
+    def investigate_folder(folder: str = '', question: str = 'Summarize what this folder contains',
+                           max_chars: int = 2400, max_turns: int = 8,
+                           max_files: int = 8, max_bytes: int = 32000,
+                           timeout_seconds: int = 180, mode: str = 'batch',
+                           investigation_id: str = '', detailed: bool = False) -> str:
+        """Investigate privately without RAG. Default batch mode gathers bounded representative excerpts then uses ONE summary call. Returns compact coverage/usage without raw files. For follow-ups pass investigation_id and question (omit folder); cached evidence is a one-hour snapshot, not refreshed. mode=adaptive enables the older multi-call exploration loop; max_turns applies only there. detailed=true returns full coverage. All reads remain permission checked."""
         from .helper_relations import ensure_other_session
         from .helper_system import access_checker
         from .helper_investigation import investigate
+        if mode not in ('batch','adaptive'):raise ValueError('mode must be batch or adaptive')
+        if investigation_id and mode!='batch':raise ValueError('Follow-ups require batch mode')
         ensure_other_session(path)
         with lock, (path/'helper.lock').open('a') as lease:
             try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -158,7 +161,7 @@ def main():
                 raise ValueError(f'No loaded model for session {args.session}')
             url=helper_endpoint(data,opener,path)+'/v1/chat/completions'
             def complete(messages, timeout):
-                payload={'model':data['model'],'stream':False,'max_tokens':2048,
+                payload={'model':data['model'],'stream':False,'max_tokens':min(2048,max(384,(max_chars+2)//3)),
                          'temperature':0.2,'reasoning_effort':'low','messages':messages}
                 request=Request(url,data=json.dumps(payload).encode(),
                                 headers={'Content-Type':'application/json',**auth_headers(path)})
@@ -167,17 +170,32 @@ def main():
                 if len(raw)>1048576:raise ValueError('Model response exceeded 1 MiB')
                 return json.loads(raw)
             check=access_checker(args.read_root or roots, path/'helper-access.json')
-            result=investigate(folder,question,check,complete,max_chars=max_chars,
-                               max_turns=max_turns,max_files=max_files,max_bytes=max_bytes,
-                               timeout_seconds=timeout_seconds,
-                               prompt_budget=data['config']['gateway'].get('max_prompt_chars',0))
+            if mode=='batch':
+                from .helper_batch import investigate_batch
+                result=investigate_batch(folder,question,check,complete,path/'investigations',
+                    investigation_id=investigation_id or None,max_chars=max_chars,max_files=max_files,
+                    max_bytes=max_bytes,timeout_seconds=timeout_seconds,detailed=detailed,
+                    prompt_budget=data['config']['gateway'].get('max_prompt_chars',0))
+            else:
+                result=investigate(folder,question,check,complete,max_chars=max_chars,
+                    max_turns=max_turns,max_files=max_files,max_bytes=max_bytes,
+                    timeout_seconds=timeout_seconds,
+                    prompt_budget=data['config']['gateway'].get('max_prompt_chars',0))
             result.update(session=args.session,model=data['model'])
             if args.log_helper:
                 # Do not duplicate raw file content or internal model messages in logs.
                 with (path/'helper.log').open('a') as log:
                     log.write(json.dumps({'time':datetime.datetime.now().isoformat(timespec='seconds'),
                                           'tool':'investigate_folder','result':result})+'\n')
-            return json.dumps(result)
+            return json.dumps(result,separators=(',',':'))
+
+    @server.tool(structured_output=False)
+    def investigation_report(investigation_id: str) -> str:
+        """Return saved detailed coverage and usage for an investigation ID, without raw source excerpts or a model call. Rechecks current folder permissions; snapshots expire after one hour."""
+        from .helper_batch import load_snapshot
+        from .helper_system import access_checker
+        check=access_checker(args.read_root or roots,path/'helper-access.json')
+        return json.dumps(load_snapshot(path/'investigations',investigation_id,check)['report'],separators=(',',':'))
 
     from .helper_relations import connection
     with connection(path):
