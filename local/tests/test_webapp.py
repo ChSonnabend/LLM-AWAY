@@ -92,6 +92,32 @@ class WebAppTests(unittest.TestCase):
                 self.assertEqual(run.call_args.args[0].mtp_tokens, 3)
                 self.assertEqual(run.call_args.args[0].mtp, 'on')
 
+    def test_attach_reuses_provider_started_during_remote_attach_across_locales(self):
+        allocation={'model_state':'LOADED','generation':'gen','session':{
+            'model':{'name':'model'},'llamacpp':{'model_name':'model','mtp':'on','server_extra_args':[]}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)
+            initial={'model':'model','allocation':allocation}
+            (path/'session.json').write_text(json.dumps(initial))
+            def attach(*args):
+                current=dict(initial,provider_pid=123,provider_identity='Tue Sep 29 14:52:56 2026',provider_exit=None)
+                (path/'session.json').write_text(json.dumps(current))
+                return allocation
+            with patch.object(webapp,'session_path',return_value=path), patch('llm_away.shared_sessions.attach',side_effect=attach), patch.object(webapp.resources,'identity',return_value='Di Sep 29 14:52:56 2026'), patch.object(webapp.resources,'rpc') as rpc, patch.object(webapp.resources,'run_agent') as run:
+                webapp.load_browser_model(35,{'attach_existing':True})
+                rpc.assert_not_called()
+                run.assert_called_once()
+                self.assertTrue(webapp.resources.locally_attached(json.loads((path/'session.json').read_text())))
+
+    def test_provider_identity_rejects_recycled_or_exited_process(self):
+        data={'provider_pid':123,'provider_identity':'Tue Sep 29 14:52:56 2026','provider_exit':None}
+        with patch.object(webapp.resources,'identity',return_value='Di Sep 29 14:52:57 2026'):
+            self.assertFalse(webapp.resources.provider_alive(data))
+        with patch.object(webapp.resources,'identity',return_value=''):
+            self.assertFalse(webapp.resources.provider_alive(data))
+        with patch.object(webapp.resources,'identity',return_value=data['provider_identity']):
+            self.assertFalse(webapp.resources.provider_alive(dict(data,provider_exit=0)))
+
     def test_cleanup_requires_preview_and_rejects_changed_paths(self):
         with self.assertRaisesRegex(ValueError,'preview expired'):
             webapp.cleanup_released('unknown')

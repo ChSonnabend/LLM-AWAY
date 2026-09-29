@@ -188,8 +188,10 @@ def load_browser_model(number, settings):
     loaded=allocation.get('model_state') in ('STARTING','LOADING','LOADED','READY','RUNNING')
     if attach:
         if not loaded or not allocation.get('session'):raise ValueError('No running model to attach to')
-        live=data.get('provider_identity') and resources.identity(data.get('provider_pid'))==data['provider_identity']
-        if not live:resources.rpc(path,'adopt-config',expected_generation=allocation['generation'])
+        # Remote attachment may take time; the monitor can start a provider meanwhile.
+        data=json.loads((path/'session.json').read_text())
+        if not resources.provider_alive(data):
+            resources.rpc(path,'adopt-config',expected_generation=allocation['generation'])
         shared=allocation['session']
         settings=dict(settings,model=shared['llamacpp']['model_name'] or shared['model']['name'],
                       mtp=shared['llamacpp']['mtp'],mtp_draft_tokens=shared['llamacpp'].get('mtp_draft_tokens'),server_options=shlex.join(shared['llamacpp']['server_extra_args']))

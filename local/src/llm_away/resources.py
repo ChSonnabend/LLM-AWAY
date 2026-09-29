@@ -554,6 +554,14 @@ def allocate(args):
     print(f'Session {number} allocating in background. Use: res-mon --logs {number}\nThen: run --session {number}')
 
 
+def provider_alive(data):
+    """Compare legacy process start times independently of English/German locale."""
+    from .session_guard import same_birth
+    born=data.get('provider_identity')
+    return bool(data.get('provider_pid') and born and data.get('provider_exit') is None
+                and same_birth(identity(data['provider_pid']),born))
+
+
 def locally_attached(data):
     """A live provider on this client connected to the current model generation."""
     allocation=data.get('allocation') or {}
@@ -562,8 +570,7 @@ def locally_attached(data):
     generation=data.get('attachment_generation') or allocation.get('attachment',{}).get('generation')
     if generation and generation!=allocation.get('generation'):
         return False
-    return bool(data.get('model') and data.get('provider_exit') is None and
-                data.get('provider_identity') and identity(data.get('provider_pid'))==data['provider_identity'])
+    return bool(data.get('model') and provider_alive(data))
 
 
 def acquire_agent_lease(lease, reconfigure=False):
