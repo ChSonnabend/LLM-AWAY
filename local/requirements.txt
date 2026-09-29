@@ -1,2 +1,4 @@
+# PDF/OCR system packages are declared in requirements/documents-system.json.
+# Install them with local/bin/setup-documents --install (not pip).
 pick==2.4.0
 tomli==2.2.1; python_version < "3.11"

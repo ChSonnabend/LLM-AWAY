@@ -278,3 +278,15 @@ of time; no manual activation is needed. RAG keeps its separate environments.
 `res-mon-web` opens the browser and returns to the shell. Closing the last
 dashboard/metrics tab releases the port after a short grace period (up to three
 minutes if the browser crashes or cannot send its close notification).
+
+### Optional deep-document OCR requirements
+
+Helper deep investigations support text PDFs, modern Office files, LaTeX and notebooks;
+OCR additionally requires Tesseract. System packages are declared in
+`local/requirements/documents-system.json` (separate from Python requirements).
+Run `local/bin/setup-documents --install` on the helper host, or
+`local/scripts/init --documents` during setup. `local/bin/setup-documents --check`
+verifies availability. macOS uses Homebrew Poppler/Tesseract; apt-based Linux uses
+poppler-utils/tesseract-ocr plus English language data. Normal helper startup never
+installs system packages. See `local/docs/helper-system-tools.md` for deep-scan
+coverage, resume controls, OCR activation and macOS limits.

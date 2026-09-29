@@ -5,6 +5,7 @@ import datetime
 import fcntl
 import json
 import os
+import re
 import threading
 from urllib.request import Request, build_opener, ProxyHandler
 from urllib.error import URLError
@@ -145,13 +146,16 @@ def main():
                            max_chars: int = 2400, max_turns: int = 8,
                            max_files: int = 8, max_bytes: int = 32000,
                            timeout_seconds: int = 180, mode: str = 'batch',
-                           investigation_id: str = '', detailed: bool = False) -> str:
-        """Investigate privately without RAG. Default batch mode gathers bounded representative excerpts then uses ONE summary call. Returns compact coverage/usage without raw files. For follow-ups pass investigation_id and question (omit folder); cached evidence is a one-hour snapshot, not refreshed. mode=adaptive enables the older multi-call exploration loop; max_turns applies only there. detailed=true returns full coverage. All reads remain permission checked."""
+                           investigation_id: str = '', detailed: bool = False,
+                           max_model_calls: int = 10, max_entries: int = 20000,
+                           enable_ocr: bool = False, refresh: bool = False,
+                           retry_failed: bool = False) -> str:
+        """Investigate privately without RAG. Default batch mode gathers bounded representative excerpts then uses ONE summary call. Returns compact coverage/usage without raw files. For follow-ups pass investigation_id and question (omit folder); cached evidence is a one-hour snapshot, not refreshed. mode=adaptive enables the older multi-call exploration loop; max_turns applies only there. detailed=true returns full coverage. All reads remain permission checked. mode=deep recursively inventories and extracts document text, then summarizes chunks and combines them hierarchically. Resume deep mode with its investigation_id until complete; max_model_calls and timeout_seconds bound each request. Deep ignores max_files/max_bytes/max_turns. enable_ocr enables available OCR; refresh rescans for added files, retry_failed retries extraction failures. Detailed coverage lists every discovered file status."""
         from .helper_relations import ensure_other_session
         from .helper_system import access_checker
         from .helper_investigation import investigate
-        if mode not in ('batch','adaptive'):raise ValueError('mode must be batch or adaptive')
-        if investigation_id and mode!='batch':raise ValueError('Follow-ups require batch mode')
+        if mode not in ('batch','adaptive','deep'):raise ValueError('mode must be batch, adaptive or deep')
+        if investigation_id and mode=='adaptive':raise ValueError('Adaptive mode does not support investigation IDs')
         ensure_other_session(path)
         with lock, (path/'helper.lock').open('a') as lease:
             try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -170,7 +174,17 @@ def main():
                 if len(raw)>1048576:raise ValueError('Model response exceeded 1 MiB')
                 return json.loads(raw)
             check=access_checker(args.read_root or roots, path/'helper-access.json')
-            if mode=='batch':
+            if mode=='deep':
+                from .helper_deep import investigate_deep, load
+                deep_cache=path/'deep-investigations'
+                if investigation_id and question=='Summarize what this folder contains':
+                    question=load(deep_cache,investigation_id,check)['question']
+                result=investigate_deep(folder,question,check,complete,deep_cache,
+                    investigation_id=investigation_id,max_chars=max_chars,max_model_calls=max_model_calls,
+                    timeout_seconds=timeout_seconds,max_entries=max_entries,enable_ocr=enable_ocr,
+                    refresh=refresh,retry_failed=retry_failed,detailed=detailed,
+                    prompt_budget=data['config']['gateway'].get('max_prompt_chars',0))
+            elif mode=='batch':
                 from .helper_batch import investigate_batch
                 result=investigate_batch(folder,question,check,complete,path/'investigations',
                     investigation_id=investigation_id or None,max_chars=max_chars,max_files=max_files,
@@ -191,10 +205,14 @@ def main():
 
     @server.tool(structured_output=False)
     def investigation_report(investigation_id: str) -> str:
-        """Return saved detailed coverage and usage for an investigation ID, without raw source excerpts or a model call. Rechecks current folder permissions; snapshots expire after one hour."""
+        """Return detailed coverage and usage without raw source excerpts or a model call. Rechecks permissions. Quick snapshots expire after one hour; deep IDs return a durable per-file manifest and summaries."""
         from .helper_batch import load_snapshot
         from .helper_system import access_checker
         check=access_checker(args.read_root or roots,path/'helper-access.json')
+        if re.fullmatch(r'[a-f0-9]{32}',investigation_id) and (path/'deep-investigations'/investigation_id).is_dir():
+            from .helper_deep import load, report
+            state=load(path/'deep-investigations',investigation_id,check)
+            return json.dumps(report(state,investigation_id,0,dict(prompt_tokens=0,completion_tokens=0,total_tokens=0),False,True),separators=(',',':'))
         return json.dumps(load_snapshot(path/'investigations',investigation_id,check)['report'],separators=(',',':'))
 
     from .helper_relations import connection

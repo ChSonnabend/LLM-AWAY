@@ -1,0 +1,15 @@
+{
+  "description": "System executables for deep document extraction and OCR; these are not pip packages.",
+  "platforms": {
+    "Darwin": {
+      "manager": "brew",
+      "packages": ["poppler", "tesseract"]
+    },
+    "Linux": {
+      "manager": "apt-get",
+      "packages": ["poppler-utils", "tesseract-ocr", "tesseract-ocr-eng"]
+    }
+  },
+  "executables": ["pdftotext", "pdftoppm", "tesseract"],
+  "ocr_language": "eng"
+}
