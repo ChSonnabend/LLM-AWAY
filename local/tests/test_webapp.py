@@ -16,6 +16,82 @@ class WebAppTests(unittest.TestCase):
         for name,kwargs in [('ensure_daemon',{}),('current',{'side_effect':lambda path:json.loads((path/'session.json').read_text()).get('allocation',{})})]:
             mocked=patch.object(shared_sessions,name,**kwargs);mocked.start();self.addCleanup(mocked.stop)
 
+    def test_helper_folders_save_validate_and_clear(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path/'serve-registration.json').write_text('{}')
+            folder = path/'allowed'; folder.mkdir()
+            with patch.object(webapp, 'session_path', return_value=path), patch('llm_away.serve_registration.registered', return_value=True):
+                # A real registration is nonempty.
+                (path/'serve-registration.json').write_text('{"session": 1}')
+                result = webapp.helper_access(1, [str(folder), str(folder)])
+                self.assertEqual(result['read_roots'], [str(folder)])
+                self.assertEqual(webapp.helper_access(1)['read_roots'], [str(folder)])
+                with self.assertRaises(ValueError): webapp.helper_access(1, ['relative'])
+                with self.assertRaises(ValueError): webapp.helper_access(1, [str(path/'missing')])
+                self.assertEqual(webapp.helper_access(1)['read_roots'], [str(folder)])
+                self.assertEqual(webapp.helper_access(1, [])['read_roots'], [])
+            with patch.object(webapp, 'session_path', return_value=path), patch('llm_away.serve_registration.registered', return_value=False):
+                with self.assertRaisesRegex(ValueError, 'Set helper'): webapp.helper_access(1, [str(folder)])
+
+    def test_set_helper_requires_acknowledgement_and_preserves_access_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            old = path/'old'; old.mkdir()
+            new = path/'new'; new.mkdir()
+            saved = path/'helper-access.json'
+            saved.write_text(json.dumps({'read_roots': [str(old)]}))
+            with patch.object(webapp, 'session_path', return_value=path), patch('llm_away.serve_registration.register') as register:
+                with self.assertRaisesRegex(ValueError, 'Acknowledge'):
+                    webapp.run_action('set-helper', 1, read_roots=[str(new)])
+                register.assert_not_called()
+                self.assertEqual(json.loads(saved.read_text())['read_roots'], [str(old)])
+                with self.assertRaises(ValueError):
+                    webapp.run_action('set-helper', 1, read_roots=['missing'], confirmed=True)
+                self.assertEqual(json.loads(saved.read_text())['read_roots'], [str(old)])
+                register.side_effect = RuntimeError('registration interrupted')
+                with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+                    webapp.run_action('set-helper', 1, read_roots=[str(new)], confirmed=True)
+                self.assertEqual(webapp.helper_access(1)['read_roots'], [str(new)])
+                register.side_effect = None
+                webapp.run_action('set-helper', 1, read_roots=[], confirmed=True)
+                self.assertEqual(webapp.helper_access(1)['read_roots'], [])
+
+    def test_interrupted_folder_write_retains_previous_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            saved = path/'helper-access.json'
+            saved.write_text(json.dumps({'read_roots': [tmp]}))
+            with patch.object(webapp, 'session_path', return_value=path), patch.object(webapp.os, 'replace', side_effect=OSError('interrupted')):
+                with self.assertRaises(OSError):
+                    webapp.helper_access(1, [], preparing=True)
+            self.assertEqual(json.loads(saved.read_text())['read_roots'], [tmp])
+            self.assertEqual(list(path.glob('.helper-access-*')), [])
+
+    def test_mtp_tokens_forwarded_and_invalid_values_rejected_before_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp); (path/'session.json').write_text(json.dumps({'model':'', 'allocation':{}}))
+            with patch.object(webapp, 'session_path', return_value=path), patch.object(webapp.resources, 'run_agent') as run, patch.object(webapp.resources, 'rpc') as rpc:
+                webapp.load_browser_model(1, {'model':'model', 'mtp':'auto', 'mtp_draft_tokens':'3'})
+                self.assertEqual(run.call_args.args[0].mtp_tokens, 3)
+                webapp.load_browser_model(1, {'model':'model', 'mtp':'off', 'mtp_draft_tokens':'3'})
+                self.assertIsNone(run.call_args.args[0].mtp_tokens)
+                for invalid in ('0', '-1', '2.5', True, 'abc'):
+                    with self.assertRaisesRegex(ValueError, 'positive whole number'):
+                        webapp.load_browser_model(1, {'mtp_draft_tokens':invalid, 'replace_loaded':True})
+                rpc.assert_not_called()
+
+    def test_attach_preserves_running_mtp_tokens(self):
+        allocation = {'model_state':'LOADED', 'generation':'gen', 'session':{
+            'model':{'name':'model'}, 'llamacpp':{'model_name':'model', 'mtp':'on',
+            'mtp_draft_tokens':3, 'server_extra_args':[]}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp); (path/'session.json').write_text(json.dumps({'model':'model', 'allocation':allocation}))
+            with patch.object(webapp, 'session_path', return_value=path), patch('llm_away.shared_sessions.attach', return_value=allocation), patch.object(webapp.resources, 'rpc'), patch.object(webapp.resources, 'run_agent') as run:
+                webapp.load_browser_model(1, {'attach_existing':True, 'mtp_draft_tokens':7})
+                self.assertEqual(run.call_args.args[0].mtp_tokens, 3)
+                self.assertEqual(run.call_args.args[0].mtp, 'on')
+
     def test_cleanup_requires_preview_and_rejects_changed_paths(self):
         with self.assertRaisesRegex(ValueError,'preview expired'):
             webapp.cleanup_released('unknown')

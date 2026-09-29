@@ -97,6 +97,10 @@ def register(session,rag=None,log_helper=False):
                     record=str(record_path),provider_pid=data['provider_pid'],provider_identity=data['provider_identity'])
         tool_args=['--session',str(args.session),'--registration',str(record_path)]
         for root in roots:tool_args+=['--rag',root]
+        access_path=path/'helper-access.json'
+        if not access_path.exists():
+            access_path.write_text(json.dumps({'read_roots':roots}))
+            access_path.chmod(0o600)
         if log_helper:
             tool_args+=['--log-helper']
             # Make the monitor's helper-log view available immediately, before

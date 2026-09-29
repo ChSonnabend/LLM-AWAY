@@ -66,11 +66,11 @@ class MtpTests(unittest.TestCase):
 
     def test_selection_persists_mtp_without_changing_other_arguments(self):
         config = self.root / "model.toml"
-        config.write_text('[llamacpp]\nmodel_name = "preset"\nserver_extra_args = ["--reasoning", "off"]\n')
+        config.write_text('[llamacpp]\nmodel_name = "preset"\nserver_extra_args = ["--reasoning", "on"]\n')
         save_model(str(config), self.model, mtp="off")
         parsed = load_config(config)
         self.assertEqual(parsed.llamacpp.mtp, "off")
-        self.assertEqual(parsed.llamacpp.server_extra_args, ["--reasoning", "off"])
+        self.assertEqual(parsed.llamacpp.server_extra_args, ["--reasoning", "on"])
 
     def test_switching_to_non_mtp_model_resets_sticky_on_and_cancel_writes_nothing(self):
         config = self.root / "model.toml"

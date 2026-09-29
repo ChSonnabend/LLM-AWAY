@@ -361,6 +361,78 @@ function actionDialog(button) {
   }]);
 }
 
+async function helperFoldersDialog(sessionId) {
+  const content = node('div', 'helper-access');
+  content.append(node('p', '', 'Loading helper access…'));
+  const token = openDialog(`Set helper · Session ${sessionId}`, content);
+  const draftKey = `llm-away-helper-folders-${sessionId}`;
+  try {
+    const state = await api(`/api/helper-access?session=${encodeURIComponent(sessionId)}`);
+    if (token !== dialogToken) return;
+    content.replaceChildren();
+    content.append(node('p', '', 'Choose local folders the helper can read. Every file and subfolder inside each folder is included.'));
+    if (state.saved) content.append(node('p', '', 'Confirming replaces the saved folder access with exactly the list below. Closing this menu keeps the current access unchanged.'));
+    const label = node('label', '', 'Readable folders — one absolute path per line');
+    const input = node('textarea');
+    input.id = 'helper-read-roots';
+    label.htmlFor = input.id;
+    input.rows = 8;
+    input.spellcheck = false;
+    input.placeholder = '/home/chris/alice/test';
+    input.value = state.read_roots.join('\n');
+    const status = node('p');
+    status.setAttribute('role', 'status');
+    try {
+      const draft = localStorage.getItem(draftKey);
+      if (draft !== null) {
+        input.value = draft;
+        status.textContent = 'Restored your unfinished folder list. It takes effect only after acknowledgement.';
+      }
+    } catch { status.textContent = 'Browser draft storage is unavailable. Previously saved folders are retained.'; }
+    const acknowledgement = node('label', 'helper-acknowledgement');
+    const checkbox = node('input');
+    checkbox.type = 'checkbox';
+    acknowledgement.append(checkbox, node('span', '', state.saved ? 'I acknowledge replacing the saved folder access with this list.' : 'I acknowledge granting read access to these folders and their contents.'));
+    const save = node('button', '', state.saved ? 'Acknowledge and replace helper access' : 'Acknowledge and set helper');
+    save.disabled = true;
+    checkbox.addEventListener('change', () => { save.disabled = !checkbox.checked; });
+    input.addEventListener('input', () => {
+      checkbox.checked = false;
+      save.disabled = true;
+      try { localStorage.setItem(draftKey, input.value); }
+      catch { status.textContent = 'Could not save this draft in the browser. Previously saved folders remain unchanged.'; }
+    });
+    content.append(label, input, node('p', '', 'Remove a line to revoke access. An empty list disables direct file reads. Unfinished edits are kept in this browser for your next visit.'), acknowledgement, save, status);
+    save.addEventListener('click', async () => {
+      if (!checkbox.checked) return;
+      save.disabled = true;
+      input.disabled = true;
+      checkbox.disabled = true;
+      status.textContent = 'Saving folder access and registering the helper…';
+      try {
+        const started = await api('/api/actions', {method: 'POST', body: JSON.stringify({action: 'set-helper', session: sessionId, read_roots: input.value.split('\n').map(value => value.trim()).filter(Boolean), confirmed: true})});
+        const result = await pollJob(started.job);
+        if (result.state !== 'done') throw new Error(result.message);
+        // Do not erase a newer draft entered after this menu was closed.
+        if (token === dialogToken) {
+          try { localStorage.removeItem(draftKey); } catch {}
+          status.textContent = result.message + ' Reconnect the helper connection to load the registration.';
+        } else notice(result.message);
+      } catch (error) {
+        status.textContent = error.message + ' Your folder list is retained; reopen Set helper to review or retry.';
+        if (token !== dialogToken) notice(status.textContent, true);
+      } finally {
+        input.disabled = false;
+        checkbox.disabled = false;
+        checkbox.checked = false;
+        save.disabled = true;
+      }
+    });
+  } catch (error) {
+    if (token === dialogToken) content.replaceChildren(node('p', '', error.message));
+  }
+}
+
 function toolsDialog() {
   const sessionId = selected?.id;
   const run = (label, description, action, danger = false) => ({
@@ -374,7 +446,7 @@ function toolsDialog() {
   ];
   if (sessionId != null) options.push(
     run('Refresh session', 'Restart the selected agent as a fresh conversation', 'refresh-session'),
-    run('Set helper', 'Register the selected session as a helper', 'set-helper'),
+    {label: 'Set helper', description: 'Choose and acknowledge the helper’s readable folders', run: () => helperFoldersDialog(sessionId)},
     run('Restart', 'Retry the selected failed or ended allocation', 'restart'),
     run('Reconnect', 'Repair the selected model SSH tunnel', 'reconnect'),
   );
@@ -512,15 +584,17 @@ async function modelDialog() {
     const modelOptions = data.models.map(model => ({value: model.name, label: `${model.alias || model.name} · ${(model.size_bytes / 1073741824).toFixed(1)} GiB`}));
     if (data.discovery_warning) notice(data.discovery_warning, true);
     const model = selectControl(modelOptions, data.models.find(item => item.alias === data.current || item.name === data.current)?.name || data.models[0]?.name || '');
-    const mtp = selectControl(['auto', 'on', 'off'], 'auto');
-    const mtpTokens = inputControl('', 'number'); mtpTokens.min = '1'; mtpTokens.step = '1';
-    const mtpTokensField = field('MTP draft tokens',mtpTokens);
+    const mtp = selectControl(['auto', 'on', 'off'], data.mtp || 'auto');
+    const mtpTokens = inputControl(data.mtp_draft_tokens == null ? '' : String(data.mtp_draft_tokens), 'number'); mtpTokens.min = '1'; mtpTokens.step = '1';
+    const mtpTokensField = field('MTP draft tokens',mtpTokens, 'Used when loading the model. Blank uses its default; changing a running model requires acknowledged replacement.');
     let mtpMaximum = 0;
     const updateMtpTokens = () => {
       const current = data.models.find(item => item.name === model.value);
-      const enabled = Boolean(current?.mtp?.available && current?.mtp?.toggle_supported && mtp.value === 'on');
+      const enabled = Boolean(current?.mtp?.available && current?.mtp?.toggle_supported && mtp.value !== 'off');
       mtpMaximum = Math.max(1, parseInt(current?.mtp?.draft_n_max, 10) || 8);
       mtpTokensField.hidden = !enabled;
+      mtpTokens.disabled = !enabled;
+      mtpTokens.placeholder = `Model default (up to ${mtpMaximum})`;
       mtpTokens.title = enabled ? `1 to ${mtpMaximum} draft tokens; blank uses the model default` : '';
       mtpTokens.max = String(mtpMaximum);
       if (parseInt(mtpTokens.value, 10) > mtpMaximum) mtpTokens.value = String(mtpMaximum);
@@ -582,11 +656,14 @@ async function modelDialog() {
       ragPathsLocation.value = saved.rag_paths_location || (initial && sameModel ? data.rag_paths_location : '') || location.value;
       build.value = saved.build_mode || data.build_mode || 'native';
       server.value = data.server_options_by_model?.[model.value] || '';
-      updateRagPaths(); updateBuild();
+      mtp.value = initial && sameModel ? data.mtp || 'auto' : 'auto';
+      mtpTokens.value = initial && sameModel && data.mtp_draft_tokens != null ? String(data.mtp_draft_tokens) : '';
+      updateRagPaths(); updateBuild(); updateMtpTokens();
     }
     model.addEventListener('change', () => applyModelDefaults()); applyModelDefaults(true);
     mtp.addEventListener('change',updateMtpTokens); updateMtpTokens();
     form.append(machineSection, ragSection);
+    if (data.can_attach) form.append(node('p', '', `Loaded model MTP: ${data.mtp || 'auto'}; draft tokens: ${data.mtp_draft_tokens ?? 'model default'}. Attaching preserves these settings. To change them, open Machine & model loading and acknowledge model replacement.`));
     let replaceLoaded = null;
     if (data.loaded || data.remote_owner) {
       const warning = node('label', 'replace-warning');
@@ -608,7 +685,7 @@ async function modelDialog() {
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (replaceLoaded && !replaceLoaded.checked) { notice('Acknowledge model replacement before loading the new configuration.', true); return; }
-      runOperation(`Start session ${sessionId}`, 'Loading the model and preparing the retained agent terminal…', '/api/load', {session: sessionId, settings: {build_mode:build.value, container_path:containerPath.value, model: model.value, mtp: mtp.value, mtp_draft_tokens: mtp.value === 'on' && mtpTokens.value ? Math.max(1, Math.min(parseInt(mtpTokens.value, 10) || mtpMaximum, mtpMaximum)) : null, agent_location: location.value, cli: cli.value, agent_workdir: workdir.value, rag: rag.value, rag_compute: ragCompute.value, rag_paths_location: ragPathsLocation.value, rag_threads: ragThreads.value, rag_memory_gb: ragMemory.value, rag_gpu: ragGpu.value, remote_rag_id:remoteRag.value, replace_loaded: Boolean(replaceLoaded?.checked), expected_owner: data.expected_owner, expected_generation:data.expected_generation, server_options: server.value}}, true);
+      runOperation(`Start session ${sessionId}`, 'Loading the model and preparing the retained agent terminal…', '/api/load', {session: sessionId, settings: {build_mode:build.value, container_path:containerPath.value, model: model.value, mtp: mtp.value, mtp_draft_tokens: !mtpTokens.disabled && mtpTokens.value ? Math.max(1, Math.min(parseInt(mtpTokens.value, 10) || mtpMaximum, mtpMaximum)) : null, agent_location: location.value, cli: cli.value, agent_workdir: workdir.value, rag: rag.value, rag_compute: ragCompute.value, rag_paths_location: ragPathsLocation.value, rag_threads: ragThreads.value, rag_memory_gb: ragMemory.value, rag_gpu: ragGpu.value, remote_rag_id:remoteRag.value, replace_loaded: Boolean(replaceLoaded?.checked), expected_owner: data.expected_owner, expected_generation:data.expected_generation, server_options: server.value}}, true);
     });
     openDialog(`Attach session ${sessionId}`, form);
   } catch (error) {

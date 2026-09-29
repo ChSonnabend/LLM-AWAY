@@ -126,7 +126,8 @@ def model_options(number):
                        'context_size':model.get('context_size',0),'mtp':{
                            'configured':bool(mtp.get('configured')),'available':bool(mtp.get('available')),
                            'toggle_supported':bool(mtp.get('toggle_supported')),
-                           'embedded':bool(mtp.get('embedded'))}})
+                           'embedded':bool(mtp.get('embedded')),
+                           'draft_n_max':mtp.get('draft_n_max')}})
     owner=allocation.get('owner') or {}
     foreign=bool(owner and owner.get('id')!=shared_sessions.client_identity())
     loaded=allocation.get('model_state') in ('STARTING','LOADING','LOADED','READY','RUNNING')
@@ -140,6 +141,8 @@ def model_options(number):
             'build_mode':'container' if cfg.llamacpp.container else 'native','native':False,'models':public,'current':((shared.get('llamacpp') or {}).get('model_name') if loaded else '') or data.get('model') or cfg.llamacpp.model_name,'loaded':loaded,
             'remote_owner':owner.get('label','') if foreign else '',
             'expected_owner':owner.get('id',''),'expected_generation':allocation.get('generation',''),
+            'mtp':(shared.get('llamacpp') or {}).get('mtp',cfg.llamacpp.mtp),
+            'mtp_draft_tokens':(shared.get('llamacpp') or {}).get('mtp_draft_tokens',cfg.llamacpp.mtp_draft_tokens),
             'can_attach':allocation.get('model_state') in ('STARTING','LOADING','LOADED','READY') and bool(allocation.get('session')),
             'agent_location':selection.get('target_location',selection.get('location','local')),
             'agent_cli':selection.get('cli','auto'),'agent_workdir':selection.get('cwd',''),
@@ -157,6 +160,13 @@ def allocate_browser(settings):
 def load_browser_model(number, settings):
     number=int(number);path=session_path(number)
     data=json.loads((path/'session.json').read_text())
+    settings=dict(settings)
+    if not settings.get('attach_existing'):
+        raw=settings.get('mtp_draft_tokens')
+        if raw not in (None,''):
+            if isinstance(raw,bool) or not str(raw).isdigit() or int(raw)<1:
+                raise ValueError('MTP draft tokens must be a positive whole number')
+            settings['mtp_draft_tokens']=int(raw) if settings.get('mtp','auto')!='off' else None
     mode=settings.get('build_mode')
     container=None
     if mode is not None:
@@ -182,7 +192,7 @@ def load_browser_model(number, settings):
         if not live:resources.rpc(path,'adopt-config',expected_generation=allocation['generation'])
         shared=allocation['session']
         settings=dict(settings,model=shared['llamacpp']['model_name'] or shared['model']['name'],
-                      mtp=shared['llamacpp']['mtp'],server_options=shlex.join(shared['llamacpp']['server_extra_args']))
+                      mtp=shared['llamacpp']['mtp'],mtp_draft_tokens=shared['llamacpp'].get('mtp_draft_tokens'),server_options=shlex.join(shared['llamacpp']['server_extra_args']))
     else:
         if loaded and not settings.get('replace_loaded'):
             raise ValueError('A model is already loaded; acknowledge replacement before starting another configuration')
@@ -417,7 +427,48 @@ def cleanup_released(token=None):
     return output.getvalue().strip() or 'Cleanup completed.'
 
 
-def run_action(action, number=None):
+def helper_access(number, folders=None, *, preparing=False):
+    from .serve_registration import registered
+    import tempfile
+    path = session_path(number)
+    record_path = path/'serve-registration.json'
+    record = json.loads(record_path.read_text()) if record_path.exists() else None
+    enabled = bool(record and registered(record))
+    target = path/'helper-access.json'
+    if folders is not None:
+        if not enabled and not preparing:
+            raise ValueError('Click Set helper for this session first')
+        if not isinstance(folders, list) or len(folders) > 100:
+            raise ValueError('Provide a list of at most 100 folders')
+        roots = []
+        for value in folders:
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError('Each folder must be an absolute path')
+            folder = Path(value.strip()).expanduser()
+            if not folder.is_absolute() or not folder.is_dir():
+                raise ValueError(f'Not an existing absolute local folder: {value}')
+            resolved = str(folder.resolve())
+            if resolved not in roots: roots.append(resolved)
+        fd, temporary = tempfile.mkstemp(dir=path, prefix='.helper-access-')
+        try:
+            with os.fdopen(fd, 'w') as output:
+                json.dump({'read_roots': roots}, output)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary): os.unlink(temporary)
+    roots = json.loads(target.read_text())['read_roots'] if target.exists() else []
+    if not target.exists() and enabled:
+        import tomllib
+        config = tomllib.loads(Path(record['config']).read_text())
+        arguments = config.get('mcp_servers', {}).get(f'session_helper_{number}', {}).get('args', [])
+        flag = '--read-root' if '--read-root' in arguments else '--rag'
+        roots = [arguments[i+1] for i, value in enumerate(arguments[:-1]) if value == flag]
+    return {'enabled': enabled, 'read_roots': roots, 'saved': target.exists() or enabled}
+
+
+def run_action(action, number=None, *, read_roots=None, confirmed=False):
     if action=='discover-remote':
         from .shared_sessions import discover
         return discover()
@@ -428,7 +479,13 @@ def run_action(action, number=None):
     if action=='refresh-session':return resources.refresh_session(number) or f'Session {number} refreshed.'
     if action=='set-helper':
         from .serve_registration import register
-        register(number,log_helper=True);return f'Session {number} is available as a helper.'
+        if confirmed is not True:
+            raise ValueError('Acknowledge the helper folder access before setting the helper')
+        if not isinstance(read_roots,list):
+            raise ValueError('Provide the helper folder access list')
+        # Persist approved access first: a failed/interrupted registration must retain it.
+        helper_access(number,read_roots,preparing=True)
+        register(number,log_helper=True);return f'Session {number} is available as a helper. Folder access saved.'
     if action=='restart':return resources.restart_session(number) or f'Session {number} restarting.'
     if action=='reconnect':return resources.reconnect_session(number)
     if action=='unload':resources.rpc(path,'stop');return f'Model unloaded from session {number}.'
@@ -526,6 +583,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 from .training import defaults
                 query=parse_qs(parsed.query)
                 self._json(defaults(query.get('session',[''])[0],query.get('model',[''])[0]));return
+            if parsed.path=='/api/helper-access':
+                query=parse_qs(parsed.query)
+                self._json(helper_access(query.get('session',[''])[0]));return
             if parsed.path=='/api/runtime':
                 self._json({'revision':RUNTIME_REVISION});return
             if parsed.path=='/api/sessions':self._json({'sessions':session_rows(),'time':time.time()});return
@@ -575,6 +635,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 terminal(body['id']).write(str(body.get('data','')));self._json({'ok':True});return
             if self.path=='/api/terminal/resize':
                 terminal(body['id']).resize(body.get('cols',120),body.get('rows',30));self._json({'ok':True});return
+            if self.path=='/api/helper-access':
+                if not isinstance(body.get('read_roots'),list):raise ValueError('read_roots must be a list')
+                self._json(helper_access(body.get('session'),body['read_roots']));return
             if self.path=='/api/actions':
                 action=str(body.get('action',''))
                 if action in ('cleanup','release') and not body.get('confirmed'):
@@ -583,7 +646,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     session=body.get('session'),peer=self.client_address[0],pid=os.getpid())),flush=True)
                 if action=='cleanup':
                     identifier=start_job(action,lambda:cleanup_released(body.get('preview_token')))
-                else:identifier=start_job(action,lambda:run_action(action,body.get('session')))
+                else:identifier=start_job(action,lambda:run_action(action,body.get('session'),
+                    read_roots=body.get('read_roots'),confirmed=body.get('confirmed',False)))
                 self._json({'job':identifier});return
             if self.path=='/api/training':
                 from .training import operate

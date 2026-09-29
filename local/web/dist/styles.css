@@ -233,3 +233,9 @@ input:focus, select:focus { border-color: var(--accent-strong); box-shadow: 0 0 
 .training-body .form-grid .field { align-self:start; }
 
 .training-body .training-runtime-row [hidden] { display:none; }
+
+.helper-access { display: grid; gap: 12px; }
+.helper-access textarea { width: 100%; box-sizing: border-box; min-height: 160px; padding: 12px; font: inherit; }
+
+.helper-acknowledgement { display: flex; align-items: flex-start; gap: 10px; }
+.helper-acknowledgement input { width: auto; margin-top: 4px; }
