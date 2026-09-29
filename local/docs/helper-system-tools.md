@@ -19,3 +19,15 @@ Select a session and use Tools → Set helper to open the folder-access menu bef
 Closing the menu leaves active permissions unchanged and retains edited text in browser local storage. Drafts are scoped to this browser origin and session number, and are never applied automatically. If browser storage is unavailable, the menu reports this. Approved access is saved atomically in the session's `helper-access.json` before registration starts. If registration is interrupted, that approved list remains available on retry. If the access-file replacement fails, the previous list remains intact.
 
 Settings are independent of RAG. Updated helper processes reload this policy for each read. Re-registering the helper requires reconnecting its MCP connection; helpers started before this feature was installed also need a reconnect. The saved web policy takes precedence over command-line read roots.
+
+## Private folder investigation
+
+Use `investigate_folder(folder, question, max_chars=4000, max_turns=8, max_files=20, max_bytes=60000, timeout_seconds=180)` for a summary without forwarding source files into the calling agent's context. No RAG configuration is required. A bounded internal model conversation chooses directory pages and text reads, then produces a summary with supporting paths. This is a JSON-action loop and does not require native model tool-call support.
+
+Every action rechecks current helper access and stays inside the requested investigation folder. No shell, write, or approval actions are exposed to this internal loop. Filesystem content is treated as untrusted evidence. Binary files are not interpreted. The existing path checks are not an OS sandbox; use trusted directories as documented above.
+
+Directory page counts are calculated in Python. Coverage reports exact visited pages and file byte ranges, errors, and the stopping reason. It does not claim an exhaustive recursive audit. Bounds also include 20 directory pages, 100 entries per page, 8,000 bytes per individual file read, the configured prompt budget, and HTTP timeouts within the investigation deadline. Endpoint setup occurs before that deadline; filesystem operations remain subject to the host filesystem's responsiveness.
+
+Only the summary and compact coverage/usage metadata are returned or written to helper logs; internal source text and model conversation are not logged by this tool. The inference server still receives the source text. Usage totals sum server-reported prompt/completion tokens across all internal calls (including repeated context). Missing usage is reported as unknown, not as zero. Character-volume counters are provided separately and must not be presented as measured token savings. This saves caller context; it does not necessarily reduce total inference tokens.
+
+Reconnect the session helper's MCP connection once to discover the new tool. The loaded model does not need restarting.

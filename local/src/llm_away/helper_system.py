@@ -77,7 +77,7 @@ def request_system_command(command: str, cwd: str, reason: str) -> str:
                        'and use your permission-controlled execution tool. This helper cannot execute commands.'})
 
 
-def register_system_tools(server, roots=(), access_file=None):
+def access_checker(roots=(), access_file=None):
     allowed = tuple(absolute_path(str(root)).resolve() for root in roots)
 
     def check(path):
@@ -88,6 +88,12 @@ def register_system_tools(server, roots=(), access_file=None):
         if not any(resolved == root or root in resolved.parents for root in current):
             raise ValueError('Path outside configured read roots; configure --read-root explicitly')
         return str(resolved)
+
+    return check
+
+
+def register_system_tools(server, roots=(), access_file=None):
+    check = access_checker(roots, access_file)
 
     @server.tool(name='list_directory')
     def scoped_list_directory(path: str, offset: int = 0, limit: int = 500) -> str:
