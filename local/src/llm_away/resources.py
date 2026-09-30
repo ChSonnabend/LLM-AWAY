@@ -33,6 +33,15 @@ from .cli import remote_model_catalog
 ROOT=Path(__file__).resolve().parents[2]
 STORE=ROOT/'run'/'resources'
 
+def timestamp_log_lines(text,final=False):
+    """Timestamp complete remote lines, retaining a partial line between polls."""
+    lines=text.splitlines(keepends=True)
+    pending=''
+    if lines and not lines[-1].endswith(('\n','\r')) and not final:pending=lines.pop()
+    stamp=time.strftime('%Y-%m-%d %H:%M:%S | ')
+    return ''.join(stamp+line.rstrip('\r\n')+'\n' for line in lines),pending
+
+
 def write(path, data):
     temp=path.with_suffix('.tmp')
     temp.write_text(json.dumps(data,indent=2));temp.chmod(0o600);temp.replace(path)
@@ -268,6 +277,8 @@ def daemon(path):
         cfg=direct_profile(cfg,dict(data.get('allocation') or {},session={'backend_type':'direct'}))
         data['config']=asdict(cfg);data['host']=cfg.ssh.destination
     token=data['token'];port=data['remote_port'];child=None;offset=0;last=None
+    stamp=lambda:time.strftime('%Y-%m-%d %H:%M:%S')
+    pending_logs=''
     if cfg.ssh.connection!='local':
         os.environ['LLM_AWAY_SSH_CONTROL']=str((path/'ssh.sock').resolve())
     if (path/'control.sock').exists():
@@ -327,11 +338,11 @@ def daemon(path):
     if child is None:
         try:
             allocation=remote(cfg,token,port,'reserve',session_id=data['id']);state(allocation=allocation,phase=allocation['slurm_state'])
-            print('Allocation:',allocation,flush=True)
+            print(stamp()+' | Allocation:',allocation,flush=True)
         except Exception as exc:
             state(phase='ERROR',error=str(exc));print(exc,flush=True)
     else:
-        print('Adopted live provider '+str(child.pid)+'; skipping reserve',flush=True)
+        print(stamp()+' | Adopted live provider '+str(child.pid)+'; skipping reserve',flush=True)
     detach_requested=False
     def interrupted(sig,frame):
         nonlocal detach_requested
@@ -361,7 +372,7 @@ def daemon(path):
                 cleanup_ended_allocation(path,data)
                 break
             if detach_requested:
-                print('Local monitor stopping; remote allocation and model retained.',flush=True)
+                print(stamp()+' | Local monitor stopping; remote allocation and model retained.',flush=True)
                 break
             try:client,_=sock.accept()
             except socket.timeout:client=None
@@ -457,18 +468,21 @@ def daemon(path):
                     if failure and s.get('model_state') in ('STARTING','LOADING','LOADED','READY'):s['model_state']='ERROR'
                     state(allocation=s,phase=s['slurm_state'],error=failure,provider_exit=child.poll() if child else None)
                     summary=(s['slurm_state'],s.get('model_state'),s.get('host'))
-                    if summary!=last:print('Resource state:',summary,flush=True);last=summary
-                    if new_logs:print(new_logs,end='',flush=True)
+                    if summary!=last:print(stamp()+' | Resource state:',summary,flush=True);last=summary
+                    if new_logs:
+                        formatted,pending_logs=timestamp_log_lines(pending_logs+new_logs)
+                        print(formatted,end='',flush=True)
                     if 'rag_log' in s:
                         try:rag_settings=json.loads((path/'agent-selection.json').read_text()).get('rag_config') or {}
                         except (OSError,ValueError):rag_settings={}
                         if rag_settings.get('compute')=='remote':(path/'rag.log').write_text(s['rag_log'])
                     if allocation_ended(cfg,s):
                         cleanup_ended_allocation(path,data)
-                        print('Allocation ended; local processes cleaned up. History retained.',flush=True)
+                        print(stamp()+' | Allocation ended; local processes cleaned up. History retained.',flush=True)
                         break
-                except Exception as exc:state(error=str(exc));print('Monitor:',exc,flush=True)
+                except Exception as exc:state(error=str(exc));print(stamp()+' | Monitor:',exc,flush=True)
     finally:
+        if pending_logs:print(timestamp_log_lines(pending_logs,final=True)[0],end='',flush=True)
         # Keep the provider alive for adoption and leave the remote worker alone.
         if data.get('phase')!='RELEASED' and not data.get('allocation_cleaned'):
             state(pid=None,monitor_detached=True)

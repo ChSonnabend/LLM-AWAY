@@ -1,4 +1,5 @@
 import threading
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -73,3 +74,18 @@ class InlineGatewayTests(unittest.TestCase):
             self.assertEqual(h.write_json.call_args.kwargs['status'], 400)
             self.assertFalse(self.server.inline_lock.locked())
         self.backend.ensure_ready.assert_not_called()
+
+    def test_prefix_suffix_routes_to_raw_fim_completion(self):
+        upstream = Mock(status=200)
+        upstream.__enter__ = Mock(return_value=upstream)
+        upstream.__exit__ = Mock(return_value=False)
+        upstream.read.return_value = b'{"choices": [{"text": "x"}]}'
+        h = self.handler()
+        self.backend.local_url.side_effect = lambda path: 'http://127.0.0.1:1234' + path
+        with patch('llm_away.server.local_urlopen', return_value=upstream) as request:
+            h.handle_inline({'prefix': 'def f():\n    ', 'suffix': '\n', 'max_tokens': 64})
+        sent = json.loads(request.call_args.args[0].data)
+        self.assertTrue(request.call_args.args[0].full_url.endswith('/v1/completions'))
+        self.assertEqual(sent['prompt'], '<|fim_prefix|>def f():\n    <|fim_suffix|>\n<|fim_middle|>')
+        self.assertNotIn('messages', sent)
+        self.assertIn('<|fim_middle|>', sent['stop'])

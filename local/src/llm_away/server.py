@@ -134,9 +134,21 @@ class ProviderHandler(BaseHTTPRequestHandler):
                 self.write_json({"error": "Inline max_tokens must be between 1 and 512"}, status=400)
                 return
             payload = dict(payload, model=self.config.model.name, stream=False, max_tokens=limit, n=1)
+            # Fill-in-the-middle: editors send prefix/suffix alongside the chat
+            # fallback messages; older gateways simply ignore these extra fields.
+            endpoint = '/v1/chat/completions'
+            prefix = payload.pop('prefix', None)
+            suffix = payload.pop('suffix', None)
+            if isinstance(prefix, str) and isinstance(suffix, str):
+                payload['prompt'] = '<|fim_prefix|>' + prefix + '<|fim_suffix|>' + suffix + '<|fim_middle|>'
+                payload['stop'] = ['<|fim_suffix|>', '<|fim_pad|>', '<|fim_middle|>', '<|file_sep|>', '<|repo_name|>']
+                payload.pop('messages', None)
+                payload.pop('chat_template_kwargs', None)
+                payload.pop('reasoning_effort', None)
+                endpoint = '/v1/completions'
             try:
                 self.backend.ensure_ready(self.config.model.name)
-                request = Request(self.backend.local_url('/v1/chat/completions'),
+                request = Request(self.backend.local_url(endpoint),
                                   data=json.dumps(payload).encode(),
                                   headers={"Content-Type": "application/json", **self.backend.auth_headers()})
                 try:

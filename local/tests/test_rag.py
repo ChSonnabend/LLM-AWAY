@@ -95,6 +95,35 @@ class RagPathTests(unittest.TestCase):
         self.assertIn('still building: /a',result)
         self.assertIn('available excerpt',result)
 
+    def test_query_naming_folder_scopes_search_to_that_folder(self):
+        folders=FolderIndexes([Path('/alpha'),Path('/beta')]);folders.embedder=Mock()
+        folders.embedder.query_embed.return_value=iter([[1]])
+        scoped=Mock();scoped.search.return_value=[(.02,'/alpha/file',1,2,'alpha excerpt')]
+        other=Mock();other.search.return_value=[(.03,'/beta/file',1,2,'beta excerpt')]
+        with patch.object(folders,'get',side_effect=lambda root: scoped if root==Path('/alpha') else other) as get:
+            result=folders.search('find the bug in alpha',2)
+        get.assert_called_once_with(Path('/alpha'))
+        self.assertIn('alpha excerpt',result)
+        self.assertNotIn('beta excerpt',result)
+
+    def test_query_without_folder_name_searches_all_roots(self):
+        folders=FolderIndexes([Path('/alpha'),Path('/beta')]);folders.embedder=Mock()
+        folders.embedder.query_embed.return_value=iter([[1]])
+        first=Mock();first.search.return_value=[(.02,'/alpha/file',1,2,'alpha excerpt')]
+        second=Mock();second.search.return_value=[(.03,'/beta/file',1,2,'beta excerpt')]
+        with patch.object(folders,'get',side_effect=[first,second]) as get:
+            folders.search('general question',2)
+        self.assertEqual(get.call_count,2)
+
+    def test_folder_name_inside_word_does_not_scope(self):
+        folders=FolderIndexes([Path('/alpha'),Path('/beta')]);folders.embedder=Mock()
+        folders.embedder.query_embed.return_value=iter([[1]])
+        first=Mock();first.search.return_value=[(.02,'/alpha/file',1,2,'alpha excerpt')]
+        second=Mock();second.search.return_value=[(.03,'/beta/file',1,2,'beta excerpt')]
+        with patch.object(folders,'get',side_effect=[first,second]) as get:
+            folders.search('how does alphabetical sorting work',2)
+        self.assertEqual(get.call_count,2)
+
     def test_accepts_files_and_directories(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder=Path(temporary)/'src';folder.mkdir()

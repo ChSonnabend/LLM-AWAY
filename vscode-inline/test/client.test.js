@@ -46,6 +46,12 @@ test('bounds context and never substitutes reasoning or tool calls for code', ()
   assert.equal(data.prefix.length, 8000); assert.equal(data.suffix.length, 2000);
   assert.equal(client.completionPayload('glm-5.3-flash-q4', '', '', 'python', 128).chat_template_kwargs.reasoning_effort, 'low');
   assert.equal(payload.max_tokens, 64); assert.equal(payload.tools, undefined);
+  const fim = client.completionPayload('Qwen3-Coder-30B-A3B', 'p'.repeat(12000), 's'.repeat(5000), 'python', 64, undefined, 'auto');
+  assert.equal(fim.prefix.length, 8000); assert.equal(fim.suffix.length, 2000);
+  assert.equal(fim.messages.length, 1);
+  assert.equal(client.completionPayload('Qwen3-Coder-30B-A3B', 'a', 'b', 'python', 64, undefined, 'chat').prefix, undefined);
+  assert.equal(client.completionPayload('glm-5.3-flash-q4', 'a', 'b', 'python', 64, undefined, 'auto').prefix, undefined);
+  assert.equal(client.completionPayload('glm-5.3-flash-q4', 'a', 'b', 'python', 64, undefined, 'fim').prefix, 'a');
   const response = message => ({ choices: [{ message }] });
   assert.equal(client.completionText(response({ content: 'return x;\n}' }), '\n}'), 'return x;');
   assert.equal(client.completionText(response({ reasoning_content: 'private thoughts' }), ''), '');
@@ -94,4 +100,10 @@ test('strips Markdown backticks around Python fragments without changing literal
   assert.equal(client.completionText(response('`hello`'), '', 'echo ', 'shellscript'), '`hello`');
   assert.equal(client.completionText(response('call`(42)` extra'), '', '', 'python'), '');
   assert.equal(client.completionText(response('"&#x6C;"'), '', 'value = ', 'python'), '"&#x6C;"');
+});
+
+test('accepts raw FIM completions while rejecting chat reasoning and tools', () => {
+  assert.equal(client.completionText({ choices: [{ text: 'return x' }] }, ''), 'return x');
+  assert.equal(client.completionText({ choices: [{ message: { reasoning_content: 'private' }, text: 'private' }] }, ''), '');
+  assert.equal(client.completionText({ choices: [{ message: { tool_calls: [{}] }, text: 'private' }] }, ''), '');
 });

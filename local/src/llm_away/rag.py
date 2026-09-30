@@ -323,6 +323,28 @@ def chunks(path, text):
             start=max(start+1,stop-6) if stop<end else end
 
 
+def search_paths(query,roots):
+    """Explicit paths take precedence over shorthand indexed folder names."""
+    tokens=re.findall(r"`([^`]+)`|\"([^\"]+)\"|'([^']+)'|([^\s,;()]+)",query)
+    paths=[]
+    for parts in tokens:
+        value=next(part for part in parts if part).rstrip('.,:')
+        if '/' not in value:continue
+        path=Path(value).expanduser()
+        if path.is_absolute():paths.append(Path(os.path.normpath(path)))
+        else:
+            for root in roots:
+                relative=Path(*path.parts[1:]) if path.parts and path.parts[0]==root.name else path
+                paths.append(Path(os.path.normpath(root/relative)))
+    if paths:return tuple(dict.fromkeys(paths))
+    return tuple(root for root in roots if re.search(rf'(?<![\w-]){re.escape(root.name)}(?![\w-])',query))
+
+
+def path_matches(path,scopes):
+    path=Path(path)
+    return not scopes or any(path==scope or scope in path.parents for scope in scopes)
+
+
 class Index:
     def __init__(self,roots,threads=2,gpu=False,status_log=None,embedder=None,excluded=()):
         os.environ.setdefault('HF_HOME',str(CACHE/'huggingface'))
@@ -421,7 +443,7 @@ class Index:
             chunks_total=self.db.execute('SELECT count(*) FROM chunks').fetchone()[0]
             self.report(f'READY | 100% | scanned {len(seen):,} files | updated {changed:,} files | indexed {chunks_total:,} chunks | cache {self.directory.name}')
 
-    def search(self,query,limit=6,*,ranked=False,query_vector=None):
+    def search(self,query,limit=6,*,ranked=False,query_vector=None,search_scopes=()):
         if not isinstance(query,str) or not query.strip() or len(query)>2000:raise ValueError('Use a nonempty query of at most 2000 characters')
         self.report('QUERY | message '+json.dumps(query,ensure_ascii=False))
         self.refresh(block=False)
@@ -429,7 +451,8 @@ class Index:
         q=self.np.asarray(next(self.embedder.query_embed(query)) if query_vector is None else query_vector,dtype='float32')
         q_norm=self.np.linalg.norm(q)
         nearest=[]
-        cursor=self.db.execute('SELECT id,vector FROM chunks')
+        self.db.create_function('in_search_scope',1,lambda path:int(path_matches(path,search_scopes)))
+        cursor=self.db.execute('SELECT id,vector FROM chunks WHERE in_search_scope(path)')
         while True:
             batch=cursor.fetchmany(SEARCH_BATCH_SIZE)
             if not batch:break
@@ -442,7 +465,7 @@ class Index:
         dense=[key for _,key in sorted(nearest,reverse=True)]
         terms=re.findall(r'[\w]+',re.sub(r'([a-z])([A-Z])',r'\1 \2',query))[:32]
         expression=' OR '.join('"'+t+'"' for t in terms)
-        lexical=[r[0] for r in self.db.execute('SELECT rowid FROM lexical WHERE lexical MATCH ? ORDER BY bm25(lexical) LIMIT 40',(expression,))] if expression else []
+        lexical=[r[0] for r in self.db.execute('SELECT rowid FROM lexical WHERE lexical MATCH ? AND in_search_scope(path) ORDER BY bm25(lexical) LIMIT 40',(expression,))] if expression else []
         fused={}
         for ranking in (dense,lexical):
             for rank,key in enumerate(ranking):fused[key]=fused.get(key,0)+1/(60+rank+1)
@@ -501,17 +524,22 @@ class FolderIndexes:
     def search(self,query,limit=6):
         if not isinstance(query,str) or not query.strip() or len(query)>2000:
             raise ValueError('Use a nonempty query of at most 2000 characters')
+        scopes=search_paths(query,self.roots)
+        # Include reused child indexes when searching a parent directory.
+        search_roots=[root for root in self.roots if not scopes or
+                      any(path_matches(root,(scope,)) or path_matches(scope,(root,)) for scope in scopes)]
         candidates=[];waiting=[];vector=None
-        for root in self.roots:
+        for root in search_roots:
             try:
                 index=self.get(root)
                 if vector is None:vector=next(self.embedder.query_embed(query))
-                candidates.extend(index.search(query,8,ranked=True,query_vector=vector))
+                candidates.extend(index.search(query,8,ranked=True,query_vector=vector,search_scopes=scopes))
             except ValueError as exc:
                 if 'still building' not in str(exc):raise
                 waiting.append(str(root))
         selected=[];spans=[];used=0
         for score,path,start,end,item in sorted(candidates,key=lambda row:row[0],reverse=True):
+            if not path_matches(path,scopes):continue
             if any(p==path and max(a,start)<=min(b,end) for p,a,b in spans):continue
             if used+len(item)>16000:continue
             selected.append(item);used+=len(item);spans.append((path,start,end))
@@ -560,7 +588,7 @@ def run(args):
     server=FastMCP('project_search')
     @server.tool()
     def search_project(query: str, limit: int = 6) -> str:
-        """Search the selected local code/docs folders by meaning and exact identifiers. Returns bounded excerpts with paths/lines. Prefer this to broad repository scans; verify current files before editing."""
+        """Search the selected local code/docs folders by meaning and exact identifiers. Returns bounded excerpts with paths/lines. Paths in the query restrict results to those files or directories; indexed folder names can also be used. Prefer this to broad repository scans; verify current files before editing."""
         nonlocal index
         with lock:
             if index is None:

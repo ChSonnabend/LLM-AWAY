@@ -132,7 +132,7 @@ function activate(context) {
           // Keep this HTTP request open through editor cancellation and the UI
           // deadline. The gateway has its own finite upstream timeout and guard.
           return client.request(session, '/v1/inline/completions',
-            client.completionPayload(session.model, prefix, suffix, document.languageId, config().get('maxTokens', 256), fullFile),
+            client.completionPayload(session.model, prefix, suffix, document.languageId, config().get('maxTokens', 256), fullFile, config().get('completionMode', 'auto')),
             undefined, 0);
         }, valid, config().get('timeoutMs', 15000), () => {
           trace(`Request ${ticket}: display deadline reached; retaining the inference slot until completion.`);

@@ -76,7 +76,16 @@ function request(session, route, payload, signal, timeoutMs = 15000) {
     req.end(body);
   });
 }
-function completionPayload(model, prefix, suffix, language, maxTokens, fileContext) {
+function completionPayload(model, prefix, suffix, language, maxTokens, fileContext, mode = 'auto') {
+  // Fill-in-the-middle prompt for native FIM models. The gateway strips
+  // prefix/suffix into a raw completion; older gateways keep a chat fallback
+  // so the same payload stays compatible both ways.
+  const fim = (mode === 'fim') || (mode === 'auto' && /^(qwen3-coder|qwen2.5-coder)/i.test(model));
+  if (fim) return { model, stream: false, cache_prompt: true, max_tokens: maxTokens, temperature: 0.2,
+    prefix: prefix.slice(-8000), suffix: suffix.slice(0, 2000),
+    messages: [
+      { role: 'user', content: JSON.stringify({ language, prefix: prefix.slice(-8000), suffix: suffix.slice(0, 2000) }) }
+    ] };
   return { model, stream: false, cache_prompt: true, max_tokens: maxTokens, temperature: 0.2,
     ...(/^glm/i.test(model) ? { reasoning_effort: 'low', chat_template_kwargs: { reasoning_effort: 'low' } } : {}),
     messages: [
@@ -110,8 +119,9 @@ function pythonLex(text, initial = {}) {
 }
 function completionText(response, suffix, prefix = '', language = '') {
   const message = response.choices?.[0]?.message;
-  if (!message || message.tool_calls?.length || typeof message.content !== 'string') return '';
-  let text = message.content;
+  if (message?.tool_calls?.length) return '';
+  let text = message ? message.content : response.choices?.[0]?.text;
+  if (typeof text !== 'string') return '';
   // Accept one code-only fenced block, but never reasoning or tool output.
   const fenced = text.match(/^\s*```[^\r\n]*\r?\n([\s\S]*?)\r?\n```\s*$/);
   if (fenced) text = fenced[1];

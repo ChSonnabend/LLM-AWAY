@@ -72,6 +72,12 @@
           "default": true,
           "description": "Request suggestions after typing pauses."
         },
+        "llmAwayInline.completionMode": {
+          "type": "string",
+          "enum": ["auto", "fim", "chat"],
+          "default": "auto",
+          "description": "Prompt style: auto picks fill-in-the-middle (FIM) for Qwen Coder models, chat otherwise. fim/chat force a style."
+        },
         "llmAwayInline.debounceMs": {
           "type": "number",
           "default": 200,
