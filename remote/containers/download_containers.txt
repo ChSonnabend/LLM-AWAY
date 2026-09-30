@@ -1,0 +1,5 @@
+# Download CUDA and ROCm llama-server Apptainer containers.
+# Run from /lustre/alice/users/csonnab/LLM-AWAY/remote/containers
+
+apptainer pull llama-server-cuda.sif docker://ghcr.io/ggml-org/llama.cpp:server-cuda
+apptainer pull llama-server-rocm.sif docker://ghcr.io/ggml-org/llama.cpp:server-rocm

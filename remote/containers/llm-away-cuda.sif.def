@@ -1,0 +1,46 @@
+Bootstrap: localimage
+From: /lustre/alice/users/csonnab/LLM-AWAY/remote/containers/llama-server-cuda.sif
+Stage: inference
+
+Bootstrap: localimage
+From: /lustre/alice/users/csonnab/LLM-AWAY/remote/containers/unsloth-training-cuda.sif
+Stage: unified
+
+%files from inference
+    /app /app
+
+%files
+    /lustre/alice/users/csonnab/LLM-AWAY/remote/builds/glm5next/build/bin/llama-server /opt/llm-away/glm5next/llama-server
+
+%post
+    set -eu
+    MAX_JOBS=4 /opt/unsloth-venv/bin/python -m pip install --no-cache-dir \
+        --no-build-isolation --no-deps 'causal-conv1d==1.7.0'
+    /opt/unsloth-venv/bin/python -c "import causal_conv1d, causal_conv1d_cuda"
+    /opt/unsloth-venv/bin/python -m pip freeze > /opt/llm-away-training/installed-versions.txt
+
+%environment
+    export PYTHONNOUSERSITE=1
+    export HF_HOME="${LLM_AWAY_HF_HOME:-/tmp/llm-away-$(id -u)/huggingface}"
+    export TRITON_CACHE_DIR="${LLM_AWAY_TRITON_CACHE:-/tmp/llm-away-$(id -u)/triton-unified}"
+    export UNSLOTH_COMPILE_LOCATION="/tmp/llm-away-$(id -u)/unsloth-unified"
+    export TORCHINDUCTOR_CACHE_DIR="/tmp/llm-away-$(id -u)/torchinductor-unified"
+    export PATH=/app:/opt/unsloth-venv/bin:$PATH
+    export LD_LIBRARY_PATH=/app:/opt/unsloth-venv/lib/python3.12/site-packages/nvidia/cublas/lib:/opt/unsloth-venv/lib/python3.12/site-packages/nvidia/nccl/lib:/usr/local/cuda/targets/x86_64-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
+%labels
+    Application LLM-AWAY-Unified-CUDA
+    Purpose "Unsloth training/evaluation/export and llama.cpp chat serving"
+    GLM5NextRevision 86ebfef2c6a0f3359a2a07d2c215d61b0fa885c9
+
+%test
+    test -x /app/llama-server
+    test -x /opt/llm-away/glm5next/llama-server
+    /opt/unsloth-venv/bin/python -c "import torch, causal_conv1d; import importlib.util; assert all(importlib.util.find_spec(n) for n in ('unsloth','transformers','pypdf','markitdown'))"
+
+%help
+    Build with remote/bin/build-container unified NEW_IMAGE.sif GPU_JOB_ID.
+    Input images and the pinned GLM server are build inputs only; the resulting
+    SIF contains both GPU runtimes and does not need those files at execution.
+    Use the same SIF for Attach (container) and Fine-tuning (Apptainer).
+    WebUI and CLI clients continue running on their selected local/remote host.
