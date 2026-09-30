@@ -28,6 +28,7 @@ helper when a local VS Code CLI, Node.js 20+ and npm are available.
 
 Auto mode skips extension setup in SSH/VS Code Remote shells and when tools are
 missing. Use --with-vscode or --vscode-only to explicitly target that environment.
+Explicit VS Code setup installs missing Node.js/npm with Homebrew when available.
 Downloading or cloning the repository alone does not execute this installer.
 USAGE
 }
@@ -83,6 +84,47 @@ install_command_links() {
     printf 'Command directory: %s (add it to PATH if needed).\n' "$AWAY_BIN_DIR"
 }
 
+node_ready() {
+    command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 &&
+        node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' >/dev/null 2>&1 &&
+        npm --version >/dev/null 2>&1
+}
+
+prepare_node() {
+    local brew_command prefix formula saved_path="$PATH"
+    if node_ready; then return 0; fi
+    brew_command="$(command -v brew || true)"
+    if [[ -z "$brew_command" ]]; then
+        for brew_command in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+            if [[ -x "$brew_command" ]]; then break; fi
+        done
+    fi
+    if [[ -x "$brew_command" ]]; then
+        # Keg-only Node installations need not be linked into the user's PATH.
+        for formula in node node@24 node@22 node@20; do
+            prefix="$("$brew_command" --prefix "$formula" 2>/dev/null)" || continue
+            [[ -x "$prefix/bin/node" && -x "$prefix/bin/npm" ]] || continue
+            export PATH="$prefix/bin:$saved_path"
+            if node_ready; then return 0; fi
+            export PATH="$saved_path"
+        done
+        if [[ "$AWAY_VSCODE_MODE" == required ]]; then
+            echo 'Installing Node.js and npm with Homebrew for VS Code extension setup...'
+            if ! "$brew_command" install node; then
+                echo 'Homebrew could not prepare Node.js. Fix the Homebrew error above and retry with --vscode-only.' >&2
+                return 1
+            fi
+            prefix="$("$brew_command" --prefix node)" || return 1
+            export PATH="$prefix/bin:$saved_path"
+            if node_ready; then return 0; fi
+            export PATH="$saved_path"
+        fi
+    fi
+    echo 'Extension setup requires working Node.js 20+ and npm. Install Node.js (https://nodejs.org/) or run: brew install node' >&2
+    echo 'Then retry: local/scripts/install.sh --vscode-only' >&2
+    return 1
+}
+
 vscode_available() {
     if [[ "$AWAY_VSCODE_MODE" == auto && ( -n "${SSH_CONNECTION:-}" || -n "${SSH_TTY:-}" ) ]]; then
         echo 'Skipping VS Code extension in an SSH shell; run setup on your desktop.'; return 1
@@ -100,12 +142,7 @@ vscode_available() {
     if [[ "$AWAY_VSCODE_MODE" == auto && ( "$AWAY_CODE_COMMAND" == *vscode-server* || "$AWAY_CODE_COMMAND" == *remote-cli* ) ]]; then
         echo 'Skipping the VS Code Remote CLI; run setup on the desktop side.'; return 1
     fi
-    if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-        echo 'Extension setup requires Node.js 20+ and npm.'; return 1
-    fi
-    if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)'; then
-        echo 'Extension setup requires Node.js 20 or newer.'; return 1
-    fi
+    prepare_node
 }
 
 install_vscode() (

@@ -50,6 +50,10 @@ if name in ('code', 'alternate-code'): sys.exit(int(os.environ.get('FAIL_CODE', 
             p = self.tools / name
             p.write_text(code)
             p.chmod(0o755)
+        # Never fall through to the host's Homebrew installation.
+        brew = self.tools / 'brew'
+        brew.write_text('#!/bin/bash\nexit 1\n')
+        brew.chmod(0o755)
         p = self.python / 'python'
         p.write_text(code)
         p.chmod(0o755)
@@ -102,6 +106,60 @@ if name in ('code', 'alternate-code'): sys.exit(int(os.environ.get('FAIL_CODE', 
         required = self.run_script('install-vscode-inline.sh', env=env)
         self.assertEqual(required.returncode, 1)
         self.assertFalse(any(c[0] == 'npm' for c in self.calls()))
+
+    def fake_homebrew(self, installed=False, fail=False):
+        prefix = self.root / 'brew node'
+        source = self.root / 'node source'
+        source.mkdir()
+        for name in ('node', 'npm'):
+            shutil.move(str(self.tools / name), source / name)
+        if installed:
+            (prefix / 'bin').mkdir(parents=True)
+            for name in ('node', 'npm'):
+                shutil.copy2(source / name, prefix / 'bin' / name)
+        brew = self.tools / 'brew'
+        brew.write_text('#!' + sys.executable + '\n' + f"""import json, pathlib, shutil, sys
+args = sys.argv[1:]
+with open({str(self.log)!r}, 'a') as log:
+    log.write(json.dumps(['brew', *args]) + '\\n')
+prefix = pathlib.Path({str(prefix)!r})
+if args == ['--prefix', 'node']:
+    print(prefix)
+elif args == ['install', 'node']:
+    if {fail!r}: sys.exit(1)
+    (prefix / 'bin').mkdir(parents=True, exist_ok=True)
+    for name in ('node', 'npm'):
+        shutil.copy2(pathlib.Path({str(source)!r}) / name, prefix / 'bin' / name)
+else:
+    sys.exit(1)
+""")
+
+    def test_required_setup_installs_missing_node_and_continues(self):
+        self.fake_homebrew()
+        result = self.run_script('install.sh', '--vscode-only')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(['brew', 'install', 'node'], self.calls())
+        self.assertTrue(any(c[0] == 'code' for c in self.calls()))
+
+    def test_existing_homebrew_node_is_used_without_installing(self):
+        self.fake_homebrew(installed=True)
+        result = self.run_script('install.sh', '--vscode-only')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(['brew', 'install', 'node'], self.calls())
+
+    def test_auto_mode_does_not_install_missing_node(self):
+        self.fake_homebrew()
+        result = self.run_script('install.sh', '--bin-dir', str(self.links))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(['brew', 'install', 'node'], self.calls())
+        self.assertFalse(any(c[0] == 'code' for c in self.calls()))
+
+    def test_homebrew_failure_stops_required_setup(self):
+        self.fake_homebrew(fail=True)
+        result = self.run_script('install.sh', '--vscode-only')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Homebrew could not', result.stderr)
+        self.assertFalse(any(c[0] == 'code' for c in self.calls()))
 
     def test_failed_build_never_installs_stale_package(self):
         env = dict(self.env, FAIL_NPM='run')
