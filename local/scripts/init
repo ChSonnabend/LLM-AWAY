@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
+# Preserve the environment-only behavior of the original init command.
 set -euo pipefail
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env.sh"
-echo "Project environment ready: $VIRTUAL_ENV"
-
-case "${1:-}" in
-  --documents) "$VIRTUAL_ENV/bin/python" -m llm_away.document_tools --install ;;
-  --check-documents) "$VIRTUAL_ENV/bin/python" -m llm_away.document_tools --check ;;
-  "") echo "Optional PDF/OCR dependencies: local/bin/setup-documents --install" ;;
-  *) echo "Usage: local/scripts/init [--documents|--check-documents]" >&2; exit 2 ;;
-esac
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install.sh" --env-only "$@"

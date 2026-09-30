@@ -14,7 +14,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from .backends import Backend, BackendError, InferenceRequest
+from .backends import Backend, BackendError, InferenceRequest, urlopen as local_urlopen
 from .config import AppConfig
 from .protocol import (
     chat_completion,
@@ -46,6 +46,10 @@ class ProviderHandler(BaseHTTPRequestHandler):
             self.write_json({"status": "ok", "model": self.config.model.name})
             return
         if not self.authorized():return
+        if self.path == "/v1/inline/status":
+            self.write_json({"supported": True, "busy": self.server.inline_lock.locked(),
+                             "fault": self.server.inline_fault})
+            return
         if self.path == "/v1/models":
             self.write_json(models_list(self.config.model.name))
             return
@@ -65,12 +69,14 @@ class ProviderHandler(BaseHTTPRequestHandler):
         outcome='completed'
         try:
             payload = self.read_json()
-            if urlsplit(self.path).path in ('/v1/responses','/v1/chat/completions','/v1/messages'):
+            if urlsplit(self.path).path in ('/v1/responses','/v1/chat/completions','/v1/messages','/v1/inline/completions'):
                 self.query_log({'id':query_id,'event':'request','endpoint':self.path,
                                 'model':payload.get('model',self.config.model.name),
                                 'input':payload.get('input',payload.get('messages',[]))})
             if urlsplit(self.path).path in ("/v1/messages", "/v1/messages/count_tokens"):
                 self.handle_anthropic(payload)
+            elif self.path == "/v1/inline/completions":
+                self.handle_inline(payload)
             elif self.path == "/v1/chat/completions":
                 self.handle_chat(payload)
             elif self.path == "/v1/responses":
@@ -87,7 +93,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
             outcome='error: '+str(exc)
             self.write_json({"error": {"message": str(exc), "type": "server_error"}}, status=500)
         finally:
-            if urlsplit(self.path).path in ('/v1/responses','/v1/chat/completions','/v1/messages'):
+            if urlsplit(self.path).path in ('/v1/responses','/v1/chat/completions','/v1/messages','/v1/inline/completions'):
                 self.query_log({'id':query_id,'event':outcome,'elapsed_seconds':round(time.monotonic()-started,3)})
 
     def query_log(self,record):
@@ -102,6 +108,53 @@ class ProviderHandler(BaseHTTPRequestHandler):
                 stream.write(data)
         except OSError as exc:
             print('Model query log unavailable: '+str(exc),file=sys.stderr)
+
+    def handle_inline(self, payload: dict) -> None:
+        """One inline inference per local gateway, including disconnected clients.
+
+        Drain the upstream response before writing anything to the editor. A
+        broken editor socket must not release capacity while inference runs.
+        Ambiguous upstream failures latch the gate until the provider restarts.
+        """
+        if not self.server.inline_lock.acquire(blocking=False):
+            self.write_json({"error": "Inline inference is already running"}, status=429)
+            return
+        try:
+            if self.server.inline_fault:
+                self.write_json({"error": "Reload the provider after an upstream failure"}, status=503)
+                return
+            if not getattr(self.backend, 'native_tools', False):
+                self.write_json({"error": "Inline inference needs a persistent server backend"}, status=400)
+                return
+            if not isinstance(payload, dict) or payload.get('stream') or payload.get('tools'):
+                self.write_json({"error": "Inline requests must be non-streaming and tool-free"}, status=400)
+                return
+            limit = payload.get('max_tokens', 256)
+            if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 512:
+                self.write_json({"error": "Inline max_tokens must be between 1 and 512"}, status=400)
+                return
+            payload = dict(payload, model=self.config.model.name, stream=False, max_tokens=limit, n=1)
+            try:
+                self.backend.ensure_ready(self.config.model.name)
+                request = Request(self.backend.local_url('/v1/chat/completions'),
+                                  data=json.dumps(payload).encode(),
+                                  headers={"Content-Type": "application/json", **self.backend.auth_headers()})
+                try:
+                    upstream = local_urlopen(request, timeout=self.config.llamacpp.inference_timeout_seconds)
+                except HTTPError as exc:
+                    upstream = exc
+                with upstream:
+                    raw = upstream.read(1024 * 1024 + 1)
+                    if len(raw) > 1024 * 1024:
+                        raise BackendError('Inline upstream response exceeded the limit')
+                    result = json.loads(raw)
+                    status = upstream.status
+            except Exception:
+                self.server.inline_fault = True
+                raise
+            self.write_json(result, status=status)
+        finally:
+            self.server.inline_lock.release()
 
     def handle_anthropic(self, payload: dict, anthropic=True) -> None:
         """Preserve native Anthropic tool blocks and SSE from llama.cpp."""
@@ -456,6 +509,8 @@ def serve(config: AppConfig, backend: Backend, warm: bool = False) -> None:
     Handler.backend = backend
     Handler.config = config
     httpd = ThreadingHTTPServer((config.server.host, config.server.port), Handler)
+    httpd.inline_lock = threading.Lock()
+    httpd.inline_fault = False
     previous_handlers = {}
     shutdown_started = False
 

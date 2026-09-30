@@ -11,7 +11,7 @@ as a read-only helper for your primary Codex model, loading it if necessary.
 Run from this directory; see the [project guide](../README.md) for architecture and configuration.
 
 ```sh
-./scripts/install-resource-tools.sh    # Once: install command links
+./scripts/install.sh                  # Python, commands, and available local VS Code extension
 res-alloc                            # Choose host and reserve resources
 res-alloc --restart                  # Reconfigure a host
 res-mon --list
@@ -28,6 +28,15 @@ res-mon --kill 2 --release
 Use the session ID returned by `res-alloc`. Exiting the agent lets you keep the
 allocation (unloading the model) or release it. Independent sessions can use
 different hosts/models. No separate init script is needed.
+
+The installer automatically builds and installs the VS Code inline helper if
+local VS Code, Node.js 20+ and npm are available. Downloading the repository alone
+does not install anything. Use `./scripts/install.sh --with-vscode` to require
+extension setup, `--without-vscode` for CLI-only setup, or `--vscode-only` for just
+the extension. Automatic extension setup skips SSH/VS Code Remote shells; run it
+on your desktop. `--code-command` selects another CLI (including `code-insiders`).
+The older installer filenames still work as wrappers. Rerun setup after updates.
+
 
 Selecting a parent RAG folder automatically discovers compatible cached subfolder
 indexes on the RAG compute host. These are reused and refreshed for changed files;
@@ -144,7 +153,7 @@ This returns to the shell without launching another agent CLI. It registers
 An already running agent is retained. Unloading/releasing the model removes the
 registration; after loading it again, repeat `run --session 2 --helper`.
 The former `add-serve` and `res-background` commands have been removed; rerun
-`./scripts/install-resource-tools.sh` to remove their installed links.
+`./scripts/install.sh` to remove their installed links.
 Use `run --session 2 --detach` to start a tmux agent without attaching.
 
 `session-tool` is a read-only MCP server with `summarize_project` (local RAG →

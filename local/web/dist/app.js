@@ -447,6 +447,16 @@ async function helperFoldersDialog(sessionId) {
   }
 }
 
+function inlineHelperDialog(sessionId) {
+  const content = node('div', 'form');
+  content.append(node('p', '', 'Connect this loaded model to the LLM-AWAY Inline Helper extension on this machine. If the model is not loaded yet, use the Attach / model menu first.'));
+  const link = node('a', 'button', 'Connect in VS Code');
+  link.href = `vscode://llm-away.llm-away-inline/connect?session=${encodeURIComponent(sessionId)}`;
+  content.append(link, node('p', '', 'With multiple VS Code windows, the link targets the topmost window. To choose a specific window, run “LLM-AWAY: Select Inline Helper Session” inside it.'));
+  content.append(node('p', '', 'First-time setup: run ./local/scripts/install.sh --vscode-only from the LLM-AWAY repository on your desktop. The extension uses the local repository selected in its settings; session numbers must match that repository.'));
+  openDialog(`VSCode inline helper · Session ${sessionId}`, content);
+}
+
 function toolsDialog() {
   const sessionId = selected?.id;
   const run = (label, description, action, danger = false) => ({
@@ -460,6 +470,7 @@ function toolsDialog() {
   ];
   if (sessionId != null) options.push(
     run('Refresh session', 'Restart the selected agent as a fresh conversation', 'refresh-session'),
+    {label: 'VSCode inline helper', description: 'Connect the loaded model to inline suggestions in VS Code', run: () => inlineHelperDialog(sessionId)},
     {label: 'Set helper', description: 'Choose and acknowledge the helper’s readable folders', run: () => helperFoldersDialog(sessionId)},
     run('Restart', 'Retry the selected failed or ended allocation', 'restart'),
     run('Reconnect', 'Repair the selected model SSH tunnel', 'reconnect'),

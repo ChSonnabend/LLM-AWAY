@@ -63,7 +63,7 @@ One repository for the local agent gateway and remote llama.cpp runners.
 ```bash
 git clone git@github.com:ChSonnabend/LLM-AWAY.git
 cd LLM-AWAY/local
-./scripts/install-resource-tools.sh
+./scripts/install.sh
 res-alloc
 run --session 1
 ```
@@ -71,6 +71,25 @@ run --session 1
 When setup asks for the remote folder, select the full path ending in
 `LLM-AWAY/remote`, not the repository root. Remote setup is run from that folder.
 Models, containers, builds and saved host profiles remain ignored by Git.
+
+## VS Code inline suggestions
+
+The standard `./local/scripts/install.sh` setup also installs the extension when
+local VS Code, Node.js 20+ and npm are available. Downloading/cloning alone does
+not install it. To require extension installation, use `--with-vscode`; for CLI-only
+setup, use `--without-vscode`. To install just the extension, use
+`./local/scripts/install.sh --vscode-only`. Load a model as usual,
+then run **LLM-AWAY: Select Inline Helper Session** in the VS Code Command Palette.
+The dashboard also offers **Tools → VSCode inline helper** for a selected session.
+Suggestions start after a 200 ms typing pause and appear as ghost text accepted
+with Tab. A full active-file snapshot refreshes on file switches, saves, and every
+30 seconds while changed; live cursor excerpts supply the newest edits. Oversized
+files fall back to cursor excerpts within the configured context budget. Each window retains one running request plus only the newest pending request;
+the local gateway also limits concurrent inline inference. No additional model
+allocation is required; busy shared models may be slow. After updating an existing
+installation, reload its model provider and reload the VS Code window.
+See [installation, controls and limitations](vscode-inline/README.md).
+The extension is distributed locally as a VSIX, not yet through the Marketplace.
 
 ## Existing installations
 
@@ -91,7 +110,7 @@ No model downloads or GPU jobs are required for migration.
 
 ## Multiple independent resource sessions
 
-Install the commands once with `local/scripts/install-resource-tools.sh` and ensure
+Install once with `local/scripts/install.sh` and ensure
 `~/.local/bin` is on PATH. Use `res-alloc --restart` to repeat host setup.
 
 ```bash
@@ -275,6 +294,23 @@ stops its agent terminal; detaching does not release the allocation.
 Local commands automatically prepare and use `local/.venv`, with dependencies
 pinned in `local/requirements.txt`. Run `local/scripts/init` to prepare it ahead
 of time; no manual activation is needed. RAG keeps its separate environments.
+
+`local/scripts/install.sh` is the unified setup entry point. It prepares Python,
+installs command links, then attempts extension setup when the desktop prerequisites
+are available. Auto mode skips SSH/VS Code Remote shells and reports missing tools
+or optional extension failures without undoing command setup. Explicit
+`--with-vscode` / `--vscode-only` requests fail if extension setup cannot complete.
+`--code-command /path/to/code` selects another VS Code CLI; `--bin-dir /path/to/bin`
+selects the command-link directory. Existing unrelated files and symlinks are kept.
+Use `--help` for all options. Rerun setup after pulling framework updates.
+
+The old `install-resource-tools.sh` and `install-vscode-inline.sh` names remain
+compatibility wrappers; the first now includes automatic extension setup.
+`scripts/init` keeps its environment-only behavior, including `--documents` and
+`--check-documents`. `env.sh` / `bootstrap.py` remain shared runtime helpers;
+`test.sh` runs tests with that same project interpreter. Remote server-control
+scripts are runtime components and remain separate.
+
 `res-mon-web` opens the browser and returns to the shell. Closing the last
 dashboard/metrics tab releases the port after a short grace period (up to three
 minutes if the browser crashes or cannot send its close notification).
