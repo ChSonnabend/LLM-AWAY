@@ -47,11 +47,11 @@ test('bounds context and never substitutes reasoning or tool calls for code', ()
   assert.equal(client.completionPayload('glm-5.3-flash-q4', '', '', 'python', 128).chat_template_kwargs.reasoning_effort, 'low');
   assert.equal(payload.max_tokens, 64); assert.equal(payload.tools, undefined);
   const fim = client.completionPayload('Qwen3-Coder-30B-A3B', 'p'.repeat(12000), 's'.repeat(5000), 'python', 64, undefined, 'auto');
-  assert.equal(fim.prefix.length, 8000); assert.equal(fim.suffix.length, 2000);
-  assert.equal(fim.messages.length, 1);
+  assert.ok(fim.prefix.endsWith('p'.repeat(8000))); assert.equal(fim.suffix.length, 2000);
+  assert.equal(fim.messages.length, 2);
   assert.equal(client.completionPayload('Qwen3-Coder-30B-A3B', 'a', 'b', 'python', 64, undefined, 'chat').prefix, undefined);
   assert.equal(client.completionPayload('glm-5.3-flash-q4', 'a', 'b', 'python', 64, undefined, 'auto').prefix, undefined);
-  assert.equal(client.completionPayload('glm-5.3-flash-q4', 'a', 'b', 'python', 64, undefined, 'fim').prefix, 'a');
+  assert.ok(client.completionPayload('glm-5.3-flash-q4', 'a', 'b', 'python', 64, undefined, 'fim').prefix.endsWith('\na'));
   const response = message => ({ choices: [{ message }] });
   assert.equal(client.completionText(response({ content: 'return x;\n}' }), '\n}'), 'return x;');
   assert.equal(client.completionText(response({ reasoning_content: 'private thoughts' }), ''), '');
@@ -106,4 +106,42 @@ test('accepts raw FIM completions while rejecting chat reasoning and tools', () 
   assert.equal(client.completionText({ choices: [{ text: 'return x' }] }, ''), 'return x');
   assert.equal(client.completionText({ choices: [{ message: { reasoning_content: 'private' }, text: 'private' }] }, ''), '');
   assert.equal(client.completionText({ choices: [{ message: { tool_calls: [{}] }, text: 'private' }] }, ''), '');
+});
+
+test('language, indentation, efficiency and snapshot reach both chat and raw FIM', () => {
+  for (const mode of ['chat', 'fim']) {
+    const payload = client.completionPayload('coder', '    ', '', 'python', 64,
+      { language: 'python', version: 1, content: 'import numpy as np\n' }, mode,
+      { tabSize: 2, insertSpaces: false, eol: '\r\n' });
+    const formatting = JSON.parse(payload.messages.at(-1).content).formatting;
+    assert.equal(formatting.language, 'Python');
+    assert.equal(formatting.indent_unit, '\t');
+    assert.equal(formatting.tab_size, 2);
+    assert.equal(formatting.line_ending, 'CRLF');
+    const prompt = mode === 'fim' ? payload.prefix : JSON.stringify(payload.messages);
+    assert.match(prompt, /import numpy as np/);
+    assert.match(prompt, /nested Python loops/);
+    assert.match(prompt, /Whitespace before the cursor already exists/);
+    if (mode === 'fim') assert.ok(payload.prefix.endsWith('\n    '));
+  }
+  const cpp = client.completionPayload('coder', '', '', 'cpp', 64);
+  assert.equal(JSON.parse(cpp.messages.at(-1).content).formatting.language, 'C++');
+  assert.match(cpp.messages[0].content, /ownership and lifetimes/);
+  const plain = client.completionPayload('coder', '', '', 'python', 64, undefined, 'chat', { preferEfficientCode: false });
+  assert.doesNotMatch(plain.messages[0].content, /NumPy/);
+});
+test('removes trailing context echoes and rejects substantial duplicate blocks', () => {
+  const response = content => ({ choices: [{ message: { content } }] });
+  const block = '    distances = self.mutual_distance_matrix(data)\n    scaled_distances = distances / bandwidth\n    kernel_values = self.epanechnikov_kernel(scaled_distances)\n';
+  assert.equal(client.completionText(response(block + '    return kernel_values'), '', block, 'python'), '    return kernel_values');
+  assert.equal(client.completionText(response(block), '', block + '\n# Next method\n', 'python'), '');
+  assert.equal(client.completionText(response(block + block), '', '', 'python'), '');
+  assert.equal(client.completionText(response('return value'), '', 'if a:\n    return value\nelse:\n    ', 'python'), 'return value');
+  assert.equal(client.completionText(response(block), '', 'example = """\n' + block, 'python'), block);
+});
+test('chat indentation accounts for existing cursor whitespace without changing FIM continuation', () => {
+  const response = content => ({ choices: [{ message: { content } }] });
+  assert.equal(client.completionText(response('    def f():\n        pass'), '', 'class A:\n    ', 'python'), 'def f():\n        pass');
+  assert.equal(client.completionText(response('        return value'), '', 'def f():\n    if ready:\n    ', 'python'), '    return value');
+  assert.equal(client.completionText({ choices: [{ text: '    return value' }] }, '', 'def f():\n    if ready:\n    ', 'python'), '    return value');
 });

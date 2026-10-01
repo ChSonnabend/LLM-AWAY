@@ -54,6 +54,10 @@ exports.run = async function() {
     assert.ok(received, 'real VS Code inline provider sent request');
     assert.equal(received.max_tokens, 256);
     assert.equal(received.cache_prompt, true);
+    const formatting = JSON.parse(received.messages.at(-1).content).formatting;
+    assert.equal(formatting.language, 'JavaScript');
+    assert.equal(formatting.tab_size, editor.options.tabSize);
+    assert.equal(formatting.indent_unit, editor.options.insertSpaces ? ' '.repeat(editor.options.tabSize) : '\t');
     assert.equal(JSON.parse(received.messages[1].content).file_snapshot.content, 'const answer = fo');
     assert.equal(vscode.workspace.getConfiguration('llmAwayInline').get('debounceMs'), 200);
     assert.equal(JSON.parse(received.messages.at(-1).content).prefix, 'const answer = fo');

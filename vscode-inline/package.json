@@ -2,7 +2,7 @@
   "name": "llm-away-inline",
   "displayName": "LLM-AWAY Inline Helper",
   "description": "Inline code suggestions from a loaded LLM-AWAY model session.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "llm-away",
   "private": true,
   "engines": {
@@ -74,7 +74,11 @@
         },
         "llmAwayInline.completionMode": {
           "type": "string",
-          "enum": ["auto", "fim", "chat"],
+          "enum": [
+            "auto",
+            "fim",
+            "chat"
+          ],
           "default": "auto",
           "description": "Prompt style: auto picks fill-in-the-middle (FIM) for Qwen Coder models, chat otherwise. fim/chat force a style."
         },
@@ -112,6 +116,12 @@
           "minimum": 0,
           "maximum": 1000000,
           "description": "Full-file snapshot character limit (0 disables full-file context). The model context budget may impose a smaller limit; oversized files use cursor excerpts."
+        },
+        "llmAwayInline.preferEfficientCode": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Prefer efficient algorithms and existing library operations (including NumPy for numeric arrays), while considering readability and memory. This is model guidance, not a performance guarantee."
         }
       }
     }

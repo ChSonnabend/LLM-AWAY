@@ -23,7 +23,7 @@ test('connects, suggests, discards edited buffers, pauses and disconnects', asyn
   };
   const disposable = { dispose() {} };
   const vscode = {
-    StatusBarAlignment: { Right: 1 }, ConfigurationTarget: { Global: 1 }, InlineCompletionTriggerKind: { Invoke: 0, Automatic: 1 },
+    StatusBarAlignment: { Right: 1 }, ConfigurationTarget: { Global: 1 }, EndOfLine: { LF: 1, CRLF: 2 }, InlineCompletionTriggerKind: { Invoke: 0, Automatic: 1 },
     Range: class { constructor(start, end) { this.start = start; this.end = end; } },
     InlineCompletionItem: class { constructor(text, range) { this.insertText = text; this.range = range; } },
     workspace: { isTrusted: true,

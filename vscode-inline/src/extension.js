@@ -16,7 +16,7 @@ function activate(context) {
   let lastError = '';
   const output = vscode.window.createOutputChannel('LLM-AWAY Inline Helper');
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 20);
-  const config = () => vscode.workspace.getConfiguration('llmAwayInline');
+  const config = (document) => vscode.workspace.getConfiguration('llmAwayInline', document?.uri);
   const root = () => config().get('repositoryPath', '~/LLM-AWAY');
   function cancel() { revision++; active?.abort(); queue.clearPending(); }
   function updateStatus(error) {
@@ -132,7 +132,11 @@ function activate(context) {
           // Keep this HTTP request open through editor cancellation and the UI
           // deadline. The gateway has its own finite upstream timeout and guard.
           return client.request(session, '/v1/inline/completions',
-            client.completionPayload(session.model, prefix, suffix, document.languageId, config().get('maxTokens', 256), fullFile, config().get('completionMode', 'auto')),
+            client.completionPayload(session.model, prefix, suffix, document.languageId, config().get('maxTokens', 256), fullFile, config(document).get('completionMode', 'auto'), {
+              ...((vscode.window.activeTextEditor?.document === document) ? vscode.window.activeTextEditor.options : {}),
+              eol: document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n',
+              preferEfficientCode: config(document).get('preferEfficientCode', true)
+            }),
             undefined, 0);
         }, valid, config().get('timeoutMs', 15000), () => {
           trace(`Request ${ticket}: display deadline reached; retaining the inference slot until completion.`);
@@ -141,7 +145,7 @@ function activate(context) {
         if (!response) return [];
         const message = response.choices?.[0]?.message || {};
         const finish = response.choices?.[0]?.finish_reason || 'unknown';
-        trace(`Response ${ticket}: content=${message.content?.length || 0}, reasoning=${message.reasoning_content?.length || 0}, finish=${finish}.`);
+        trace(`Response ${ticket}: content=${(message.content ?? response.choices?.[0]?.text)?.length || 0}, reasoning=${message.reasoning_content?.length || 0}, finish=${finish}.`);
         if (!valid()) { trace(`Request ${ticket}: discarded because the editor changed.`); return []; }
         const latest = await client.readSession(snapshot.repository, session.id);
         if (!valid() || latest.identity !== session.identity) return [];

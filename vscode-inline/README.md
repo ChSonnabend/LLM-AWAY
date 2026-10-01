@@ -108,11 +108,28 @@ model, select the session again. Use LLM-AWAY to load, reconnect, stop, or relea
   inference timeout remains the hard limit; the extension's display deadline does
   not cancel upstream work. The model's CUDA stability is a separate concern.
 - Requests share the model's inference slot with any attached agents. A busy
-  model can time out; a dedicated fast coding model works best. This first version
-  uses chat completion, not a model-specific fill-in-the-middle endpoint.
+  model can time out; a dedicated fast coding model works best. Auto mode uses native fill-in-the-middle (FIM) for Qwen Coder models and chat
+  completion otherwise. `Completion Mode` can override this choice. For supported
+  source languages, FIM receives formatting guidance and the snapshot as reference
+  comments before the live source; chat receives structured messages. Unknown
+  languages in forced FIM mode receive only cursor excerpts; choose chat for metadata.
 - Other inline providers can compete for ghost text. Disable their automatic
   suggestions for this workspace if needed. VS Code's `editor.inlineSuggest.enabled`
   must be enabled.
+
+- Language is taken from VS Code's language mode. Requests include the editor's
+  spaces/tabs preference, tab size, current indentation and line endings.
+- `Prefer Efficient Code` defaults to enabled. It asks for concise continuations,
+  appropriate algorithms, existing library operations and fewer unnecessary copies
+  or large temporary arrays. For Python with NumPy already imported, it favors
+  suitable array operations over nested Python loops. It does not ban loops or
+  guarantee runtime performance. Disable the preference in workspace settings
+  if you prefer neutral guidance.
+- Exact multiline echoes at the cursor are removed; substantial duplicated blocks
+  (at least three nonblank lines and 80 characters) are suppressed. This conservative
+  heuristic can also hide intentional repetition. Python string/comment contents
+  are excluded. Chat responses that repeat the current indentation are normalized;
+  native FIM whitespace is preserved.
 
 ## Development
 
